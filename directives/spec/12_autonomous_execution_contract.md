@@ -44,7 +44,7 @@ Claude must stop and ask before continuing if any of the following occur:
 8. A uniqueness rule conflicts with a source-system behavior or real historical data shape.
 
 ### Authentication / authorization uncertainty
-9. Credential shape or auth flow for GHL, Synthflow, Google Sheets, Redis, SQL Server, or OpenAI is unclear.
+9. Credential shape or auth flow for GHL, Synthflow, Google Sheets, Redis, Postgres, or OpenAI is unclear.
 10. A change would alter access-control, secret handling, session behavior, or webhook verification semantics beyond what is specified.
 
 ### Source conflict
@@ -335,7 +335,7 @@ Required tests/checks:
 - audit trail tests
 
 ### Phase 9 — Google Sheets shadow sync
-**Goal**: mirror live sheet data into SQL Server without making Sheets authoritative.
+**Goal**: mirror live sheet data into Postgres without making Sheets authoritative.
 
 Required outputs:
 - sheets client

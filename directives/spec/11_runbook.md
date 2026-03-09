@@ -1,7 +1,7 @@
 # spec/11_runbook.md
 
 ## Setup
-1. Provision SQL Server.
+1. Provision Postgres.
 2. Provision Redis.
 3. Configure API and worker services.
 4. Configure GHL, Synthflow, OpenAI, and Google Sheets credentials.
@@ -9,7 +9,7 @@
 6. Seed prompt registry and campaign tier policies.
 
 ## Local run
-1. Start SQL Server and Redis.
+1. Start Postgres and Redis.
 2. Load `.env` values.
 3. Start API service.
 4. Start worker service.
@@ -29,3 +29,7 @@
 - GHL write failure -> inspect API key and location config
 - sheet drift -> inspect shadow_sheet_rows and reconciliation job output
 
+## Reporting runbook notes
+- Validate KPI values against authoritative SQL queries after schema or logic changes.
+- Validate filtering and cross-filtering behavior after reporting-model changes.
+- Do not treat missing tooltip or drill-down behavior as a defect in the current phase.

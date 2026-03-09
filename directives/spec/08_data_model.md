@@ -81,3 +81,14 @@
 - created_at
 - updated_at
 
+## Reporting entities or views
+- `dim_date`
+- `dim_call_type`
+- `dim_campaign`
+- `fact_call_activity`
+- `fact_kpi_daily`
+- `fact_kpi_weekly` (optional if weekly aggregation is materialized)
+
+## Reporting source-of-truth rule
+Dashboard metrics shall be computed from Postgres-authoritative reporting views or tables.
+Google Sheets shadow data shall not be used as the runtime source for KPI calculations.

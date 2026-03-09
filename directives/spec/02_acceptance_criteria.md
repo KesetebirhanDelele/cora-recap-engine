@@ -24,3 +24,9 @@
 - Given an exception is open in the dashboard, when an operator clicks Retry Now, then the system enqueues a new job attempt and records the operator action in audit history.
 - Given a lead has scheduled future jobs, when an operator cancels future jobs, then those jobs are marked canceled in authoritative state and no callback runs from them.
 
+## Reporting and analytics
+- Given a date range is selected, when the dashboard loads, then all KPI cards reflect that selected date range using Postgres-authoritative reporting data.
+- Given a user applies a filter for call type or campaign, when the dashboard refreshes, then all supported visuals reflect the filtered scope.
+- Given a user selects a supported visual element for cross-filtering, when the interaction is applied, then the related visuals update to the same active context.
+- Given Google Sheets shadow mode is disabled, when the dashboard loads, then reporting remains fully functional because Postgres is the authoritative reporting source.
+- Given the current build is used, when a user hovers or clicks expecting tooltip or drill-down behavior, then no tooltip-specific or drill-down-specific behavior is required.

@@ -1,13 +1,13 @@
 # spec/00_overview.md
 
 ## Product one-liner
-Cora Outbound Recap Engine is a Python-based API + worker platform that replaces the current Zapier workflows for inbound recap, outbound cold-lead recap, and outbound new-lead recap with durable SQL Server-backed state, Redis/RQ job execution, GHL CRM updates, Synthflow callback scheduling, OpenAI-generated summaries, and consent-gated recap writeback.
+Cora Outbound Recap Engine is a Python-based API + worker platform that replaces the current Zapier workflows for inbound recap, outbound cold-lead recap, and outbound new-lead recap with durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates, Synthflow callback scheduling, OpenAI-generated summaries, and consent-gated recap writeback.
 
 ## Target users
 - **Admissions / Sales Reps**: receive CRM tasks for completed calls and continue human follow-up.
 - **Admissions / Sales Managers**: monitor lead progression, voicemail recovery, and exception handling.
 - **Ops/Admin**: manage retries, replay stuck events, inspect state, and resolve failures.
-- **Engineering**: operate API, workers, Redis/RQ, SQL Server, and integration health.
+- **Engineering**: operate API, workers, Redis/RQ, Postgres, and integration health.
 - **Students / Leads**: receive calls and have recap content stored to CRM only when consent is detected.
 
 ## Top 3 user journeys
@@ -30,25 +30,30 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 ### 3. Pending/stuck recovery via dashboard
 1. A call remains `queue` or `in-progress`, or a critical dependency fails.
 2. The worker retries within bounded policy.
-3. If the event cannot complete safely, an exception is stored in SQL Server.
+3. If the event cannot complete safely, an exception is stored in Postgres.
 4. The admin dashboard exposes the exception, state inspection, retry controls, cancel-future-jobs, and force-finalize actions.
 
 ## System boundary
 ### In scope
 - Python API service for webhook intake and admin operations.
 - Python worker service for retries, delayed jobs, callbacks, AI jobs, and CRM writes.
-- SQL Server as authoritative store for campaign state, call events, audit, exceptions, and scheduled-job records.
+- Postgres as authoritative store for campaign state, call events, audit, exceptions, and scheduled-job records.
 - Redis + RQ for job execution.
 - GHL / LeadConnector for contact lookup, custom-field writes, notes, and task creation.
 - Synthflow for callback creation on eligible voicemail tiers.
 - OpenAI for completed-call analysis, student summary generation, consent detection, and voicemail content generation.
-- Google Sheets mirror in shadow mode, with sheet data mirrored into SQL Server during cutover.
+- Postgres-authoritative reporting dataset and dashboard support
+- dashboard filtering and cross-filtering across supported visuals
+- Google Sheets mirror in shadow mode, with sheet data mirrored into Postgres during cutover.
+
 
 ### Out of scope
 - Replacing GHL as CRM.
 - Direct SMS/email sending inside this app; the app writes fields and state used by GHL automations.
 - Building a custom dialer in place of Synthflow.
 - Regulated health-data workflows.
+- dashboard drill-down interactions in the current phase
+- KPI tooltip interactions in the current phase
 
 ## Success metrics
 1. Appointment / enrollment conversion rate from inbound and outbound leads improves versus current baseline.

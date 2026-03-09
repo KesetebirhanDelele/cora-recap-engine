@@ -14,7 +14,7 @@ Tests: valid event accepted, missing identity rejected.
 Dependencies: Chunk 1.
 Effort: S
 
-## Chunk 3: SQL Server state store
+## Chunk 3: Postgres state store
 Purpose: persist events, campaign state, exceptions, shadow-mirrored sheet data, and scheduled jobs.
 Outputs: schema, indexes, transitions, dedupe model.
 Tests: duplicate protection, restart safety, mirror reconciliation.
@@ -38,7 +38,7 @@ Effort: M
 ## Chunk 6: Redis/RQ workers
 Purpose: retries, delays, callbacks, replay, and async processing.
 Outputs: queue topology, worker jobs, retry policy.
-Tests: delayed jobs survive restart using SQL Server canonical state.
+Tests: delayed jobs survive restart using Postgres canonical state.
 Dependencies: Chunks 2-5.
 Effort: M
 
@@ -57,7 +57,7 @@ Dependencies: Chunks 3-7.
 Effort: M
 
 ## Chunk 9: Active Google Sheets shadow mirror
-Purpose: keep Google Sheets live during cutover and mirror sheet data into SQL Server.
+Purpose: keep Google Sheets live during cutover and mirror sheet data into Postgres.
 Outputs: ingestion jobs, reconciliation reports, comparison tooling.
 Tests: no production logic depends on Sheets; database remains authoritative.
 Dependencies: Chunks 3-8.

@@ -10,11 +10,11 @@
 - Reject events with no resolvable identity and create an exception.
 
 ### Authoritative state and idempotency
-- Use SQL Server as the authoritative store for campaign state, call events, audit records, exceptions, and scheduled-job metadata.
-- Use Redis + RQ for job execution, retries, and delayed processing while treating SQL Server as canonical state.
+- Use Postgres as the authoritative store for campaign state, call events, audit records, exceptions, and scheduled-job metadata.
+- Use Redis + RQ for job execution, retries, and delayed processing while treating Postgres as canonical state.
 - Treat GHL as authoritative for contacts, tasks, notes, and custom-field writes.
 - Prevent duplicate irreversible actions by checking dedupe keys based on `(call_id, action_type)`.
-- Support active Google Sheets shadow mode and mirror sheet data into SQL Server while production logic remains database-authoritative.
+- Support active Google Sheets shadow mode and mirror sheet data into Postgres while production logic remains database-authoritative.
 
 ### Routing and lifecycle management
 - Route events into pending, call-through, or voicemail branches.
@@ -53,7 +53,7 @@
 - Halt and surface the exception in the dashboard when critical identity or required campaign state cannot be resolved.
 - Display exceptions, retry status, and operator controls in the dashboard.
 - Support Retry Now, Retry with Delay, Mark Resolved/Ignored with reason code, Cancel Future Jobs for lead/call/tier, and Force Finalize.
-- Preserve scheduled jobs across restarts by storing canonical job state durably in SQL Server.
+- Preserve scheduled jobs across restarts by storing canonical job state durably in Postgres.
 
 ## Non-functional requirements
 - 99% of events processed within 2 minutes of event receipt, excluding intentional delays.
@@ -66,3 +66,27 @@
 - Stored event fixtures support replay for regression testing.
 - Prompt families are versioned, source-controlled, shadow-testable, and rollback-capable.
 
+### Reporting and analytics
+- The system shall use Postgres-derived reporting tables or views as the authoritative source for dashboard metrics.
+- Google Sheets may be mirrored for reconciliation during shadow mode but shall not be used as the authoritative reporting source.
+- The dashboard shall support KPI reporting for at least:
+    - Unique Contacts
+    - Booked Appts
+    - Calls Per Day
+    - Call Completion Rate
+    - Call Duration in Sec.
+    - Pickup Rate
+    - Voicemail Rate
+    - Failed Rate
+
+- The dashboard shall support visual filtering by at least:
+    - date range
+    - call type
+    - campaign, where applicable
+    - direction, where applicable
+
+- The dashboard shall support cross-filtering between supported visuals so that a selection in one visual updates the others within the active filter context.
+
+- Drill-down interactions are out of scope for the current phase.
+
+- KPI tooltips are out of scope for the current phase.

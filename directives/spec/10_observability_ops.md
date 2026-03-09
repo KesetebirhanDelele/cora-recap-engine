@@ -28,7 +28,7 @@
 - duplicate rate spike: warning/critical thresholds
 - stuck-call volume spike: warning/critical thresholds
 - queue lag breach
-- SQL Server write failures
+- Postgres write failures
 - sheet mirror reconciliation failures above threshold
 
 ## Dashboard scope v1
@@ -41,3 +41,8 @@
 - health tiles for events, failures, stuck calls, duplicates
 - sheet mirror reconciliation status
 
+## Reporting observability
+- reporting refresh success/failure
+- KPI query latency
+- filter and cross-filter interaction latency, where measurable
+- reporting reconciliation drift between Google Sheets mirror data and Postgres authoritative data
