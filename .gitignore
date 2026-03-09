@@ -205,3 +205,43 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# =========================
+# Cora Recap Engine
+# =========================
+
+# Environment files (never commit real .env — use .env.example as template)
+.env
+.env.*
+!.env.example
+
+# Scratch space (always safe to delete, never committed)
+tmp/
+
+# Local database dumps and exports
+*.sql.dump
+*.pg_dump
+db_dumps/
+
+# Migration lock / generated artifacts
+migrations/__pycache__/
+migrations/upgrade.sql
+
+# RQ / worker artifacts
+rq-*.log
+
+# Runtime logs
+logs/
+*.log
+
+# Test artifacts (already covered above, explicit here for clarity)
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Local VS Code workspace settings
+.vscode/
+
+# macOS metadata
+.DS_Store

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install -e \".[dev]\" -q)",
+      "Bash(pip install setuptools --upgrade -q)",
+      "Bash(python -m pytest tests/unit/test_smoke.py -v)",
+      "Bash(python -m ruff check app/ tests/)",
+      "Bash(pip install ruff -q)",
+      "Bash(ruff check c:/Users/keset/cora-recap-engine/app/ c:/Users/keset/cora-recap-engine/tests/)",
+      "Bash(ruff check c:/Users/keset/cora-recap-engine/app/ c:/Users/keset/cora-recap-engine/tests/ --fix)",
+      "Bash(python -m pytest tests/unit/test_smoke.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/ -v)",
+      "Bash(python -m pytest tests/unit/ -q)",
+      "Bash(pip install alembic -q)"
+    ]
+  }
+}
