@@ -208,9 +208,25 @@ def test_webhook_missing_call_id_returns_422():
 
 
 def test_webhook_with_call_id_returns_202():
-    from app.main import app
-    client = TestClient(app)
-    resp = client.post("/v1/webhooks/calls", json={"call_id": "test-001"})
+    from contextlib import contextmanager
+    from unittest.mock import MagicMock, patch
+
+    from app.main import create_app
+
+    mock_job = MagicMock()
+    mock_job.id = "job-test-001"
+
+    @contextmanager
+    def _no_db():
+        yield MagicMock()
+
+    with patch("app.api.routes.webhooks.get_sync_session", _no_db), \
+         patch("app.api.routes.webhooks.schedule_job", return_value=mock_job):
+        app = create_app()
+        client = TestClient(app)
+        resp = client.post("/v1/webhooks/calls", json={"call_id": "test-001"})
+
     assert resp.status_code == 202
     data = resp.json()
     assert data["call_id"] == "test-001"
+    assert data["job_id"] == "job-test-001"

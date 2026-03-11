@@ -1,14 +1,20 @@
 """
-API service entrypoint — Phase 1 skeleton.
+API service entrypoint.
 
 Registers route groups.  Business logic is in app.services.
-External adapters are in app.adapters (all stubbed until Phase 4+).
+External adapters are in app.adapters.
 
-Phase 1 state: routes registered, app boots, no real integration logic.
+Lifespan:
+  On startup, attempts to connect to Redis and stores the default RQ
+  queue on app.state.default_queue for use by the webhook route.
+  If Redis is unavailable (e.g. in tests or during outages), the queue
+  is set to None and webhook jobs are stored in Postgres only — the
+  worker recovery loop enqueues them when Redis comes back.
 """
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
@@ -21,10 +27,45 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize shared resources at startup; clean up at shutdown."""
+    settings = get_settings()
+    app.state.default_queue = None
+
+    try:
+        import redis as redis_lib
+        from rq import Queue
+
+        url = (
+            settings.redis_url
+            or f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+        )
+        ssl_kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+        auth_kwargs: dict = {}
+        if settings.redis_username:
+            auth_kwargs["username"] = settings.redis_username
+        if settings.redis_password:
+            auth_kwargs["password"] = settings.redis_password
+
+        redis_conn = redis_lib.from_url(url, **ssl_kwargs, **auth_kwargs)
+        redis_conn.ping()  # verify credentials before accepting traffic
+        app.state.default_queue = Queue(settings.rq_default_queue, connection=redis_conn)
+        logger.info("Redis connected | queue=%s", settings.rq_default_queue)
+    except Exception as exc:
+        logger.warning(
+            "Redis unavailable at startup — webhook jobs will be stored in Postgres only | %s", exc
+        )
+
+    yield
+    # No explicit teardown required; Redis connections are pooled and GC'd.
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
+        lifespan=lifespan,
         title="Cora Recap Engine",
         version="0.1.0",
         description=(

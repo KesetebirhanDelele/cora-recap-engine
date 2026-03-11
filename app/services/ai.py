@@ -121,12 +121,13 @@ def generate_student_summary(
             prompt_version=version,
         )
 
+    assert transcript is not None  # _is_blank guard above ensures this
     client = client or OpenAIClient(settings=settings)
     entry = get_prompt(family, version)
 
     logger.info(
         "AI student_summary | family=%s version=%s model=%s transcript_len=%d",
-        family, version, model, len(transcript),  # type: ignore[arg-type]
+        family, version, model, len(transcript),
     )
 
     messages = entry.build_messages(transcript=transcript)
@@ -178,12 +179,13 @@ def detect_consent(
             prompt_version=version,
         )
 
+    assert transcript is not None  # _is_blank guard above ensures this
     client = client or OpenAIClient(settings=settings)
     entry = get_prompt(family, version)
 
     logger.info(
         "AI consent_detect | family=%s version=%s model=%s transcript_len=%d",
-        family, version, model, len(transcript),  # type: ignore[arg-type]
+        family, version, model, len(transcript),
     )
 
     messages = entry.build_messages(transcript=transcript)

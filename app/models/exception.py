@@ -48,7 +48,7 @@ class ExceptionRecord(Base):
     )
     entity_type: Mapped[Optional[str]] = mapped_column(String(50))
     entity_id: Mapped[Optional[str]] = mapped_column(String(255))
-    # type: identity_resolution | ghl_auth | tier_invalid | retry_budget_exhausted | ...
+    # exception type: identity_resolution | ghl_auth | tier_invalid | retry_budget_exhausted | ...
     type: Mapped[str] = mapped_column(String(100), nullable=False)
     # severity: critical | warning
     severity: Mapped[str] = mapped_column(String(20), nullable=False, default="critical")

@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from app.models.exception import ExceptionRecord
@@ -90,7 +91,7 @@ def resolve_exception(
         return False
 
     now = datetime.now(tz=timezone.utc)
-    result = session.execute(
+    result: CursorResult = session.execute(  # type: ignore[assignment]
         update(ExceptionRecord)
         .where(
             ExceptionRecord.id == exception_id,
@@ -135,7 +136,7 @@ def ignore_exception(
         return False
 
     now = datetime.now(tz=timezone.utc)
-    result = session.execute(
+    result: CursorResult = session.execute(  # type: ignore[assignment]
         update(ExceptionRecord)
         .where(
             ExceptionRecord.id == exception_id,

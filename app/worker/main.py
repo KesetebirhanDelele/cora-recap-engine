@@ -9,7 +9,11 @@ Queue topology:
   ai              — run_call_analysis
   callbacks       — schedule_synthflow_callback (Phase 7)
   retries         — retry_failed_job
-  sheet_mirror    — sync_sheet_rows (Phase 9)
+  sheet_mirror    — sync_sheet_rows (Phase 9, out of scope)
+
+Worker class selection:
+  Windows: SimpleWorker (thread-based; fork() unavailable on Windows)
+  Linux/macOS: Worker (fork-based; better isolation for production)
 
 Job recovery:
   On worker startup, any scheduled_jobs with status='pending' and
@@ -23,7 +27,24 @@ Claim/lease:
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import platform
 import sys
+
+# ── Windows compatibility patch ───────────────────────────────────────────────
+# RQ 2.x calls multiprocessing.get_context('fork') at scheduler import time.
+# Windows does not provide a 'fork' context — only 'spawn' is available.
+# Patch: redirect 'fork' → 'spawn' on Windows before any rq import occurs.
+if sys.platform == "win32":
+    _orig_get_context = multiprocessing.get_context
+
+    def _win32_get_context(method=None):
+        if method == "fork":
+            method = "spawn"
+        return _orig_get_context(method)
+
+    multiprocessing.get_context = _win32_get_context  # type: ignore[assignment]
+# ─────────────────────────────────────────────────────────────────────────────
 
 from app.config import get_settings
 
@@ -68,15 +89,33 @@ def run() -> None:
 
     try:
         import redis
-        from rq import Queue, Worker
+        from rq import Queue, SimpleWorker, Worker
 
-        redis_conn = redis.from_url(
+        url = (
             settings.redis_url
             or f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
         )
+        # rediss:// (SSL) connections to Redis Cloud require ssl_cert_reqs=None
+        # to bypass certificate hostname verification — common with Redis Cloud
+        # endpoints that use self-signed or intermediate CA certs.
+        ssl_kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+        # Explicit username/password settings override any credentials embedded
+        # in REDIS_URL (e.g. Redis Cloud URLs that omit auth or use defaults).
+        auth_kwargs: dict = {}
+        if settings.redis_username:
+            auth_kwargs["username"] = settings.redis_username
+        if settings.redis_password:
+            auth_kwargs["password"] = settings.redis_password
+        redis_conn = redis.from_url(url, **ssl_kwargs, **auth_kwargs)
 
         qs = [Queue(name=q, connection=redis_conn) for q in queues]
-        worker = Worker(qs, connection=redis_conn)
+
+        # Windows does not support fork(); use SimpleWorker (thread-based).
+        # Linux/macOS use the standard fork-based Worker for better isolation.
+        worker_cls = SimpleWorker if platform.system() == "Windows" else Worker
+        logger.info("Worker class: %s (platform=%s)", worker_cls.__name__, platform.system())
+
+        worker = worker_cls(qs, connection=redis_conn)
         worker.work()
 
     except Exception as exc:

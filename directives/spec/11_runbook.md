@@ -18,6 +18,15 @@ Note: Google Sheets shadow sync is out of scope. No Sheets setup required.
 4. Start worker service: `cora-worker`
 5. Post test webhook events to `POST /v1/webhooks/calls`.
 
+The endpoint to paste into Synthflow is:
+
+POST {your_base_url}/v1/webhooks/calls
+For example, in development: http://localhost:8000/v1/webhooks/calls
+
+In production, replace {your_base_url} with your deployed API URL (set as API_BASE_URL in .env).
+
+This is the webhook intake route at app/api/routes/webhooks.py:18 — it accepts any POST payload, extracts the call_id, and enqueues a process_call_event job for the worker to process.
+
 ## Testing
 ```bash
 # Unit tests (no credentials required)

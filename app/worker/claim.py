@@ -22,6 +22,7 @@ import socket
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from app.models.scheduled_job import ScheduledJob
@@ -66,7 +67,7 @@ def claim_job(
     expected_version = job.version
     now = datetime.now(tz=timezone.utc)
 
-    result = session.execute(
+    result: CursorResult = session.execute(  # type: ignore[assignment]
         update(ScheduledJob)
         .where(
             ScheduledJob.id == job_id,
@@ -166,7 +167,7 @@ def cancel_job(session: Session, job_id: str) -> bool:
         return False
 
     now = datetime.now(tz=timezone.utc)
-    result = session.execute(
+    result: CursorResult = session.execute(  # type: ignore[assignment]
         update(ScheduledJob)
         .where(
             ScheduledJob.id == job_id,
@@ -208,7 +209,7 @@ def recover_expired_claims(
 
     recovered_ids: list[str] = []
     for job in expired:
-        result = session.execute(
+        result: CursorResult = session.execute(  # type: ignore[assignment]
             update(ScheduledJob)
             .where(ScheduledJob.id == job.id, ScheduledJob.version == job.version)
             .values(

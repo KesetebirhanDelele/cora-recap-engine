@@ -28,7 +28,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditLog
@@ -298,7 +299,7 @@ def _finalize_lead(session: Session, contact_id: str, settings: Any) -> bool:
         return True
 
     now = datetime.now(tz=timezone.utc)
-    result = session.execute(
+    result: CursorResult = session.execute(  # type: ignore[assignment]
         update(LeadState)
         .where(LeadState.id == lead.id, LeadState.version == lead.version)
         .values(ai_campaign_value="3", version=lead.version + 1, updated_at=now)

@@ -115,9 +115,9 @@ def get_new_lead_policy(
     settings.validate_for_new_lead_vm_policy()  # stop condition enforcement
 
     tier_map: dict[Optional[str], tuple[int, str]] = {
-        None: (settings.new_vm_tier_none_delay_minutes, "0"),  # type: ignore[misc]
-        "0": (settings.new_vm_tier_0_delay_minutes, "1"),  # type: ignore[misc]
-        "1": (settings.new_vm_tier_1_delay_minutes, "2"),  # type: ignore[misc]
+        None: (settings.new_vm_tier_none_delay_minutes, "0"),  # type: ignore[dict-item]
+        "0": (settings.new_vm_tier_0_delay_minutes, "1"),  # type: ignore[dict-item]
+        "1": (settings.new_vm_tier_1_delay_minutes, "2"),  # type: ignore[dict-item]
         "2": (0, "3"),
     }
 

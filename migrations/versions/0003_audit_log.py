@@ -28,7 +28,7 @@ def upgrade() -> None:
         sa.Column("action", sa.String(100), nullable=False),
         sa.Column("operator_id", sa.String(255), nullable=False),
         sa.Column("context_json", sa.dialects.postgresql.JSONB, nullable=False,
-                  server_default="'{}'"),
+                  server_default=sa.text("'{}'")),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
