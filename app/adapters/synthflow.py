@@ -198,6 +198,86 @@ class SynthflowClient:
 
         return self._post(payload, _retry_delay=_retry_delay)
 
+    # ── New Lead outbound call launch ─────────────────────────────────────────
+
+    def launch_new_lead_call(
+        self,
+        phone: str,
+        lead_name: str,
+        campaign_name: str = "New_Lead",
+        metadata: dict | None = None,
+        *,
+        _retry_delay: float = 1.0,
+    ) -> dict:
+        """
+        Trigger Synthflow's "Make Call" workflow for a New Lead outbound call.
+
+        Posts to SYNTHFLOW_LAUNCH_WORKFLOW_URL (the Catch Webhook trigger),
+        NOT to the v2/calls API used by schedule_callback().
+
+        Returns the raw response dict from Synthflow.
+        The caller must treat a successful response as "call requested",
+        not "call completed" — completion arrives via the webhook callback.
+        """
+        self.settings.validate_for_synthflow_launch()
+
+        url = self.settings.synthflow_launch_workflow_url
+        payload: dict = {
+            "phone_number": phone,
+            "lead_name": lead_name,
+            "campaign_name": campaign_name,
+        }
+        if metadata:
+            payload["metadata"] = metadata
+
+        logger.info(
+            "Synthflow launch_new_lead_call | campaign=%s phone=<redacted>",
+            campaign_name,
+        )
+
+        for attempt in range(self.settings.synthflow_retry_max + 1):
+            try:
+                resp = self._http.post(url, headers=self._headers(), json=payload)
+
+                if resp.status_code in _RETRYABLE_STATUS:
+                    if attempt < self.settings.synthflow_retry_max:
+                        logger.warning(
+                            "Synthflow launch transient error | status=%d attempt=%d/%d",
+                            resp.status_code, attempt + 1, self.settings.synthflow_retry_max,
+                        )
+                        time.sleep(_retry_delay * (2**attempt))
+                        continue
+                    raise SynthflowError(
+                        f"Synthflow launch failed after {attempt + 1} attempts: "
+                        f"HTTP {resp.status_code}",
+                        status_code=resp.status_code,
+                    )
+
+                resp.raise_for_status()
+                return resp.json() if resp.content else {}
+
+            except httpx.TimeoutException as exc:
+                if attempt < self.settings.synthflow_retry_max:
+                    logger.warning(
+                        "Synthflow launch timeout | attempt=%d/%d",
+                        attempt + 1, self.settings.synthflow_retry_max,
+                    )
+                    time.sleep(_retry_delay * (2**attempt))
+                    continue
+                raise SynthflowError(
+                    f"Synthflow launch timed out after {attempt + 1} attempts"
+                ) from exc
+
+            except httpx.HTTPStatusError as exc:
+                raise SynthflowError(
+                    f"Synthflow launch HTTP error: {exc.response.status_code}",
+                    status_code=exc.response.status_code,
+                ) from exc
+
+        raise SynthflowError(
+            f"Synthflow launch exhausted {self.settings.synthflow_retry_max} retries"
+        )
+
     # ── Context manager ───────────────────────────────────────────────────────
 
     def close(self) -> None:

@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import app.compat  # noqa: F401 — Windows fork→spawn patch; must precede rq imports
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -86,6 +87,13 @@ def create_app() -> FastAPI:
     # ── Route registration ────────────────────────────────────────────────────
     app.include_router(webhooks.router, prefix="/v1/webhooks", tags=["webhooks"])
     app.include_router(exception_routes.router, prefix="/v1/exceptions", tags=["exceptions"])
+
+    # Dev/staging only: test call launcher (never active in production)
+    if settings.app_env != "production":
+        from app.api.routes import test_calls
+        app.include_router(
+            test_calls.router, prefix="/v1/test/calls", tags=["test-calls"]
+        )
 
     # ── Healthcheck ───────────────────────────────────────────────────────────
     @app.get("/health", tags=["ops"])

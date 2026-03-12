@@ -57,7 +57,7 @@ class Settings(BaseSettings):
 
     # ── Postgres ─────────────────────────────────────────────────────────────
     postgres_host: str = "localhost"
-    postgres_port: int = 5432
+    postgres_port: int = 5433
     postgres_database: str = "cora"
     postgres_username: str = "postgres"
     postgres_password: Optional[str] = None
@@ -120,10 +120,24 @@ class Settings(BaseSettings):
     synthflow_model_id: Optional[str] = None
     synthflow_timeout_seconds: int = 30
     synthflow_retry_max: int = 3
+    # URL of the Synthflow "Make Call" Catch Webhook — triggers initial outbound call
+    synthflow_launch_workflow_url: Optional[str] = None
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
+
+    @field_validator("openai_base_url", mode="before")
+    @classmethod
+    def _normalize_openai_base_url(cls, v: object) -> object:
+        """Prepend https:// if the URL is set but missing a protocol prefix.
+
+        Prevents httpx.UnsupportedProtocol when the SDK builds request URLs
+        from a bare host like 'api.openai.com/v1'.
+        """
+        if isinstance(v, str) and v and not v.startswith(("http://", "https://")):
+            return "https://" + v
+        return v
     openai_model_call_analysis: str = "gpt-4o-mini"
     openai_model_student_summary: str = "gpt-4o-mini"
     openai_model_consent_detector: str = "gpt-4o-mini"
@@ -247,9 +261,15 @@ class Settings(BaseSettings):
             )
 
     def validate_for_openai(self) -> None:
-        """Raise ConfigError if OpenAI credentials are missing."""
+        """Raise ConfigError if OpenAI credentials are missing or misconfigured."""
         if not self.openai_api_key:
             raise ConfigError("OpenAI integration requires OPENAI_API_KEY")
+        if self.openai_base_url and not self.openai_base_url.startswith(
+            ("http://", "https://")
+        ):
+            raise ConfigError(
+                f"OPENAI_BASE_URL must start with 'https://' — got: {self.openai_base_url!r}"
+            )
 
     def validate_for_synthflow(self) -> None:
         """Raise ConfigError if Synthflow credentials are missing."""
@@ -261,6 +281,13 @@ class Settings(BaseSettings):
         if missing:
             raise ConfigError(
                 f"Synthflow integration requires: {', '.join(missing)}"
+            )
+
+    def validate_for_synthflow_launch(self) -> None:
+        """Raise ConfigError if the Make Call workflow URL is not configured."""
+        if not self.synthflow_launch_workflow_url:
+            raise ConfigError(
+                "Synthflow outbound call launch requires SYNTHFLOW_LAUNCH_WORKFLOW_URL"
             )
 
     def validate_for_sheets_sync(self) -> None:

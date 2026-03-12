@@ -251,3 +251,9 @@ def _write_summary_to_ghl(call_id, summary_text, settings) -> None:
         contact_id="unknown",  # resolved from DB in production
         field_updates={field_label: summary_text},
     )
+
+
+# ── Public alias ──────────────────────────────────────────────────────────────
+# classify_call_event is the canonical name exposed to the rest of the system.
+# run_call_analysis is kept for backwards compatibility with existing tests.
+classify_call_event = run_call_analysis

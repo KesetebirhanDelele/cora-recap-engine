@@ -14,7 +14,7 @@ from typing import Optional
 
 from sqlalchemy import DateTime, Index, Integer, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.types import JSON, String
+from sqlalchemy.types import JSON, String, Float
 
 from app.models.base import Base
 
@@ -40,6 +40,16 @@ class CallEvent(Base):
     duration_seconds: Mapped[Optional[int]] = mapped_column(Integer)
     recording_url: Mapped[Optional[str]] = mapped_column(Text)
     start_time_utc: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # Synthflow-specific fields from completed-call payload
+    model_id: Mapped[Optional[str]] = mapped_column(String(255))  # Synthflow assistant/model ID
+    lead_name: Mapped[Optional[str]] = mapped_column(String(255))
+    agent_phone_number: Mapped[Optional[str]] = mapped_column(String(50))
+    # timeline: full Synthflow conversation timeline JSON
+    timeline: Mapped[Optional[list]] = mapped_column(JSON)
+    # telephony timing (Synthflow-reported, may differ from duration_seconds)
+    telephony_duration: Mapped[Optional[float]] = mapped_column(Float)
+    telephony_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    telephony_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # dedupe_key format: "{call_id}:{action_type}" — unique per (call, action) pair
     dedupe_key: Mapped[str] = mapped_column(String(512), nullable=False)
     # raw_payload_json: original webhook body preserved for replay

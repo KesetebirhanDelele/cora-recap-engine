@@ -58,36 +58,104 @@ All build phases are complete. Phase 9 (Google Sheets shadow sync) is **out of s
 cora-recap-engine/
 ├── app/
 │   ├── main.py              # FastAPI app factory
+│   ├── compat.py            # Windows fork→spawn multiprocessing patch
 │   ├── api/
 │   │   └── routes/
-│   │       ├── webhooks.py  # POST /v1/webhooks/calls
-│   │       └── exceptions.py# Operator dashboard actions
+│   │       ├── webhooks.py  # POST /v1/webhooks/calls (Synthflow payload normalizer)
+│   │       ├── exceptions.py# Operator dashboard actions
+│   │       └── test_calls.py# POST /v1/test/calls/outbound (dev/staging only)
 │   ├── worker/
-│   │   └── main.py          # RQ worker entrypoint
+│   │   ├── main.py          # RQ worker entrypoint
+│   │   └── jobs/
+│   │       ├── call_processing.py  # process_call_event, normalize_synthflow_outcome
+│   │       ├── ai_jobs.py          # classify_call_event (run_call_analysis)
+│   │       ├── outbound_jobs.py    # launch_outbound_call_job
+│   │       └── voicemail_jobs.py   # process_voicemail_tier
 │   ├── config/
 │   │   └── settings.py      # Pydantic settings with mode flags
-│   ├── adapters/            # External service clients (stubs until Phase 4+)
+│   ├── adapters/            # External service clients
 │   │   ├── ghl.py
-│   │   ├── synthflow.py
+│   │   ├── synthflow.py     # schedule_callback + launch_new_lead_call
 │   │   ├── openai_client.py
 │   │   └── sheets.py
-│   ├── models/              # SQLAlchemy ORM (Phase 3)
-│   └── services/            # Business logic (Phase 2+)
-├── migrations/              # SQL migration files (Phase 3)
+│   ├── models/              # SQLAlchemy ORM
+│   └── services/            # Business logic
+├── execution/
+│   └── test_scripts/
+│       ├── run_test_call.py  # CLI: trigger a live end-to-end test call
+│       └── watch_test_call.py# CLI: poll DB for test call result
+├── migrations/
+│   └── versions/
+│       ├── 0001_initial_schema.py       # 8 tables
+│       ├── 0002_reporting_views.py      # fact_call_activity, fact_kpi_daily
+│       ├── 0003_audit_log.py            # audit_log table
+│       └── 0004_call_event_synthflow_fields.py  # model_id, timeline, telephony_*
 ├── tests/
 │   ├── unit/
 │   └── integration/
 ├── directives/
 │   ├── spec/                # Binding specifications
 │   └── adr/                 # Architecture decision records
-├── tmp/                     # Scratch space — never committed
+├── Dockerfile               # python:3.12-slim image
+├── docker-compose.yml       # Redis + API + Worker (single command startup)
+├── .dockerignore
 ├── .env.example             # Environment variable template
 └── pyproject.toml           # Dependencies and tooling config
 ```
 
 ---
 
-## Local Setup
+## Local Development (Recommended)
+
+Start the entire stack — Redis, API, and Worker — with one command:
+
+```powershell
+# first time
+docker compose up --build
+# subsequent runs   
+docker compose up
+# watch worker process jobs           
+docker compose logs -f worker  
+```
+
+| Service | URL |
+|---|---|
+| FastAPI API | http://localhost:8000 |
+| API docs (requires `APP_DEBUG=true`) | http://localhost:8000/docs |
+| Redis | localhost:6379 |
+
+Docker Compose handles the startup order automatically. Redis is always ready before the API or worker starts.
+
+**First-time setup:**
+```powershell
+# Copy environment template and fill in credentials
+cp .env.example .env
+# then edit .env
+
+# Build and start
+docker compose up --build
+```
+
+**Rebuild after dependency changes** (e.g. new packages in `pyproject.toml`):
+```powershell
+docker compose up --build
+```
+
+**Run in background:**
+```powershell
+docker compose up -d
+docker compose logs -f   # tail all logs
+docker compose logs -f worker  # tail worker only
+```
+
+**Stop everything:**
+```powershell
+docker compose down
+```
+
+---
+
+## Local Setup (Manual / Without Docker)
 
 ### Prerequisites
 - Python 3.11+
@@ -164,6 +232,113 @@ cora-api
 cora-worker
 # or: python -m app.worker.main
 ```
+
+### Connect to Postgres
+
+```powershell
+psql -h localhost -p 5433 -U postgres -d cora
+```
+
+Shortcut (run once, then use `cora-db`):
+```powershell
+Set-Alias cora-db "psql -h localhost -p 5433 -U postgres -d cora"
+```
+
+---
+
+## Development Startup
+
+Three services must run simultaneously. **Start them in this order — Redis first.**
+
+```
+Redis  →  RQ Worker  →  FastAPI API
+```
+
+### Terminal 1 — Redis (Docker)
+
+```powershell
+docker run -p 6379:6379 redis
+```
+
+Wait for:
+```
+Ready to accept connections
+```
+
+Verify Redis is reachable:
+```powershell
+python -c "import redis; r=redis.Redis(host='localhost', port=6379); print(r.ping())"
+```
+Expected: `True`
+
+### Terminal 2 — FastAPI server
+
+```powershell
+uvicorn app.main:app --reload
+```
+
+Expected:
+```
+Uvicorn running on http://127.0.0.1:8000
+Redis connected | queue=default
+```
+
+### Terminal 3 — RQ worker
+
+```powershell
+python -m app.worker.main
+```
+
+Expected:
+```
+Listening on default, ai, callbacks, retries, sheet_mirror...
+```
+
+---
+
+## End-to-End Test Call
+
+Trigger a real outbound Synthflow call to verify the full pipeline:
+
+**Option A — via the test script (recommended)**
+```powershell
+python execution/test_scripts/run_test_call.py --phone +15714782790 --lead-name "Test User" --campaign-name New_Lead
+```
+
+**Option B — hit Synthflow's Make Call workflow directly (bypasses the app)**
+```powershell
+$body = @{
+    phone_number = "+15714782790"
+    lead_name    = "Test User"
+    campaign_name = "New_Lead"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri $env:SYNTHFLOW_LAUNCH_WORKFLOW_URL `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+After the call is placed the worker logs should show:
+```
+Processing job <uuid>
+launch_outbound_call_job: Synthflow call launched
+```
+
+After the call ends, Synthflow posts the result to `POST /v1/webhooks/calls`. Watch for:
+```
+process_call_event: stored CallEvent | call_id=<id>
+```
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Redis unavailable at startup — webhook jobs will be stored in Postgres only` | Redis not running when API started | Start Redis first (Terminal 1), then restart the API |
+| Worker shows only registry cleanup, no jobs processed | Job stored in Postgres but not enqueued to Redis | Restart the API after Redis is confirmed running |
+| `cannot find context for 'fork'` | RQ imported before compat patch applied | Restart the API — this is fixed in `app/compat.py` |
+| `422 Unprocessable Entity` on webhook | Synthflow payload field names don't match schema | Webhook normalizer in `webhooks.py` handles this — check logs for raw payload |
 
 ### Health check
 

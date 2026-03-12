@@ -61,11 +61,19 @@ class OpenAIClient:
 
     def __init__(self, settings: Settings | None = None, _client: Any | None = None):
         self.settings = settings or get_settings()
-        # _client injected in tests; production creates a real openai.OpenAI instance
-        self._oai = _client or openai.OpenAI(
-            api_key=self.settings.openai_api_key,
-            timeout=float(self.settings.openai_timeout_seconds),
-        )
+        # _client injected in tests; production creates a real openai.OpenAI instance.
+        # base_url is passed explicitly so our validated/normalised settings value wins
+        # over any raw OPENAI_BASE_URL env var the SDK would otherwise pick up directly.
+        if _client is not None:
+            self._oai = _client
+        else:
+            kwargs: dict[str, Any] = {
+                "api_key": self.settings.openai_api_key,
+                "timeout": float(self.settings.openai_timeout_seconds),
+            }
+            if self.settings.openai_base_url:
+                kwargs["base_url"] = self.settings.openai_base_url
+            self._oai = openai.OpenAI(**kwargs)
 
     @staticmethod
     def _strip_prefix(model: str) -> str:
