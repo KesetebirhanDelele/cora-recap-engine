@@ -52,15 +52,22 @@ def get_job_registry() -> dict[str, object]:
     """Return mapping of job_type → job function for the worker dispatcher."""
     from app.worker.jobs.ai_jobs import classify_call_event, run_call_analysis
     from app.worker.jobs.call_processing import process_call_event
+    from app.worker.jobs.crm_jobs import create_crm_task, send_student_summary
+    from app.worker.jobs.lifecycle_jobs import update_lead_state
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
 
     return {
         "process_call_event": process_call_event,
-        "run_call_analysis": run_call_analysis,      # backwards compat
-        "classify_call_event": classify_call_event,  # canonical name
+        "run_call_analysis": run_call_analysis,        # backwards compat
+        "classify_call_event": classify_call_event,    # canonical name
         "process_voicemail_tier": process_voicemail_tier,
         "launch_outbound_call": launch_outbound_call_job,
+        # Feature 2+3: CRM / recap delivery
+        "create_crm_task": create_crm_task,
+        "send_student_summary": send_student_summary,
+        # Feature 4: lead lifecycle
+        "update_lead_state": update_lead_state,
     }
 
 

@@ -332,7 +332,7 @@ def test_validate_new_lead_policy_passes_when_all_set():
         new_vm_tier_none_delay_minutes=60,
         new_vm_tier_0_delay_minutes=1440,
         new_vm_tier_1_delay_minutes=1440,
-        new_vm_tier_2_finalizes=True,
+        new_vm_tier_2_finalize=True,
     )
     s.validate_for_new_lead_vm_policy()  # must not raise
 
@@ -399,7 +399,7 @@ def test_new_lead_tier_delays_are_none_by_default():
     assert s.new_vm_tier_none_delay_minutes is None
     assert s.new_vm_tier_0_delay_minutes is None
     assert s.new_vm_tier_1_delay_minutes is None
-    assert s.new_vm_tier_2_finalizes is None
+    assert s.new_vm_tier_2_finalize is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

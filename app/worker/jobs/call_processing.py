@@ -41,8 +41,17 @@ from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
 
-# Call status values that route to the voicemail path
-_VOICEMAIL_STATUSES = frozenset({"voicemail", "hangup_on_voicemail"})
+# Call status values that route to the voicemail path.
+# All Synthflow variants that indicate the call reached a machine/voicemail inbox.
+VOICEMAIL_STATUSES = frozenset({
+    "voicemail",
+    "hangup_on_voicemail",
+    "left_voicemail",
+    "voicemail_detected",
+    "machine_detected",
+})
+# Private alias for internal routing (module-level name kept for backwards compat)
+_VOICEMAIL_STATUSES = VOICEMAIL_STATUSES
 
 # Call status values that route to the call-through path
 _COMPLETED_STATUSES = frozenset({"completed"})
@@ -65,7 +74,8 @@ def normalize_synthflow_outcome(payload: dict[str, Any]) -> str:
     If no status can be determined the call is defaulted to 'completed' with a
     warning so that the worker always writes a row rather than crashing.
 
-    Returns one of: completed | voicemail | hangup_on_voicemail | failed | <raw>
+    Returns one of: completed | voicemail | hangup_on_voicemail | left_voicemail |
+                    voicemail_detected | machine_detected | failed | <raw>
     """
     _STATUS_ALIASES = ("call_status", "Status", "status", "state", "event")
     call_status = ""
@@ -249,7 +259,8 @@ def process_call_event(job_id: str) -> None:
                 )
             elif call_status in _VOICEMAIL_STATUSES:
                 _route_to_voicemail(
-                    session, job, call_id, contact_id, call_event.id, settings
+                    session, job, call_id, contact_id, call_event.id, settings,
+                    campaign_name=payload.get("campaign_name"),
                 )
             elif call_status in _PENDING_STATUSES:
                 logger.warning(
@@ -306,6 +317,37 @@ def process_call_event(job_id: str) -> None:
             )
             fail_job(session, job, reason=str(exc))
             raise
+
+
+def _make_default_queue(settings):
+    """
+    Build an RQ Queue for the `default` queue using settings.
+
+    Used to immediately enqueue voicemail tier jobs so they are processed
+    without waiting for the worker recovery loop.
+    Returns None if Redis is unreachable (job stays pending in Postgres).
+    """
+    try:
+        import redis
+        from rq import Queue
+
+        url = (
+            settings.redis_url
+            or f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+        )
+        ssl_kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+        auth_kwargs: dict = {}
+        if settings.redis_username:
+            auth_kwargs["username"] = settings.redis_username
+        if settings.redis_password:
+            auth_kwargs["password"] = settings.redis_password
+        conn = redis.from_url(url, **ssl_kwargs, **auth_kwargs)
+        return Queue(settings.rq_default_queue, connection=conn)
+    except Exception as exc:
+        logger.warning(
+            "_make_default_queue: Redis unavailable, job will stay pending | %s", exc
+        )
+        return None
 
 
 def _make_ai_queue(settings):
@@ -371,13 +413,25 @@ def _route_to_call_through(
 
 
 def _route_to_voicemail(
-    session, job, call_id: str, contact_id: str | None, call_event_id: str, settings
+    session, job, call_id: str, contact_id: str | None, call_event_id: str, settings,
+    campaign_name: str | None = None,
 ) -> None:
     """
     Schedule a voicemail tier advancement job.
-    Propagates call_event_id for downstream correlation.
+
+    Enqueues to the `default` RQ queue so the worker picks it up immediately.
+    Falls back to Postgres-only (recovery loop) if Redis is unavailable.
+    Propagates call_event_id and campaign_name for downstream use.
+
+    campaign_name is forwarded so that process_voicemail_tier can populate
+    lead_state.campaign_name when auto-creating a row for a new contact.
+    In production this is typically already set on the lead_state row from GHL.
+    For testing, pass campaign_name in the webhook payload.
     """
+    from app.worker.jobs.voicemail_jobs import process_voicemail_tier
     from app.worker.scheduler import schedule_job
+
+    default_queue = _make_default_queue(settings)
 
     logger.info("process_call_event: routing to voicemail | call_id=%s", call_id)
     schedule_job(
@@ -391,5 +445,8 @@ def _route_to_voicemail(
             "contact_id": contact_id,
             "call_event_id": call_event_id,
             "parent_job_id": job.id,
+            "campaign_name": campaign_name,
         },
+        rq_queue=default_queue,
+        rq_job_func=process_voicemail_tier if default_queue is not None else None,
     )

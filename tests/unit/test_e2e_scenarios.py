@@ -155,11 +155,16 @@ def test_consent_yes_summary_and_task_both_created(session):
     - task_events row exists with status='created'
     Both are created exactly once (idempotency enforced by dedupe).
     """
-    from app.worker.jobs.ai_jobs import _create_ghl_task, _persist_summary
+    from sqlalchemy import select
+
+    from app.models.scheduled_job import ScheduledJob
+    from app.worker.jobs.ai_jobs import _persist_summary
+    from app.worker.jobs.crm_jobs import create_crm_task
 
     call_event_id = str(uuid.uuid4())
+    call_id = str(uuid.uuid4())
     ce = CallEvent(
-        id=call_event_id, call_id=str(uuid.uuid4()), contact_id="cid-01",
+        id=call_event_id, call_id=call_id, contact_id="cid-01",
         dedupe_key=f"e2e-yes:{uuid.uuid4()}", status="completed",
         transcript="A real transcript here.", created_at=_now(),
     )
@@ -179,22 +184,38 @@ def test_consent_yes_summary_and_task_both_created(session):
     _persist_summary(session, call_event_id, summary, consent)
 
     sr = session.scalars(
-        __import__("sqlalchemy", fromlist=["select"]).select(SummaryResult)
-        .where(SummaryResult.call_event_id == call_event_id)
+        select(SummaryResult).where(SummaryResult.call_event_id == call_event_id)
     ).first()
     assert sr is not None
     assert sr.summary_consent == "YES"
     assert sr.student_summary == "Great call!"
 
-    # GHL task creation (shadow mode — returns shadow dict, records task_event)
-    s = _settings()
-    with patch("app.adapters.ghl.GHLClient.create_task",
-               return_value={"shadow": True, "operation": "create_task"}):
-        _create_ghl_task(session, ce.call_id, call_event_id, s)
+    # GHL task creation via create_crm_task worker job (shadow mode)
+    crm_job = ScheduledJob(
+        id=str(uuid.uuid4()),
+        job_type="create_crm_task",
+        entity_type="call",
+        entity_id=call_id,
+        status="pending",
+        run_at=_now(),
+        payload_json={"call_id": call_id, "call_event_id": call_event_id},
+        version=0,
+        created_at=_now(),
+    )
+    session.add(crm_job)
+    session.flush()
+
+    with (
+        patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
+        patch("app.adapters.ghl.GHLClient.create_task",
+              return_value={"shadow": True, "operation": "create_task"}),
+    ):
+        mock_sess.return_value.__enter__ = lambda _: session
+        mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+        create_crm_task(crm_job.id)
 
     te = session.scalars(
-        __import__("sqlalchemy", fromlist=["select"]).select(TaskEvent)
-        .where(TaskEvent.call_event_id == call_event_id)
+        select(TaskEvent).where(TaskEvent.call_event_id == call_event_id)
     ).first()
     assert te is not None
     assert te.status == "created"
@@ -219,26 +240,25 @@ def test_consent_no_summary_persisted_but_no_ghl_write():
     """
     Even when consent=NO, summary_results is persisted for audit.
     But the GHL summary write must NOT be called.
-    """
-    from app.worker.jobs.ai_jobs import _write_summary_to_ghl
 
-    summary = SummaryOutput(
-        student_summary="Some summary.", summary_offered=True,
-        model_used="gpt-4o-mini", prompt_family="student_summary_generator",
-        prompt_version="v1",
-    )
+    The send_student_summary worker job enforces the consent gate: it only
+    writes to GHL when summary_consent == 'YES'. This test validates the
+    ConsentOutput.allows_writeback gate that controls scheduling.
+    """
     consent = ConsentOutput(
         consent="NO", confidence="high",
         model_used="gpt-4o-mini", prompt_family="summary_consent_detector",
         prompt_version="v1",
     )
 
-    # The service layer must NOT call _write_summary_to_ghl when consent=NO
-    s = _settings()
+    # Consent gate: allows_writeback must be False for consent=NO
+    assert consent.allows_writeback is False
+
+    # Verify GHL is never called when gate is False (simulates run_call_analysis logic)
     with patch("app.adapters.ghl.GHLClient.update_contact_fields") as mock_write:
-        # simulate what run_call_analysis does: check allows_writeback first
-        if consent.allows_writeback and summary.student_summary:
-            _write_summary_to_ghl("call-1", summary.student_summary, s)
+        if consent.allows_writeback:
+            # This branch must not be taken
+            mock_write("would-be-a-write")
         mock_write.assert_not_called()
 
 
@@ -296,21 +316,47 @@ def test_duplicate_dedupe_key_rejected(session):
 
 def test_duplicate_task_creation_blocked_by_application_layer(session):
     """
-    Second call to _create_ghl_task with same call_event_id → skipped (no duplicate).
-    Application-layer dedupe guard before partial unique index (Postgres-only).
+    create_crm_task called twice with same call_event_id → GHL called only once.
+    Application-layer dedupe guard: TaskEvent with status='created' blocks the second call.
     """
-    from app.worker.jobs.ai_jobs import _create_ghl_task
+    from sqlalchemy import select
 
-    ce = _make_call_event(session, dedupe_suffix="task-dedup")
-    s = _settings()
+    from app.models.scheduled_job import ScheduledJob
+    from app.worker.jobs.crm_jobs import create_crm_task
 
-    with patch("app.adapters.ghl.GHLClient.create_task",
-               return_value={"shadow": True}) as mock_create:
-        _create_ghl_task(session, ce.call_id, ce.id, s)
+    ce = _make_call_event(session, dedupe_suffix="task-dedup2")
+
+    def _make_crm_job():
+        j = ScheduledJob(
+            id=str(uuid.uuid4()),
+            job_type="create_crm_task",
+            entity_type="call",
+            entity_id=ce.call_id,
+            status="pending",
+            run_at=_now(),
+            payload_json={"call_id": ce.call_id, "call_event_id": ce.id},
+            version=0,
+            created_at=_now(),
+        )
+        session.add(j)
+        session.flush()
+        return j
+
+    with (
+        patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
+        patch("app.adapters.ghl.GHLClient.create_task",
+              return_value={"shadow": True}) as mock_create,
+    ):
+        mock_sess.return_value.__enter__ = lambda _: session
+        mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+
+        job1 = _make_crm_job()
+        create_crm_task(job1.id)
         assert mock_create.call_count == 1
 
-        # Second call must be skipped — task_event already 'created'
-        _create_ghl_task(session, ce.call_id, ce.id, s)
+        # Second job for the same call_event_id must be skipped
+        job2 = _make_crm_job()
+        create_crm_task(job2.id)
         assert mock_create.call_count == 1  # still 1, not 2
 
 
@@ -480,7 +526,7 @@ def test_cold_lead_and_new_lead_both_reach_terminal():
         new_vm_tier_none_delay_minutes=60,
         new_vm_tier_0_delay_minutes=1440,
         new_vm_tier_1_delay_minutes=1440,
-        new_vm_tier_2_finalizes=True,
+        new_vm_tier_2_finalize=True,
     )
     new_terminal = get_new_lead_policy("2", new_s)
     assert new_terminal.next_tier == "3"

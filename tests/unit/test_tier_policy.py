@@ -150,7 +150,7 @@ def test_new_lead_all_delays_set_returns_policy():
         new_vm_tier_none_delay_minutes=60,
         new_vm_tier_0_delay_minutes=1440,
         new_vm_tier_1_delay_minutes=1440,
-        new_vm_tier_2_finalizes=True,
+        new_vm_tier_2_finalize=True,
     )
     from app.services.tier_policy import get_new_lead_policy
 
@@ -165,7 +165,7 @@ def test_new_lead_terminal_tier():
         new_vm_tier_none_delay_minutes=60,
         new_vm_tier_0_delay_minutes=1440,
         new_vm_tier_1_delay_minutes=1440,
-        new_vm_tier_2_finalizes=True,
+        new_vm_tier_2_finalize=True,
     )
     from app.services.tier_policy import get_new_lead_policy
 

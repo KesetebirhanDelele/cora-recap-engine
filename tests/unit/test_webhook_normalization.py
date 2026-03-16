@@ -15,6 +15,9 @@ Covers:
   11. webhook route returns 202 with Call_id payload (integration)
   12. webhook route returns 422 with no call_id at all
   13. webhook route logs original payload keys on 422
+  14. contact_id derived from phone_number_to when contact_id absent
+  15. contact_id preserved when already present (no overwrite from phone_number_to)
+  16. contact_id not set when both contact_id and phone_number_to absent
 """
 from __future__ import annotations
 
@@ -94,6 +97,27 @@ def test_no_call_id_variants_returns_missing():
     payload = {"duration": 30, "transcript": "hi"}
     result = normalize_synthflow_payload(payload)
     assert not result.get("call_id")
+
+
+def test_contact_id_derived_from_phone_number_to():
+    """Synthflow payloads without contact_id use phone_number_to as the key."""
+    payload = {"call_id": "x", "phone_number_to": "+15550001234"}
+    result = normalize_synthflow_payload(payload)
+    assert result["contact_id"] == "+15550001234"
+
+
+def test_contact_id_not_overwritten_when_present():
+    """Real GHL contact_id takes precedence over phone_number_to."""
+    payload = {"call_id": "x", "contact_id": "ghl-abc", "phone_number_to": "+15550001234"}
+    result = normalize_synthflow_payload(payload)
+    assert result["contact_id"] == "ghl-abc"
+
+
+def test_contact_id_absent_when_no_phone_number_to():
+    """Neither field present — contact_id stays absent (handled downstream)."""
+    payload = {"call_id": "x", "status": "completed"}
+    result = normalize_synthflow_payload(payload)
+    assert not result.get("contact_id")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -3,10 +3,15 @@ AI analysis job — runs on the `ai` RQ queue.
 
 Executes call analysis, student summary generation, and consent detection
 for a completed non-voicemail call. Writes outputs to classification_results
-and summary_results tables. Creates a GHL task (shadow-gated).
+and summary_results tables.
+
+After AI results are persisted, three downstream jobs are scheduled:
+  - create_crm_task    → callbacks queue (Feature 2)
+  - send_student_summary → callbacks queue (Feature 3, consent-gated at job level)
+  - update_lead_state  → default queue   (Feature 4)
 
 Consent gate: summary writeback to GHL occurs ONLY when consent == 'YES'.
-              Enforced here by checking ConsentOutput.allows_writeback.
+              Enforced in send_student_summary (crm_jobs.py).
 
 Phase 6: full AI orchestration wired. GHL task creation shadow-gated.
 Phase 4 GHL client is used for task creation.
@@ -35,9 +40,10 @@ def run_call_analysis(job_id: str) -> None:
     3. generate_call_analysis → ClassificationResult row
     4. generate_student_summary → SummaryResult row
     5. detect_consent → update SummaryResult.summary_consent
-    6. If consent YES → write summary to GHL (shadow-gated)
-    7. Create GHL task (shadow-gated, one per call — dedupe via task_events)
-    8. Complete job
+    6. Schedule create_crm_task (callbacks queue, shadow-gated)
+    7. Schedule send_student_summary (callbacks queue, consent-gated inside job)
+    8. Schedule update_lead_state (default queue)
+    9. Complete job
     """
     settings = get_settings()
     worker_id = get_worker_id()
@@ -52,6 +58,7 @@ def run_call_analysis(job_id: str) -> None:
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")
         call_event_id = payload.get("call_event_id")
+        contact_id = payload.get("contact_id")
 
         try:
             logger.info(
@@ -59,7 +66,6 @@ def run_call_analysis(job_id: str) -> None:
             )
 
             # Load call event for transcript
-
             from app.models.call_event import CallEvent
 
             call_event = None
@@ -100,22 +106,29 @@ def run_call_analysis(job_id: str) -> None:
             _persist_classification(session, call_event_id, analysis)
             _persist_summary(session, call_event_id, summary, consent)
 
-            # GHL task creation (shadow-gated; idempotency enforced by task_events)
-            if settings.task_create_on_completed_call:
-                _create_ghl_task(session, call_id, call_event_id, settings)
+            # Schedule downstream jobs (all run after this job completes)
+            callbacks_queue = _make_callbacks_queue(settings)
+            default_queue = _make_default_queue(settings)
 
-            # GHL summary writeback (consent-gated)
-            if (
-                settings.enable_student_summary_writeback
-                and settings.summary_writeback_requires_consent
-                and consent.allows_writeback
-                and summary.student_summary
-            ):
-                _write_summary_to_ghl(
-                    call_id=call_id,
-                    summary_text=summary.student_summary,
-                    settings=settings,
+            # Feature 2: CRM task creation
+            if settings.task_create_on_completed_call:
+                _schedule_crm_task(
+                    session, call_id, call_event_id, contact_id,
+                    callbacks_queue, settings,
                 )
+
+            # Feature 3: Student summary delivery (consent gate inside the job)
+            if settings.enable_student_summary_writeback:
+                _schedule_send_summary(
+                    session, call_id, call_event_id, contact_id,
+                    callbacks_queue, settings,
+                )
+
+            # Feature 4: Lead lifecycle state update
+            _schedule_update_lead_state(
+                session, call_id, call_event_id, contact_id,
+                default_queue, settings,
+            )
 
             complete_job(session, job)
 
@@ -190,66 +203,133 @@ def _persist_summary(session, call_event_id, summary, consent) -> None:
     session.flush()
 
 
-def _create_ghl_task(session, call_id, call_event_id, settings) -> None:
-    """Create a GHL task for the completed call. Shadow-gated. Idempotent."""
-    # Check dedupe: only create if no 'created' task exists for this call
-    if call_event_id:
-        from sqlalchemy import select
+# ── Queue helpers ─────────────────────────────────────────────────────────────
 
-        from app.models.task_event import TaskEvent
+def _make_callbacks_queue(settings):
+    """
+    Build an RQ Queue for the `callbacks` queue.
 
-        existing = session.scalars(
-            select(TaskEvent).where(
-                TaskEvent.call_event_id == call_event_id,
-                TaskEvent.status == "created",
-            )
-        ).first()
-        if existing:
-            logger.info(
-                "_create_ghl_task: task already exists for call | call_event_id=%s",
-                call_event_id,
-            )
-            return
+    Returns None if Redis is unreachable.
+    """
+    try:
+        import redis
+        from rq import Queue
 
-    from app.adapters.ghl import GHLClient
-
-    ghl = GHLClient(settings=settings)
-    contact_id = ""  # In production, resolved from call_event.contact_id
-    result = ghl.create_task(
-        contact_id=contact_id or "unknown",
-        title=f"Completed call — {call_id}",
-        description=f"Automated task for completed call {call_id}",
-    )
-
-    # Record the task attempt (shadow or real)
-    if call_event_id:
-        from app.models.task_event import TaskEvent
-
-        task_event = TaskEvent(
-            id=str(uuid.uuid4()),
-            call_event_id=call_event_id,
-            provider_task_id=result.get("id") if not result.get("shadow") else None,
-            status="created",
-            created_at=datetime.now(tz=timezone.utc),
+        url = (
+            settings.redis_url
+            or f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
         )
-        session.add(task_event)
-        session.flush()
+        ssl_kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+        auth_kwargs: dict = {}
+        if settings.redis_username:
+            auth_kwargs["username"] = settings.redis_username
+        if settings.redis_password:
+            auth_kwargs["password"] = settings.redis_password
+        conn = redis.from_url(url, **ssl_kwargs, **auth_kwargs)
+        return Queue(settings.rq_callback_queue, connection=conn)
+    except Exception as exc:
+        logger.warning("_make_callbacks_queue: Redis unavailable | %s", exc)
+        return None
 
 
-def _write_summary_to_ghl(call_id, summary_text, settings) -> None:
-    """Write student summary to GHL recap field. Consent already confirmed by caller."""
-    from app.adapters.ghl import GHLClient
+def _make_default_queue(settings):
+    """
+    Build an RQ Queue for the `default` queue.
 
-    ghl = GHLClient(settings=settings)
-    field_label = settings.ghl_field_student_summary or "Student Summary"
-    # contact_id would be resolved from the call_event in production
-    logger.info(
-        "_write_summary_to_ghl: consent=YES | call_id=%s shadow=%s",
-        call_id, not settings.ghl_writes_enabled,
+    Returns None if Redis is unreachable.
+    """
+    try:
+        import redis
+        from rq import Queue
+
+        url = (
+            settings.redis_url
+            or f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+        )
+        ssl_kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+        auth_kwargs: dict = {}
+        if settings.redis_username:
+            auth_kwargs["username"] = settings.redis_username
+        if settings.redis_password:
+            auth_kwargs["password"] = settings.redis_password
+        conn = redis.from_url(url, **ssl_kwargs, **auth_kwargs)
+        return Queue(settings.rq_default_queue, connection=conn)
+    except Exception as exc:
+        logger.warning("_make_default_queue: Redis unavailable | %s", exc)
+        return None
+
+
+# ── Downstream job schedulers ──────────────────────────────────────────────────
+
+def _schedule_crm_task(
+    session, call_id, call_event_id, contact_id, callbacks_queue, settings
+) -> None:
+    """Schedule create_crm_task on the callbacks queue."""
+    from app.worker.jobs.crm_jobs import create_crm_task
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session,
+        job_type="create_crm_task",
+        entity_type="call",
+        entity_id=call_id or call_event_id,
+        run_at=datetime.now(tz=timezone.utc),
+        payload={
+            "call_id": call_id,
+            "call_event_id": call_event_id,
+            "contact_id": contact_id,
+            "parent_job_id": None,
+        },
+        rq_queue=callbacks_queue,
+        rq_job_func=create_crm_task if callbacks_queue is not None else None,
     )
-    ghl.update_contact_fields(
-        contact_id="unknown",  # resolved from DB in production
-        field_updates={field_label: summary_text},
+
+
+def _schedule_send_summary(
+    session, call_id, call_event_id, contact_id, callbacks_queue, settings
+) -> None:
+    """Schedule send_student_summary on the callbacks queue."""
+    from app.worker.jobs.crm_jobs import send_student_summary
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session,
+        job_type="send_student_summary",
+        entity_type="call",
+        entity_id=call_id or call_event_id,
+        run_at=datetime.now(tz=timezone.utc),
+        payload={
+            "call_id": call_id,
+            "call_event_id": call_event_id,
+            "contact_id": contact_id,
+            "parent_job_id": None,
+        },
+        rq_queue=callbacks_queue,
+        rq_job_func=send_student_summary if callbacks_queue is not None else None,
+    )
+
+
+def _schedule_update_lead_state(
+    session, call_id, call_event_id, contact_id, default_queue, settings
+) -> None:
+    """Schedule update_lead_state on the default queue."""
+    from app.worker.jobs.lifecycle_jobs import update_lead_state
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session,
+        job_type="update_lead_state",
+        entity_type="call",
+        entity_id=call_id or call_event_id,
+        run_at=datetime.now(tz=timezone.utc),
+        payload={
+            "call_id": call_id,
+            "call_event_id": call_event_id,
+            "contact_id": contact_id,
+            "parent_job_id": None,
+        },
+        rq_queue=default_queue,
+        rq_job_func=update_lead_state if default_queue is not None else None,
     )
 
 

@@ -15,17 +15,23 @@ Stop condition (from autonomous execution contract):
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
 from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
 from app.worker.exceptions import create_exception
+from app.worker.scheduler import schedule_job
 
 logger = logging.getLogger(__name__)
 
 # Canonical tier progression
 _TIER_SEQUENCE = [None, "0", "1", "2", "3"]
 _TERMINAL_TIER = "3"
+
+# Maps tier → 1-based attempt number (for observability in payload_json)
+_TIER_TO_ATTEMPT: dict[str | None, int] = {None: 1, "0": 2, "1": 3}
 
 
 def process_voicemail_tier(job_id: str) -> None:
@@ -54,6 +60,7 @@ def process_voicemail_tier(job_id: str) -> None:
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")
         contact_id = payload.get("contact_id", "")
+        payload_campaign_name = payload.get("campaign_name") or ""
 
         try:
             logger.info(
@@ -73,13 +80,33 @@ def process_voicemail_tier(job_id: str) -> None:
                 ).first()
 
             if lead is None:
-                raise ValueError(
-                    f"Cannot advance voicemail tier — lead_state not found | "
-                    f"contact_id={contact_id}"
+                if not contact_id:
+                    raise ValueError(
+                        f"Cannot create lead_state — contact_id is empty | job_id={job_id}"
+                    )
+                logger.info(
+                    "process_voicemail_tier: no lead_state found, creating | "
+                    "contact_id=%s job_id=%s",
+                    contact_id, job_id,
                 )
+                now = datetime.now(tz=timezone.utc)
+                lead = LeadState(
+                    id=str(uuid.uuid4()),
+                    contact_id=contact_id,
+                    campaign_name=payload_campaign_name or None,
+                    ai_campaign_value=None,
+                    version=0,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(lead)
+                session.flush()
 
             current_tier = lead.ai_campaign_value  # None | '0' | '1' | '2' | '3'
-            campaign_name = lead.campaign_name or ""
+            # campaign_name: prefer the value stored on the row (set by GHL sync),
+            # fall back to what was forwarded in the job payload (useful for testing
+            # and for contacts whose lead_state was auto-created this invocation).
+            campaign_name = lead.campaign_name or payload_campaign_name
             next_tier = _get_next_tier(current_tier)
 
             if next_tier is None:
@@ -108,7 +135,7 @@ def process_voicemail_tier(job_id: str) -> None:
             if policy.is_terminal:
                 _finalize_campaign(session, lead, settings)
 
-            # Non-terminal tier: schedule Synthflow callback + next tier check
+            # Non-terminal tier: schedule Synthflow callback + retry outbound call
             elif policy.schedule_synthflow_callback:
                 phone = lead.normalized_phone or ""
                 if not phone:
@@ -124,6 +151,11 @@ def process_voicemail_tier(job_id: str) -> None:
                     )
                 else:
                     _schedule_synthflow_callback(session, phone, contact_id, policy, settings)
+
+                # Schedule a retry outbound call at the tier-appropriate delay
+                _schedule_retry_outbound_call(
+                    session, contact_id, phone, call_id, current_tier, campaign_name, settings
+                )
 
             complete_job(session, job)
 
@@ -163,8 +195,6 @@ def _get_next_tier(current_tier: str | None) -> str | None:
 
 def _advance_tier(session, lead, next_tier: str) -> None:
     """Update lead_state ai_campaign_value to next_tier using optimistic concurrency."""
-    from datetime import datetime, timezone
-
     from sqlalchemy import update
 
     from app.models.lead_state import LeadState
@@ -212,6 +242,123 @@ def _finalize_campaign(session, lead, settings) -> None:
     )
 
 
+def _make_default_queue(settings):
+    """
+    Build an RQ Queue for the `default` queue.
+
+    Returns None if Redis is unreachable (job stays pending in Postgres).
+    """
+    try:
+        import redis
+        from rq import Queue
+
+        url = (
+            settings.redis_url
+            or f"redis://{settings.redis_host}:{settings.redis_port}/{settings.redis_db}"
+        )
+        ssl_kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+        auth_kwargs: dict = {}
+        if settings.redis_username:
+            auth_kwargs["username"] = settings.redis_username
+        if settings.redis_password:
+            auth_kwargs["password"] = settings.redis_password
+        conn = redis.from_url(url, **ssl_kwargs, **auth_kwargs)
+        return Queue(settings.rq_default_queue, connection=conn)
+    except Exception as exc:
+        logger.warning("_make_default_queue: Redis unavailable, job will stay pending | %s", exc)
+        return None
+
+
+def _schedule_retry_outbound_call(
+    session, contact_id: str, phone: str, call_id: str, current_tier: str | None,
+    campaign_name: str, settings,
+) -> None:
+    """
+    Schedule a launch_outbound_call retry job after a voicemail is detected.
+
+    Retry delays come from settings, keyed by campaign:
+      New Lead → new_vm_tier_none/0/1_delay_minutes; stop when new_vm_tier_2_finalize=True
+      Cold Lead → cold_vm_tier_none/0/1_delay_minutes; stop when cold_vm_tier_2_finalizes=True
+
+    vm_retry_attempt (1-based) is stored in the job payload for observability.
+    Tier '2' with finalize=True and tier '3' produce no retry job.
+
+    phone is forwarded as phone_number so launch_outbound_call_job can dial the contact.
+    """
+    campaign_lower = (campaign_name or "").strip().lower()
+
+    if campaign_lower == "cold lead":
+        delay_map: dict[str | None, int | None] = {
+            None: settings.cold_vm_tier_none_delay_minutes,
+            "0":  settings.cold_vm_tier_0_delay_minutes,
+            "1":  settings.cold_vm_tier_1_delay_minutes,
+        }
+        stop_at_tier_2 = bool(settings.cold_vm_tier_2_finalizes)
+    else:
+        # New Lead (or unknown campaign — default to new_vm_tier_* with a warning)
+        if campaign_lower not in ("new lead", "new_lead"):
+            logger.warning(
+                "_schedule_retry_outbound_call: unknown campaign %r, "
+                "falling back to new_vm_tier_* settings | contact_id=%s",
+                campaign_name, contact_id,
+            )
+        delay_map = {
+            None: settings.new_vm_tier_none_delay_minutes,
+            "0":  settings.new_vm_tier_0_delay_minutes,
+            "1":  settings.new_vm_tier_1_delay_minutes,
+        }
+        stop_at_tier_2 = settings.new_vm_tier_2_finalize is True
+
+    # Tier '2' with finalize flag → stop
+    if current_tier == "2" and stop_at_tier_2:
+        logger.info(
+            "_schedule_retry_outbound_call: tier '2' + finalize=true, "
+            "no retry | contact_id=%s campaign=%s",
+            contact_id, campaign_name,
+        )
+        return
+
+    delay_minutes = delay_map.get(current_tier)
+    if delay_minutes is None:
+        logger.info(
+            "_schedule_retry_outbound_call: no delay configured for tier %r, "
+            "skipping | contact_id=%s campaign=%s",
+            current_tier, contact_id, campaign_name,
+        )
+        return
+
+    attempt_number = _TIER_TO_ATTEMPT.get(current_tier, 0)
+
+    from datetime import timedelta
+
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    run_at = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
+    default_queue = _make_default_queue(settings)
+
+    schedule_job(
+        session=session,
+        job_type="launch_outbound_call",
+        entity_type="lead",
+        entity_id=contact_id,
+        run_at=run_at,
+        payload={
+            "contact_id": contact_id,
+            "phone_number": phone,
+            "call_id": call_id,
+            "vm_retry_attempt": attempt_number,
+            "delay_minutes": delay_minutes,
+            "campaign_name": campaign_name,
+        },
+        rq_queue=default_queue,
+        rq_job_func=launch_outbound_call_job if default_queue is not None else None,
+    )
+    logger.info(
+        "voicemail retry scheduled | contact_id=%s tier=%r delay=%d run_at=%s",
+        contact_id, current_tier, delay_minutes, run_at.isoformat(),
+    )
+
+
 def _schedule_synthflow_callback(session, phone, contact_id, policy, settings) -> None:
     """
     Schedule a Synthflow callback and create a durable scheduled_job record.
@@ -219,10 +366,9 @@ def _schedule_synthflow_callback(session, phone, contact_id, policy, settings) -
     The callback is scheduled with a delay per the campaign policy.
     A scheduled_jobs record is created first (Postgres-authoritative).
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
 
     from app.adapters.synthflow import SynthflowClient
-    from app.worker.scheduler import schedule_job
 
     delay = timedelta(minutes=policy.delay_minutes)
     run_at = datetime.now(tz=timezone.utc) + delay

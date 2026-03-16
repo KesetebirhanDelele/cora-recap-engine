@@ -84,6 +84,17 @@ def normalize_synthflow_payload(body: dict[str, Any]) -> dict[str, Any]:
     if not payload.get("direction"):
         payload["direction"] = "outbound"
 
+    # ── contact_id: fall back to phone_number_to when absent ─────────────────
+    # Synthflow webhooks do not always include a GHL contact_id.
+    # phone_number_to identifies the called party and is used as a stable key
+    # for lead_state lookup / creation until a real GHL contact_id is available.
+    if not payload.get("contact_id") and payload.get("phone_number_to"):
+        payload["contact_id"] = payload["phone_number_to"]
+        logger.debug(
+            "normalize_synthflow_payload: derived contact_id from phone_number_to=%r",
+            payload["contact_id"],
+        )
+
     return payload
 
 

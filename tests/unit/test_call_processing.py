@@ -22,6 +22,13 @@ Covers:
   18. process_call_event: call-through route (call_status=completed) creates CallEvent + routes
   19. process_call_event: missing call_id creates exception + fails job
   20. process_call_event: unknown status creates exception + fails job
+  21. normalize_synthflow_outcome: left_voicemail is a voicemail status
+  22. normalize_synthflow_outcome: voicemail_detected is a voicemail status
+  23. normalize_synthflow_outcome: machine_detected is a voicemail status
+  24. process_call_event: left_voicemail routes to voicemail path
+  25. process_call_event: voicemail_detected routes to voicemail path
+  26. process_call_event: machine_detected routes to voicemail path
+  27. VOICEMAIL_STATUSES: all five variants present in the public constant
 """
 from __future__ import annotations
 
@@ -36,6 +43,7 @@ from sqlalchemy.orm import Session
 from app.models import Base, ScheduledJob
 from app.models.call_event import CallEvent
 from app.worker.jobs.call_processing import (
+    VOICEMAIL_STATUSES,
     _create_call_event,
     _log_executed_actions,
     _parse_datetime,
@@ -367,3 +375,64 @@ def test_process_call_event_unknown_status_defaults_to_call_through():
         mock_exc.assert_called_once()
         # Defaulted to call-through path
         mock_ct.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 21–27: Expanded voicemail status variants
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_normalize_left_voicemail():
+    result = normalize_synthflow_outcome({"call_status": "left_voicemail"})
+    assert result == "left_voicemail"
+
+
+def test_normalize_voicemail_detected():
+    result = normalize_synthflow_outcome({"call_status": "voicemail_detected"})
+    assert result == "voicemail_detected"
+
+
+def test_normalize_machine_detected():
+    result = normalize_synthflow_outcome({"call_status": "machine_detected"})
+    assert result == "machine_detected"
+
+
+@pytest.mark.parametrize("vm_status", [
+    "left_voicemail",
+    "voicemail_detected",
+    "machine_detected",
+])
+def test_process_call_event_voicemail_variants_route_to_voicemail(vm_status):
+    """All expanded voicemail statuses must route to _route_to_voicemail."""
+    from app.worker.jobs.call_processing import process_call_event
+
+    call_id = str(uuid.uuid4())
+    payload = {"call_id": call_id, "call_status": vm_status}
+    job = _make_mock_job(payload)
+
+    with (
+        patch("app.worker.jobs.call_processing.get_sync_session") as mock_sess_ctx,
+        patch("app.worker.jobs.call_processing.claim_job", return_value=job),
+        patch("app.worker.jobs.call_processing.mark_running"),
+        patch("app.worker.jobs.call_processing.complete_job"),
+        patch("app.worker.jobs.call_processing.fail_job"),
+        patch("app.worker.jobs.call_processing._create_call_event") as mock_create,
+        patch("app.worker.jobs.call_processing._route_to_voicemail") as mock_vm,
+        patch("app.worker.jobs.call_processing._route_to_call_through") as mock_ct,
+        patch("app.worker.jobs.call_processing.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.call_processing.get_settings"),
+    ):
+        mock_sess_ctx.return_value.__enter__ = lambda s, *a: MagicMock()
+        mock_sess_ctx.return_value.__exit__ = MagicMock(return_value=False)
+        mock_create.return_value = MagicMock(id=f"ce-{vm_status}")
+
+        process_call_event("job-1")
+
+        mock_vm.assert_called_once()
+        mock_ct.assert_not_called()
+
+
+def test_voicemail_statuses_constant_has_all_five_variants():
+    """VOICEMAIL_STATUSES must include all five recognised variants."""
+    expected = {"voicemail", "hangup_on_voicemail", "left_voicemail",
+                "voicemail_detected", "machine_detected"}
+    assert expected == VOICEMAIL_STATUSES

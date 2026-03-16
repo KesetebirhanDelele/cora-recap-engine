@@ -178,7 +178,7 @@ class Settings(BaseSettings):
     new_vm_tier_none_delay_minutes: Optional[int] = None
     new_vm_tier_0_delay_minutes: Optional[int] = None
     new_vm_tier_1_delay_minutes: Optional[int] = None
-    new_vm_tier_2_finalizes: Optional[bool] = None
+    new_vm_tier_2_finalize: Optional[bool] = None
     vm_final_stop_value: int = 3
     shadow_mode_enabled: bool = True
     # 90-day default: must survive delayed retries, replayed webhooks,
@@ -322,8 +322,8 @@ class Settings(BaseSettings):
             missing.append("NEW_VM_TIER_0_DELAY_MINUTES")
         if self.new_vm_tier_1_delay_minutes is None:
             missing.append("NEW_VM_TIER_1_DELAY_MINUTES")
-        if self.new_vm_tier_2_finalizes is None:
-            missing.append("NEW_VM_TIER_2_FINALIZES")
+        if self.new_vm_tier_2_finalize is None:
+            missing.append("NEW_VM_TIER_2_FINALIZE")
         if missing:
             raise ConfigError(
                 f"New Lead VM tier policy requires: {', '.join(missing)}"

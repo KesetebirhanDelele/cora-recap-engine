@@ -21,6 +21,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes import admin as admin_routes
 from app.api.routes import exceptions as exception_routes
 from app.api.routes import webhooks
 from app.config import get_settings
@@ -87,6 +88,7 @@ def create_app() -> FastAPI:
     # ── Route registration ────────────────────────────────────────────────────
     app.include_router(webhooks.router, prefix="/v1/webhooks", tags=["webhooks"])
     app.include_router(exception_routes.router, prefix="/v1/exceptions", tags=["exceptions"])
+    app.include_router(admin_routes.router, prefix="/v1/admin", tags=["admin"])
 
     # Dev/staging only: test call launcher (never active in production)
     if settings.app_env != "production":
