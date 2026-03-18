@@ -405,3 +405,16 @@ See [directives/spec/11_runbook.md](directives/spec/11_runbook.md).
 
 Full specifications: [directives/spec/](directives/spec/)
 Architecture decisions: [directives/adr/](directives/adr/)
+
+## Code to see Redus Queue:
+docker run -p 9181:9181 `
+--network cora-recap-engine_default `
+-e RQ_DASHBOARD_REDIS_URL=redis://redis:6379 `
+eoranged/rq-dashboard
+
+
+## Flushing old Redis Queues
+docker exec -it cora-recap-engine-redis-1 redis-cli
+127.0.0.1:6379> flushall
+OK
+127.0.0.1:6379> 

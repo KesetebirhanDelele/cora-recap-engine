@@ -7,7 +7,6 @@ Canonical job state lives in Postgres; Redis/RQ is the execution rail only.
 Queue topology:
   default         — process_call_event, process_voicemail_tier
   ai              — run_call_analysis
-  callbacks       — schedule_synthflow_callback (Phase 7)
   retries         — retry_failed_job
   sheet_mirror    — sync_sheet_rows (Phase 9, out of scope)
 
@@ -29,12 +28,87 @@ from __future__ import annotations
 import logging
 import platform
 import sys
+import threading
+import time
+from datetime import datetime, timezone
 
 import app.compat  # noqa: F401 — Windows fork→spawn patch; must precede rq imports
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Maps job_type → settings attribute that holds the queue name.
+# Used by the scheduler loop to route due jobs to the correct RQ queue.
+_JOB_QUEUE_ATTRS: dict[str, str] = {
+    "process_call_event":    "rq_default_queue",
+    "process_voicemail_tier": "rq_default_queue",
+    "launch_outbound_call":  "rq_default_queue",
+    "run_call_analysis":     "rq_ai_queue",
+    "classify_call_event":   "rq_ai_queue",
+    "create_crm_task":       "rq_default_queue",
+    "send_student_summary":  "rq_default_queue",
+    "update_lead_state":     "rq_default_queue",
+}
+
+
+def _run_scheduler_loop(
+    job_type_queues: dict,
+    job_registry: dict,
+    interval_seconds: int = 30,
+) -> None:
+    """
+    Background daemon thread: scan Postgres for due pending jobs and enqueue in RQ.
+
+    Runs every interval_seconds. Picks up:
+      - Future-dated jobs whose run_at has now passed (e.g. voicemail retry calls)
+      - Jobs that survived a Redis clear or worker restart
+
+    This is the component that makes delayed scheduling work. schedule_job() only
+    enqueues in RQ immediately when run_at <= now at creation time. For future jobs
+    (run_at = now + N minutes), this loop is what eventually triggers them.
+    """
+    from sqlalchemy import select
+
+    from app.db import get_sync_session
+    from app.models.scheduled_job import ScheduledJob
+    from app.worker.scheduler import enqueue_now
+
+    logger.info("scheduler_loop: started | interval=%ds", interval_seconds)
+
+    while True:
+        try:
+            with get_sync_session() as session:
+                now = datetime.now(tz=timezone.utc)
+                due_jobs = session.scalars(
+                    select(ScheduledJob)
+                    .where(
+                        ScheduledJob.status == "pending",
+                        ScheduledJob.run_at <= now,
+                    )
+                    .limit(100)
+                ).all()
+
+                if due_jobs:
+                    logger.info("scheduler_loop: found %d due job(s)", len(due_jobs))
+
+                for job in due_jobs:
+                    rq_queue = job_type_queues.get(job.job_type)
+                    job_func = job_registry.get(job.job_type)
+
+                    if rq_queue is None or job_func is None:
+                        logger.warning(
+                            "scheduler_loop: no handler for job_type=%r | job_id=%s",
+                            job.job_type, job.id,
+                        )
+                        continue
+
+                    enqueue_now(session, job, rq_queue, job_func)
+
+        except Exception as exc:
+            logger.exception("scheduler_loop: error | %s", exc)
+
+        time.sleep(interval_seconds)
 
 
 def get_queues() -> list[str]:
@@ -105,6 +179,25 @@ def run() -> None:
         redis_conn = redis.from_url(url, **ssl_kwargs, **auth_kwargs)
 
         qs = [Queue(name=q, connection=redis_conn) for q in queues]
+
+        # Build job_type → Queue map for the scheduler loop
+        queue_by_name = {q.name: q for q in qs}
+        registry = get_job_registry()
+        job_type_queues = {
+            jt: queue_by_name.get(getattr(settings, attr, settings.rq_default_queue))
+            for jt, attr in _JOB_QUEUE_ATTRS.items()
+        }
+
+        # Start the scheduler polling loop in a daemon thread.
+        # This picks up delayed jobs (e.g. voicemail retries) once run_at arrives.
+        t = threading.Thread(
+            target=_run_scheduler_loop,
+            args=(job_type_queues, registry),
+            daemon=True,
+            name="cora-scheduler-loop",
+        )
+        t.start()
+        logger.info("Scheduler loop started (daemon thread)")
 
         # Windows does not support fork(); use SimpleWorker (thread-based).
         # Linux/macOS use the standard fork-based Worker for better isolation.

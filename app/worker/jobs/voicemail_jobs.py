@@ -59,8 +59,16 @@ def process_voicemail_tier(job_id: str) -> None:
         mark_running(session, job)
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")
-        contact_id = payload.get("contact_id", "")
-        payload_campaign_name = payload.get("campaign_name") or ""
+        # Derive contact_id from any available phone field when absent.
+        # Synthflow webhooks may not include a GHL contact_id; phone is the fallback key.
+        contact_id = (
+            payload.get("contact_id")
+            or payload.get("phone")
+            or payload.get("phone_number")
+            or ""
+        )
+        payload_campaign_name = payload.get("campaign_name") or "New Lead"
+        payload_lead_name = payload.get("lead_name", "") or ""
 
         try:
             logger.info(
@@ -82,17 +90,27 @@ def process_voicemail_tier(job_id: str) -> None:
             if lead is None:
                 if not contact_id:
                     raise ValueError(
-                        f"Cannot create lead_state — contact_id is empty | job_id={job_id}"
+                        f"Cannot create lead_state — contact_id and phone are both empty | "
+                        f"job_id={job_id}"
                     )
                 logger.info(
                     "process_voicemail_tier: no lead_state found, creating | "
                     "contact_id=%s job_id=%s",
                     contact_id, job_id,
                 )
+                # Resolve the phone to store in normalized_phone.
+                # When contact_id was derived from a phone field (no GHL id yet),
+                # the phone fields in the payload hold the dialable number.
+                derived_phone = (
+                    payload.get("phone_number")
+                    or payload.get("phone")
+                    or contact_id
+                ) or None
                 now = datetime.now(tz=timezone.utc)
                 lead = LeadState(
                     id=str(uuid.uuid4()),
                     contact_id=contact_id,
+                    normalized_phone=derived_phone,
                     campaign_name=payload_campaign_name or None,
                     ai_campaign_value=None,
                     version=0,
@@ -107,16 +125,28 @@ def process_voicemail_tier(job_id: str) -> None:
             # fall back to what was forwarded in the job payload (useful for testing
             # and for contacts whose lead_state was auto-created this invocation).
             campaign_name = lead.campaign_name or payload_campaign_name
+
+            # Already at terminal tier — nothing to do, complete cleanly.
+            if current_tier == _TERMINAL_TIER:
+                logger.info(
+                    "process_voicemail_tier: already at final tier, no retries | "
+                    "contact_id=%s tier=%s",
+                    contact_id, current_tier,
+                )
+                complete_job(session, job)
+                return
+
             next_tier = _get_next_tier(current_tier)
 
             if next_tier is None:
+                # Unknown tier value — this is a real data problem, not a normal stop.
                 raise ValueError(
                     f"Invalid tier transition from {current_tier!r} | "
                     f"contact_id={contact_id}"
                 )
 
             # Get campaign-specific policy (delay, callback flag, terminal flag)
-            from app.services.tier_policy import get_tier_policy, has_pending_callback
+            from app.services.tier_policy import get_tier_policy
 
             policy = get_tier_policy(campaign_name, current_tier, settings)
 
@@ -135,26 +165,17 @@ def process_voicemail_tier(job_id: str) -> None:
             if policy.is_terminal:
                 _finalize_campaign(session, lead, settings)
 
-            # Non-terminal tier: schedule Synthflow callback + retry outbound call
+            # Non-terminal tier: schedule retry outbound call
             elif policy.schedule_synthflow_callback:
                 phone = lead.normalized_phone or ""
                 if not phone:
                     raise ValueError(
-                        f"Cannot schedule callback — no phone for contact_id={contact_id}"
+                        f"Cannot schedule retry call — no phone for contact_id={contact_id}"
                     )
 
-                # Duplicate prevention: only schedule if no pending callback exists
-                if has_pending_callback(session, contact_id):
-                    logger.warning(
-                        "voicemail_jobs: duplicate callback skipped | contact_id=%s",
-                        contact_id,
-                    )
-                else:
-                    _schedule_synthflow_callback(session, phone, contact_id, policy, settings)
-
-                # Schedule a retry outbound call at the tier-appropriate delay
                 _schedule_retry_outbound_call(
-                    session, contact_id, phone, call_id, current_tier, campaign_name, settings
+                    session, contact_id, phone, call_id, current_tier, campaign_name, settings,
+                    lead_name=payload_lead_name,
                 )
 
             complete_job(session, job)
@@ -271,7 +292,7 @@ def _make_default_queue(settings):
 
 def _schedule_retry_outbound_call(
     session, contact_id: str, phone: str, call_id: str, current_tier: str | None,
-    campaign_name: str, settings,
+    campaign_name: str, settings, *, lead_name: str = "",
 ) -> None:
     """
     Schedule a launch_outbound_call retry job after a voicemail is detected.
@@ -284,6 +305,7 @@ def _schedule_retry_outbound_call(
     Tier '2' with finalize=True and tier '3' produce no retry job.
 
     phone is forwarded as phone_number so launch_outbound_call_job can dial the contact.
+    lead_name is forwarded so Synthflow receives the contact's name on the retry call.
     """
     campaign_lower = (campaign_name or "").strip().lower()
 
@@ -345,6 +367,7 @@ def _schedule_retry_outbound_call(
         payload={
             "contact_id": contact_id,
             "phone_number": phone,
+            "lead_name": lead_name,
             "call_id": call_id,
             "vm_retry_attempt": attempt_number,
             "delay_minutes": delay_minutes,
@@ -359,60 +382,3 @@ def _schedule_retry_outbound_call(
     )
 
 
-def _schedule_synthflow_callback(session, phone, contact_id, policy, settings) -> None:
-    """
-    Schedule a Synthflow callback and create a durable scheduled_job record.
-
-    The callback is scheduled with a delay per the campaign policy.
-    A scheduled_jobs record is created first (Postgres-authoritative).
-    """
-    from datetime import timedelta
-
-    from app.adapters.synthflow import SynthflowClient
-
-    delay = timedelta(minutes=policy.delay_minutes)
-    run_at = datetime.now(tz=timezone.utc) + delay
-    scheduled_time = run_at if policy.delay_minutes > 0 else None
-
-    # Create durable job record
-    job = schedule_job(
-        session=session,
-        job_type="synthflow_callback",
-        entity_type="lead",
-        entity_id=contact_id,
-        run_at=run_at,
-        payload={
-            "phone": phone,
-            "contact_id": contact_id,
-            "campaign": policy.campaign_name,
-            "tier": policy.next_tier,
-            "delay_minutes": policy.delay_minutes,
-        },
-    )
-
-    # Fire the Synthflow API call (shadow-gated via validate_for_synthflow)
-    try:
-        client = SynthflowClient(settings=settings)
-        result = client.schedule_callback(
-            phone=phone,
-            scheduled_time=scheduled_time,
-            metadata={
-                "contact_id": contact_id,
-                "campaign": policy.campaign_name,
-                "tier": policy.next_tier,
-                "scheduled_job_id": job.id,
-            },
-        )
-        logger.info(
-            "Synthflow callback scheduled | contact_id=%s tier=%s delay_min=%d "
-            "synthflow_call_id=%s",
-            contact_id, policy.next_tier, policy.delay_minutes,
-            result.get("id", "unknown"),
-        )
-    except Exception as exc:
-        logger.exception(
-            "_schedule_synthflow_callback: API call failed | contact_id=%s: %s",
-            contact_id, exc,
-        )
-        # Job record exists in Postgres; worker recovery loop can retry
-        raise

@@ -289,9 +289,7 @@ def test_process_voicemail_tier_non_terminal_calls_retry_scheduler(session):
         patch("app.worker.jobs.voicemail_jobs.get_worker_id", return_value="w1"),
         patch("app.worker.jobs.voicemail_jobs.get_settings", return_value=_make_settings()),
         patch("app.services.tier_policy.get_tier_policy", return_value=mock_policy),
-        patch("app.services.tier_policy.has_pending_callback", return_value=False),
         patch("app.worker.jobs.voicemail_jobs._advance_tier"),
-        patch("app.worker.jobs.voicemail_jobs._schedule_synthflow_callback"),
         patch("app.worker.jobs.voicemail_jobs._schedule_retry_outbound_call") as mock_retry,
     ):
         mock_ctx.return_value.__enter__ = lambda s, *a: session
@@ -332,6 +330,40 @@ def test_process_voicemail_tier_terminal_skips_retry_scheduler(session):
 
         process_voicemail_tier("job-vm-1")
 
+    mock_retry.assert_not_called()
+
+
+def test_process_voicemail_tier_already_at_terminal_completes_cleanly(session):
+    """
+    Lead already at tier '3' — job completes without error, no retry scheduled,
+    no exception record created.  This covers the RQ retry case where the job
+    fires again after finalization already ran.
+    """
+    from app.worker.jobs.voicemail_jobs import process_voicemail_tier
+
+    contact_id = f"c-t3-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, tier="3")
+    job = _make_mock_job_obj({"call_id": "call-t3-1", "contact_id": contact_id})
+
+    with (
+        patch("app.worker.jobs.voicemail_jobs.get_sync_session") as mock_ctx,
+        patch("app.worker.jobs.voicemail_jobs.claim_job", return_value=job),
+        patch("app.worker.jobs.voicemail_jobs.mark_running"),
+        patch("app.worker.jobs.voicemail_jobs.complete_job") as mock_complete,
+        patch("app.worker.jobs.voicemail_jobs.fail_job") as mock_fail,
+        patch("app.worker.jobs.voicemail_jobs.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.voicemail_jobs.get_settings", return_value=_make_settings()),
+        patch("app.worker.jobs.voicemail_jobs.create_exception") as mock_exc,
+        patch("app.worker.jobs.voicemail_jobs._schedule_retry_outbound_call") as mock_retry,
+    ):
+        mock_ctx.return_value.__enter__ = lambda s, *a: session
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        process_voicemail_tier("job-t3-1")
+
+    mock_complete.assert_called_once()
+    mock_fail.assert_not_called()
+    mock_exc.assert_not_called()
     mock_retry.assert_not_called()
 
 
@@ -414,7 +446,7 @@ def test_process_voicemail_tier_empty_contact_id_fails_job(session):
         mock_ctx.return_value.__enter__ = lambda s, *a: session
         mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
 
-        with pytest.raises(ValueError, match="contact_id is empty"):
+        with pytest.raises(ValueError, match="contact_id and phone are both empty"):
             process_voicemail_tier("job-nocontact")
 
     mock_fail.assert_called_once()

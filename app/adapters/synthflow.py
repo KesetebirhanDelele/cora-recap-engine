@@ -142,14 +142,16 @@ class SynthflowClient:
     def build_callback_payload(
         self,
         phone: str,
+        name: str = "",
         model_id: str | None = None,
         scheduled_time: datetime | None = None,
         metadata: dict | None = None,
     ) -> dict:
         """
-        Build the request body for a Synthflow callback call.
+        Build the request body for a Synthflow v2/calls API call.
 
         phone:          E.164 normalized phone number of the contact.
+        name:           Contact's display name. Falls back to 'Customer' when empty.
         model_id:       Synthflow model/agent ID. Defaults to SYNTHFLOW_MODEL_ID.
         scheduled_time: UTC datetime for when the call should be placed.
                         If None, Synthflow places the call immediately.
@@ -160,6 +162,7 @@ class SynthflowClient:
         payload: dict[str, Any] = {
             "model_id": model_id or self.settings.synthflow_model_id,
             "phone": phone,
+            "name": name or "Customer",
         }
         if scheduled_time is not None:
             payload["scheduled_time"] = scheduled_time.isoformat()
@@ -172,6 +175,7 @@ class SynthflowClient:
     def schedule_callback(
         self,
         phone: str,
+        name: str = "",
         model_id: str | None = None,
         scheduled_time: datetime | None = None,
         metadata: dict | None = None,
@@ -188,12 +192,15 @@ class SynthflowClient:
         Returns the Synthflow API response dict containing the call record.
         """
         self.settings.validate_for_synthflow()
-        payload = self.build_callback_payload(phone, model_id, scheduled_time, metadata)
+        payload = self.build_callback_payload(phone, name, model_id, scheduled_time, metadata)
 
         logger.info(
-            "Synthflow schedule_callback | phone=<redacted> model_id=%s scheduled_time=%s",
+            "Synthflow schedule_callback | phone=<redacted> name=%r model_id=%s "
+            "scheduled_time=%s payload_keys=%s",
+            payload.get("name"),
             payload.get("model_id"),
             payload.get("scheduled_time", "immediate"),
+            list(payload.keys()),
         )
 
         return self._post(payload, _retry_delay=_retry_delay)
@@ -223,8 +230,8 @@ class SynthflowClient:
 
         url = self.settings.synthflow_launch_workflow_url
         payload: dict = {
-            "phone_number": phone,
-            "lead_name": lead_name,
+            "phone": phone,
+            "name": lead_name,
             "campaign_name": campaign_name,
         }
         if metadata:

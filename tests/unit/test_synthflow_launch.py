@@ -110,8 +110,8 @@ def test_launch_payload_contains_required_fields():
     )
 
     payload = http.post.call_args[1]["json"]
-    assert payload["phone_number"] == "+15551234567"
-    assert payload["lead_name"] == "Jane Doe"
+    assert payload["phone"] == "+15551234567"
+    assert payload["name"] == "Jane Doe"
     assert payload["campaign_name"] == "New_Lead"
 
 

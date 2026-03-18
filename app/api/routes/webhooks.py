@@ -84,16 +84,43 @@ def normalize_synthflow_payload(body: dict[str, Any]) -> dict[str, Any]:
     if not payload.get("direction"):
         payload["direction"] = "outbound"
 
-    # ── contact_id: fall back to phone_number_to when absent ─────────────────
-    # Synthflow webhooks do not always include a GHL contact_id.
-    # phone_number_to identifies the called party and is used as a stable key
-    # for lead_state lookup / creation until a real GHL contact_id is available.
-    if not payload.get("contact_id") and payload.get("phone_number_to"):
-        payload["contact_id"] = payload["phone_number_to"]
+    # ── phones: extract callee/caller from nested phones object ──────────────
+    # Some Synthflow webhook variants nest phone numbers under {"phones": {"callee": ..., "caller": ...}}
+    # instead of top-level phone_number_to / phone_number_from fields.
+    if "phones" in payload and isinstance(payload["phones"], dict):
+        phones = payload["phones"]
+        if not payload.get("phone_number") and phones.get("callee"):
+            payload["phone_number"] = phones["callee"]
+        if not payload.get("phone_number_from") and phones.get("caller"):
+            payload["phone_number_from"] = phones["caller"]
         logger.debug(
-            "normalize_synthflow_payload: derived contact_id from phone_number_to=%r",
-            payload["contact_id"],
+            "normalize_synthflow_payload: extracted phones.callee=%r phones.caller=%r",
+            phones.get("callee"), phones.get("caller"),
         )
+
+    # ── contact_id: fall back to any available phone field ───────────────────
+    # Synthflow webhooks do not always include a GHL contact_id.
+    # Use the first available phone field as a stable key for lead_state lookup /
+    # creation until a real GHL contact_id is synced from GHL.
+    if not payload.get("contact_id"):
+        derived = (
+            payload.get("phone_number_to")
+            or payload.get("phone")
+            or payload.get("phone_number")
+        )
+        if derived:
+            payload["contact_id"] = derived
+            logger.debug(
+                "normalize_synthflow_payload: derived contact_id from phone field=%r",
+                payload["contact_id"],
+            )
+
+    # ── campaign_name: default to 'New Lead' when absent ─────────────────────
+    # Synthflow webhook payloads may not include campaign_name.
+    # Defaulting ensures process_voicemail_tier can look up a valid tier policy.
+    if not payload.get("campaign_name"):
+        payload["campaign_name"] = "New Lead"
+        logger.debug("normalize_synthflow_payload: defaulted campaign_name to 'New Lead'")
 
     return payload
 

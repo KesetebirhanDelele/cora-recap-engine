@@ -103,12 +103,20 @@ def normalize_synthflow_outcome(payload: dict[str, Any]) -> str:
 
 
 def _parse_datetime(value: Any) -> datetime | None:
-    """Parse an ISO string or epoch int/float into a UTC datetime, or return None."""
+    """
+    Parse an ISO string or epoch int/float into a UTC datetime, or return None.
+
+    Synthflow timestamps are sometimes milliseconds since epoch (13-digit integers)
+    rather than seconds (10-digit). Values > 1e11 are treated as milliseconds.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, (int, float)):
+        # Detect millisecond epoch: values larger than year ~5138 in seconds
+        if value > 1e11:
+            value = value / 1000.0
         return datetime.fromtimestamp(value, tz=timezone.utc)
     try:
         dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
@@ -261,6 +269,7 @@ def process_call_event(job_id: str) -> None:
                 _route_to_voicemail(
                     session, job, call_id, contact_id, call_event.id, settings,
                     campaign_name=payload.get("campaign_name"),
+                    lead_name=payload.get("lead_name", "") or payload.get("name", ""),
                 )
             elif call_status in _PENDING_STATUSES:
                 logger.warning(
@@ -415,18 +424,22 @@ def _route_to_call_through(
 def _route_to_voicemail(
     session, job, call_id: str, contact_id: str | None, call_event_id: str, settings,
     campaign_name: str | None = None,
+    lead_name: str = "",
 ) -> None:
     """
     Schedule a voicemail tier advancement job.
 
     Enqueues to the `default` RQ queue so the worker picks it up immediately.
     Falls back to Postgres-only (recovery loop) if Redis is unavailable.
-    Propagates call_event_id and campaign_name for downstream use.
+    Propagates call_event_id, campaign_name, and lead_name for downstream use.
 
     campaign_name is forwarded so that process_voicemail_tier can populate
     lead_state.campaign_name when auto-creating a row for a new contact.
     In production this is typically already set on the lead_state row from GHL.
     For testing, pass campaign_name in the webhook payload.
+
+    lead_name is forwarded so that the eventual launch_outbound_call_job can
+    pass the contact's name to the Synthflow launch webhook.
     """
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
     from app.worker.scheduler import schedule_job
@@ -446,6 +459,7 @@ def _route_to_voicemail(
             "call_event_id": call_event_id,
             "parent_job_id": job.id,
             "campaign_name": campaign_name,
+            "lead_name": lead_name,
         },
         rq_queue=default_queue,
         rq_job_func=process_voicemail_tier if default_queue is not None else None,

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/unit/test_voicemail_jobs.py tests/unit/test_tier_policy.py tests/unit/test_e2e_scenarios.py -v --tb=short)"
+    ]
+  }
+}
