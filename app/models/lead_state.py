@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -34,6 +34,15 @@ class LeadState(Base):
     # ai_campaign_value: None | '0' | '1' | '2' | '3'
     ai_campaign_value: Mapped[Optional[str]] = mapped_column(String(10))
     last_call_status: Mapped[Optional[str]] = mapped_column(String(50))
+    # ── Intent-driven fields (populated by handle_intent) ─────────────────────
+    # status: active | nurture | closed
+    status: Mapped[Optional[str]] = mapped_column(String(20))
+    do_not_call: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+    invalid: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+    # preferred_channel: sms | email | None (default = voice)
+    preferred_channel: Mapped[Optional[str]] = mapped_column(String(20))
+    # next_action_at: scheduled time for nurture follow-up
+    next_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # version: incremented on every update; used for optimistic concurrency checks
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(

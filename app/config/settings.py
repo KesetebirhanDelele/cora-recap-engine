@@ -180,6 +180,9 @@ class Settings(BaseSettings):
     new_vm_tier_1_delay_minutes: Optional[int] = None
     new_vm_tier_2_finalize: Optional[bool] = None
     vm_final_stop_value: int = 3
+    # Intent-driven campaign settings
+    # nurture_delay_days: days before a re-attempt call for "interested_not_now" leads
+    nurture_delay_days: int = 7
     shadow_mode_enabled: bool = True
     # 90-day default: must survive delayed retries, replayed webhooks,
     # shadow-mode reconciliation, and re-runs across the full call lifecycle.

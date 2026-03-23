@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pytest tests/unit/test_voicemail_jobs.py tests/unit/test_tier_policy.py tests/unit/test_e2e_scenarios.py -v --tb=short)"
+      "Bash(python -m pytest tests/unit/test_voicemail_jobs.py tests/unit/test_tier_policy.py tests/unit/test_e2e_scenarios.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/test_intent_detection.py tests/unit/test_intent_actions.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/test_lifecycle.py::test_version_conflict_returns_none -v -s)",
+      "Bash(python -m pytest tests/unit/test_lifecycle.py tests/unit/test_campaigns.py tests/unit/test_nurture_scheduler.py tests/unit/test_intent_actions.py -v)"
     ]
   }
 }
