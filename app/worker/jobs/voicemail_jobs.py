@@ -142,10 +142,10 @@ def process_voicemail_tier(job_id: str) -> None:
                 intent_result = detect_intent(transcript)
                 if intent_result is not None:
                     logger.info(
-                        "process_voicemail_tier: intent detected, overriding tier logic | "
-                        "contact_id=%s intent=%s confidence=%.2f",
-                        contact_id, intent_result["intent"],
+                        "DETECTED INTENT: %s | contact_id=%s confidence=%.2f entities=%s",
+                        intent_result["intent"], contact_id,
                         intent_result.get("confidence", 0.0),
+                        intent_result.get("entities", {}),
                     )
                     handle_intent(
                         session=session,
@@ -155,6 +155,24 @@ def process_voicemail_tier(job_id: str) -> None:
                         current_job_id=job.id,
                         settings=settings,
                     )
+
+                    # Campaign switch: update campaign_name if intent signals
+                    # a change in engagement level. Lightweight field update only —
+                    # no tier reset, no job cancellation.
+                    from app.core.campaigns import (
+                        apply_campaign_switch,
+                        evaluate_campaign_switch,
+                    )
+                    new_campaign = evaluate_campaign_switch(
+                        campaign_name, intent_result["intent"]
+                    )
+                    if new_campaign:
+                        session.refresh(lead)
+                        apply_campaign_switch(
+                            session, lead, new_campaign,
+                            reason=intent_result["intent"],
+                        )
+
                     complete_job(session, job)
                     return
 
@@ -208,6 +226,12 @@ def process_voicemail_tier(job_id: str) -> None:
                 _schedule_retry_outbound_call(
                     session, contact_id, phone, call_id, current_tier, campaign_name, settings,
                     lead_name=payload_lead_name,
+                )
+
+                # Schedule SMS/email follow-ups after missed call (non-blocking, failure-safe)
+                attempt_number = _TIER_TO_ATTEMPT.get(current_tier, 0)
+                _schedule_messaging_after_voicemail(
+                    session, contact_id, attempt_number, settings
                 )
 
             complete_job(session, job)
@@ -432,5 +456,103 @@ def _schedule_retry_outbound_call(
         "voicemail retry scheduled | contact_id=%s tier=%r delay=%d run_at=%s",
         contact_id, current_tier, delay_minutes, run_at.isoformat(),
     )
+
+
+def _schedule_messaging_after_voicemail(
+    session,
+    contact_id: str,
+    attempt_number: int,
+    settings,
+) -> None:
+    """
+    Schedule SMS (and optionally email) follow-up jobs after a missed call.
+
+    SMS: always scheduled at now + 30 minutes (idempotent).
+    Email: only on attempt_number == 2, scheduled at now + 1 day (idempotent).
+
+    Silently skips if:
+      - Contact has a recent reply (has_recent_reply check)
+      - An equivalent pending job already exists for this contact
+
+    Never raises — messaging failures must not disrupt the voicemail tier job.
+    """
+    try:
+        from datetime import timedelta
+
+        from sqlalchemy import select
+
+        from app.core.reply_detection import has_recent_reply
+        from app.models.scheduled_job import ScheduledJob
+
+        if has_recent_reply(session, contact_id):
+            logger.info(
+                "_schedule_messaging: reply detected, skipping | contact_id=%s",
+                contact_id,
+            )
+            return
+
+        now = datetime.now(tz=timezone.utc)
+
+        # ── SMS: 30 minutes after every missed call ───────────────────────────
+        has_pending_sms = session.scalars(
+            select(ScheduledJob).where(
+                ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
+                ScheduledJob.job_type == "send_sms",
+                ScheduledJob.status.in_(["pending", "claimed", "running"]),
+            )
+        ).first() is not None
+
+        if not has_pending_sms:
+            sms_delay = getattr(settings, "sms_followup_delay_minutes", 30)
+            schedule_job(
+                session=session,
+                job_type="send_sms",
+                entity_type="lead",
+                entity_id=contact_id,
+                run_at=now + timedelta(minutes=sms_delay),
+                payload={
+                    "contact_id": contact_id,
+                    "attempt_number": attempt_number,
+                },
+            )
+            logger.info(
+                "_schedule_messaging: SMS scheduled +%dmin | contact_id=%s attempt=%d",
+                sms_delay, contact_id, attempt_number,
+            )
+
+        # ── Email: N days after 2nd call attempt only ─────────────────────────
+        if attempt_number == 2:
+            has_pending_email = session.scalars(
+                select(ScheduledJob).where(
+                    ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
+                    ScheduledJob.job_type == "send_email",
+                    ScheduledJob.status.in_(["pending", "claimed", "running"]),
+                )
+            ).first() is not None
+
+            if not has_pending_email:
+                email_delay = getattr(settings, "email_followup_delay_days", 1)
+                schedule_job(
+                    session=session,
+                    job_type="send_email",
+                    entity_type="lead",
+                    entity_id=contact_id,
+                    run_at=now + timedelta(days=email_delay),
+                    payload={
+                        "contact_id": contact_id,
+                        "attempt_number": attempt_number,
+                    },
+                )
+                logger.info(
+                    "_schedule_messaging: email scheduled +%dd | contact_id=%s attempt=%d",
+                    email_delay, contact_id, attempt_number,
+                )
+
+    except Exception as exc:
+        logger.error(
+            "_schedule_messaging_after_voicemail: error (non-fatal) | "
+            "contact_id=%s attempt=%d: %s",
+            contact_id, attempt_number, exc,
+        )
 
 

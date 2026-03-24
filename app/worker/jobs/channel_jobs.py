@@ -1,30 +1,42 @@
 """
-Channel delivery stub jobs — SMS and email.
+Channel delivery jobs — SMS and email.
 
-Scheduled by intent_actions when a contact requests a channel switch
-(request_sms / request_email intents).  Currently stubs: they claim the job,
-log the request, and complete cleanly without sending anything.
+send_sms_job:
+  Scheduled 30 minutes after a missed call/voicemail.
+  Generates AI-personalised content (falls back to template).
+  Stores result in outbound_messages.
+  Suppressed if the contact has already replied.
 
-When real SMS/email delivery is implemented, replace the logger.info body
-with the appropriate adapter call and handle exceptions via fail_job /
-create_exception as in outbound_jobs.py.
+send_email_job:
+  Scheduled 1 day after the second call attempt.
+  Same AI-generation + fallback + suppression pattern as SMS.
+
+Both jobs check has_recent_reply() immediately after claiming —
+a reply received between scheduling and execution cancels the send.
+
+Payload fields (both jobs):
+  contact_id      — GHL contact identifier
+  attempt_number  — 1-based attempt count (for context)
 """
 from __future__ import annotations
 
 import logging
+import uuid
+from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
 
 
 def send_sms_job(job_id: str) -> None:
     """
-    Worker job: deliver an SMS to a contact (stub).
+    Worker job: generate and record an outbound SMS.
 
-    Payload fields: contact_id, phone.
+    Skips silently if the contact has already replied.
     """
     settings = get_settings()
     worker_id = get_worker_id()
@@ -37,20 +49,67 @@ def send_sms_job(job_id: str) -> None:
 
         mark_running(session, job)
         payload = job.payload_json or {}
-        logger.info(
-            "send_sms_job: stub — SMS delivery not yet implemented | "
-            "contact_id=%s phone=%s job_id=%s",
-            payload.get("contact_id"), payload.get("phone"), job_id,
-        )
-        complete_job(session, job)
+        contact_id = payload.get("contact_id", "")
+
+        try:
+            from app.core.reply_detection import has_recent_reply
+
+            if has_recent_reply(session, contact_id):
+                logger.info(
+                    "send_sms_job: reply detected — suppressing SMS | "
+                    "contact_id=%s job_id=%s",
+                    contact_id, job_id,
+                )
+                complete_job(session, job)
+                return
+
+            from app.core.ai_message_generator import generate_sms
+            from app.core.conversation_context import get_conversation_context
+            from app.models.outbound_message import OutboundMessage
+
+            context = get_conversation_context(session, contact_id)
+            sms_body = generate_sms(context, settings)
+
+            now = datetime.now(tz=timezone.utc)
+            outbound = OutboundMessage(
+                id=str(uuid.uuid4()),
+                contact_id=contact_id,
+                channel="sms",
+                body=sms_body,
+                status="pending",
+                created_at=now,
+            )
+            session.add(outbound)
+            session.flush()
+
+            logger.info(
+                "send_sms_job: SMS recorded | contact_id=%s length=%d job_id=%s",
+                contact_id, len(sms_body), job_id,
+            )
+            complete_job(session, job)
+
+        except Exception as exc:
+            logger.exception(
+                "send_sms_job: error | contact_id=%s job_id=%s: %s",
+                contact_id, job_id, exc,
+            )
+            create_exception(
+                session,
+                type="send_sms_failed",
+                severity="warning",
+                context={"contact_id": contact_id, "job_id": job_id, "error": str(exc)},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            fail_job(session, job, reason=str(exc))
+            raise
 
 
 def send_email_job(job_id: str) -> None:
     """
-    Worker job: deliver an email to a contact (stub).
+    Worker job: generate and record an outbound email.
 
-    Payload fields: contact_id, phone (used as identifier until email address
-    is added to lead_state).
+    Skips silently if the contact has already replied.
     """
     settings = get_settings()
     worker_id = get_worker_id()
@@ -63,9 +122,58 @@ def send_email_job(job_id: str) -> None:
 
         mark_running(session, job)
         payload = job.payload_json or {}
-        logger.info(
-            "send_email_job: stub — email delivery not yet implemented | "
-            "contact_id=%s job_id=%s",
-            payload.get("contact_id"), job_id,
-        )
-        complete_job(session, job)
+        contact_id = payload.get("contact_id", "")
+
+        try:
+            from app.core.reply_detection import has_recent_reply
+
+            if has_recent_reply(session, contact_id):
+                logger.info(
+                    "send_email_job: reply detected — suppressing email | "
+                    "contact_id=%s job_id=%s",
+                    contact_id, job_id,
+                )
+                complete_job(session, job)
+                return
+
+            from app.core.ai_message_generator import generate_email
+            from app.core.conversation_context import get_conversation_context
+            from app.models.outbound_message import OutboundMessage
+
+            context = get_conversation_context(session, contact_id)
+            email = generate_email(context, settings)
+
+            now = datetime.now(tz=timezone.utc)
+            outbound = OutboundMessage(
+                id=str(uuid.uuid4()),
+                contact_id=contact_id,
+                channel="email",
+                subject=email.subject,
+                body=email.body,
+                status="pending",
+                created_at=now,
+            )
+            session.add(outbound)
+            session.flush()
+
+            logger.info(
+                "send_email_job: email recorded | contact_id=%s subject=%r job_id=%s",
+                contact_id, email.subject, job_id,
+            )
+            complete_job(session, job)
+
+        except Exception as exc:
+            logger.exception(
+                "send_email_job: error | contact_id=%s job_id=%s: %s",
+                contact_id, job_id, exc,
+            )
+            create_exception(
+                session,
+                type="send_email_failed",
+                severity="warning",
+                context={"contact_id": contact_id, "job_id": job_id, "error": str(exc)},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            fail_job(session, job, reason=str(exc))
+            raise

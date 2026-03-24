@@ -90,14 +90,23 @@ def _handle_callback_with_time(session, contact_id, phone, entities, settings) -
     extracted: datetime | None = entities.get("datetime")
     if extracted is not None:
         extracted = _ensure_utc(extracted)
+
+    if extracted is None:
+        # Datetime extraction failed — use fallback and log so it is never silent
+        logger.warning(
+            "handle_intent: callback_with_time — datetime not extracted, "
+            "using fallback +%dmin | contact_id=%s",
+            CALLBACK_FALLBACK_MINUTES, contact_id,
+        )
+
     run_at = extracted or (
         datetime.now(tz=timezone.utc) + timedelta(minutes=CALLBACK_FALLBACK_MINUTES)
     )
     _schedule_outbound_call(session, contact_id, phone, run_at, settings,
                             reason="callback_with_time")
     logger.info(
-        "handle_intent: callback_with_time | contact_id=%s run_at=%s extracted=%s",
-        contact_id, run_at.isoformat(), bool(extracted),
+        "handle_intent: callback_with_time | contact_id=%s run_at=%s datetime_extracted=%s",
+        contact_id, run_at.isoformat(), extracted is not None,
     )
 
 
@@ -152,6 +161,42 @@ def _handle_uncertain(session, contact_id, phone, entities, settings) -> None:
     )
 
 
+def _handle_enrolled(session, contact_id, phone, entities, settings) -> None:
+    """
+    Lead confirmed enrollment — terminate the campaign permanently.
+
+    Sets status='enrolled' and ai_campaign_value='3' so no voicemail tier
+    or outbound call jobs will be scheduled again.  Writes AI Campaign='No'
+    to GHL (shadow-gated) to mirror finalization.
+
+    Distinct from 'closed' (not interested) so conversion reporting can
+    separate successful enrollments from hard rejections.
+    """
+    _update_lead_state(
+        session, contact_id,
+        status="enrolled",
+        ai_campaign_value="3",
+    )
+    logger.info(
+        "ENROLLMENT CONFIRMED: campaign terminated | contact_id=%s", contact_id
+    )
+
+    # Mirror finalization in GHL (shadow-gated)
+    try:
+        from app.adapters.ghl import GHLClient
+        ghl = GHLClient(settings=settings)
+        ai_campaign_field = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
+        ghl.update_contact_fields(
+            contact_id=contact_id,
+            field_updates={ai_campaign_field: "No"},
+        )
+    except Exception as exc:
+        logger.warning(
+            "_handle_enrolled: GHL write failed (non-fatal) | contact_id=%s: %s",
+            contact_id, exc,
+        )
+
+
 def _handle_not_interested(session, contact_id, phone, entities, settings) -> None:
     """Close the lead — stop all future outreach."""
     _update_lead_state(session, contact_id, status="closed")
@@ -201,6 +246,7 @@ _HANDLERS: dict[str, Any] = {
     "do_not_call":        _handle_do_not_call,
     "wrong_number":       _handle_wrong_number,
     "not_interested":     _handle_not_interested,
+    "enrolled":           _handle_enrolled,
     "callback_with_time": _handle_callback_with_time,
     "callback_request":   _handle_callback_request,
     "interested_not_now": _handle_interested_not_now,
@@ -265,6 +311,7 @@ def _update_lead_state(
     invalid: bool | None = None,
     preferred_channel: str | None = None,
     next_action_at: datetime | None = None,
+    ai_campaign_value: str | None = None,
 ) -> None:
     """
     Apply intent-driven field updates to the lead_state row for contact_id.
@@ -299,6 +346,8 @@ def _update_lead_state(
         updates["preferred_channel"] = preferred_channel
     if next_action_at is not None:
         updates["next_action_at"] = next_action_at
+    if ai_campaign_value is not None:
+        updates["ai_campaign_value"] = ai_campaign_value
 
     session.execute(
         update(LeadState)

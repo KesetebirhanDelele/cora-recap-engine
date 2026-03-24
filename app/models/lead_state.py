@@ -43,6 +43,8 @@ class LeadState(Base):
     preferred_channel: Mapped[Optional[str]] = mapped_column(String(20))
     # next_action_at: scheduled time for nurture follow-up
     next_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # last_replied_at: set when an inbound SMS/email reply is received; suppresses future messaging
+    last_replied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # version: incremented on every update; used for optimistic concurrency checks
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(

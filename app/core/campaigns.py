@@ -44,6 +44,19 @@ _CAMPAIGN_NAMES: dict[str, str] = {
     "new_lead":  "New Lead",
 }
 
+# Campaign switch rules: (current_campaign_name_lower, intent) → new_campaign_name
+#
+# New Lead → Cold Lead: lead is cooling off (not ready, uncertain)
+# Cold Lead → New Lead: lead expresses genuine interest (re_engaged only)
+#
+# Callback/call-later intents are intentionally excluded — they signal the lead
+# wants to engage at a better time, not a change in engagement level.
+_SWITCH_RULES: dict[tuple[str, str], str] = {
+    ("new lead", "interested_not_now"): "Cold Lead",
+    ("new lead", "uncertain"):          "Cold Lead",
+    ("cold lead", "re_engaged"):        "New Lead",
+}
+
 
 def enter_campaign(
     session: Session,
@@ -128,6 +141,73 @@ def enter_campaign(
     logger.info(
         "enter_campaign: first outbound scheduled | contact_id=%s campaign=%s",
         lead.contact_id, campaign_type,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Campaign switching
+# ---------------------------------------------------------------------------
+
+def evaluate_campaign_switch(campaign_name: str, intent: str) -> str | None:
+    """
+    Return the new campaign name if the intent warrants a switch, else None.
+
+    Pure function — no DB access.  Callers decide whether to apply the result.
+
+    Rules:
+      New Lead + interested_not_now → Cold Lead  (lead cooling off)
+      New Lead + uncertain          → Cold Lead  (lead cooling off)
+      Cold Lead + re_engaged        → New Lead   (lead expressing genuine interest)
+    """
+    key = ((campaign_name or "").strip().lower(), intent)
+    return _SWITCH_RULES.get(key)
+
+
+def apply_campaign_switch(
+    session: Session,
+    lead: Any,
+    new_campaign_name: str,
+    *,
+    reason: str,
+) -> None:
+    """
+    Update campaign_name in place — lightweight field update only.
+
+    Does NOT reset the voicemail tier, cancel jobs, or schedule new calls.
+    The tier continues from its current position using the new campaign's
+    delay policy on the next voicemail job.
+
+    Uses optimistic concurrency (version increment).
+    """
+    from sqlalchemy import update
+
+    from app.models.lead_state import LeadState
+
+    old_campaign = lead.campaign_name
+    now = datetime.now(tz=timezone.utc)
+
+    result = session.execute(
+        update(LeadState)
+        .where(LeadState.id == lead.id, LeadState.version == lead.version)
+        .values(
+            campaign_name=new_campaign_name,
+            version=lead.version + 1,
+            updated_at=now,
+        )
+    )
+    session.flush()
+
+    if result.rowcount == 0:
+        logger.warning(
+            "apply_campaign_switch: version conflict, switch not applied | "
+            "contact_id=%s reason=%s",
+            lead.contact_id, reason,
+        )
+        return
+
+    logger.info(
+        "CAMPAIGN SWITCH: %r → %r | contact_id=%s reason=%s",
+        old_campaign, new_campaign_name, lead.contact_id, reason,
     )
 
 

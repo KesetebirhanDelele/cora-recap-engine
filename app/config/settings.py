@@ -183,6 +183,9 @@ class Settings(BaseSettings):
     # Intent-driven campaign settings
     # nurture_delay_days: days before a re-attempt call for "interested_not_now" leads
     nurture_delay_days: int = 7
+    # Messaging follow-up delays after missed calls / voicemails
+    sms_followup_delay_minutes: int = 30    # SMS sent N minutes after missed call
+    email_followup_delay_days: int = 1      # Email sent N days after 2nd missed call
     shadow_mode_enabled: bool = True
     # 90-day default: must survive delayed retries, replayed webhooks,
     # shadow-mode reconciliation, and re-runs across the full call lifecycle.

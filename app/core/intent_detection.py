@@ -69,12 +69,42 @@ _RAW_PATTERNS: list[tuple[str, list[str]]] = [
         r"\bi'?m\s+not\s+interested\b",
         r"\bpass\b",
     ]),
+    ("enrolled", [
+        # Lead confirms enrollment or registration in the program — campaign termination
+        r"\bi'?d\s+like\s+to\s+enroll\b",
+        r"\bi\s+want\s+to\s+(enroll|register)\b",
+        r"\byes\s+i'?l{1,2}\s+enroll\b",
+        r"\bi'?m\s+ready\s+to\s+enroll\b",
+        r"\bi\s+agree\s+to\s+enroll\b",
+        r"\bi\s+(registered|enrolled|signed\s+up)\b",
+        r"\bi'?ve\s+(registered|enrolled|signed\s+up)\b",
+        r"\bi\s+want\s+to\s+join\s+the\s+program\b",
+        r"\benrollment\s+confirmed\b",
+        r"\bregistration\s+confirmed\b",
+        r"\bi\s+completed\s+the\s+enrollment\b",
+        r"\bsign\s+me\s+up\b",
+    ]),
+    ("re_engaged", [
+        # Cold lead expressing genuine interest — triggers campaign switch to New Lead
+        r"\bactually\s+i'?m?\s+(am\s+)?interested\b",
+        r"\bi'?m\s+interested\s+now\b",
+        r"\bactually\s+yes\b",
+        r"\btell\s+me\s+more\b",
+        r"\bi'?d\s+like\s+to\s+(hear|learn|know)\s+more\b",
+        r"\bi\s+want\s+to\s+(learn|know)\s+more\b",
+        r"\bhow\s+does\s+it\s+work\b",
+        r"\bwhat\s+are\s+the\s+details\b",
+        r"\bi'?ve\s+been\s+thinking\s+about\s+it\b",
+        r"\bi'?m\s+ready\s+to\s+talk\b",
+        r"\byes\s+i'?m?\s+(am\s+)?interested\b",
+        r"\byes\s+please\s+tell\s+me\b",
+    ]),
     ("callback_with_time", [
         # "call me back tomorrow", "call me next monday at 3pm", etc.
         r"\bcall\s+(me\s+)?(back\s+)?(tomorrow|tonight|this\s+(morning|afternoon|evening))\b",
         r"\bcall\s+(me\s+)?(back\s+)?next\s+(week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
         r"\bcall\s+(me\s+)?(back\s+)?(at|around)\s+\d{1,2}\s*(am|pm)\b",
-        r"\bin\s+\d+\s+(hour|day|week)s?\b",
+        r"\bin\s+\d+\s+(minute|minutes|hour|hours|day|days|week|weeks)\b",
         r"\b(tomorrow|next\s+week|next\s+month)\s+at\s+\d{1,2}\b",
         r"\b\d{1,2}\s*(am|pm)\b",
         r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+\d\b",
@@ -163,6 +193,11 @@ def _extract_callback_datetime(text: str) -> datetime | None:
     The caller falls back to a default delay when None is returned.
     """
     now = datetime.now(tz=timezone.utc)
+
+    # "in N minutes"
+    m = re.search(r"\bin\s+(\d+)\s+minutes?\b", text, re.IGNORECASE)
+    if m:
+        return now + timedelta(minutes=int(m.group(1)))
 
     # "in N hours"
     m = re.search(r"\bin\s+(\d+)\s+hours?\b", text, re.IGNORECASE)
