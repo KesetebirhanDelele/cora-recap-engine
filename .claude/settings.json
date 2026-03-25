@@ -12,7 +12,16 @@
       "Bash(python -m pytest tests/unit/test_campaign_switching.py -v --tb=short)",
       "Bash(python -m pytest tests/unit/test_enrolled_intent.py tests/unit/test_campaign_switching.py -v --tb=short)",
       "Bash(python -m pytest tests/integration/ tests/evals/ -v --collect-only)",
-      "Bash(python -m pytest tests/unit/test_e2e_scenarios.py --collect-only -q)"
+      "Bash(python -m pytest tests/unit/test_e2e_scenarios.py --collect-only -q)",
+      "Bash(python -m pytest tests/e2e/test_flows.py -v --tb=short)",
+      "Bash(python -m pytest tests/e2e/ tests/unit/ -v --tb=short)",
+      "Bash(python -m pytest tests/e2e/ -v --tb=short)",
+      "Bash(docker ps:*)",
+      "Bash(docker compose:*)",
+      "Bash(python execution/scenario_runner.py --url http://localhost:8000 --clean --scenarios sc5 sc6)",
+      "Bash(.venv/Scripts/python.exe execution/scenario_runner.py --url http://localhost:8000 --clean --scenarios sc5 sc6)",
+      "Bash(.venv/Scripts/python.exe execution/scenario_runner.py --url http://localhost:8000 --clean)",
+      "Bash(.venv/Scripts/python.exe -c \":*)"
     ]
   }
 }

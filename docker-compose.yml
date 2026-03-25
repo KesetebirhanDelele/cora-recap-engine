@@ -14,8 +14,9 @@ services:
     env_file:
       - .env
     environment:
-      # Containers reach Redis by service name, not localhost
+      # Containers reach Redis and Postgres by host name, not localhost
       - REDIS_HOST=redis
+      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
     volumes:
       # Mount source for --reload to pick up code changes without rebuilding
       - ./app:/app/app
@@ -30,6 +31,7 @@ services:
       - .env
     environment:
       - REDIS_HOST=redis
+      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
     volumes:
       - ./app:/app/app
     depends_on:

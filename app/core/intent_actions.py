@@ -197,6 +197,20 @@ def _handle_enrolled(session, contact_id, phone, entities, settings) -> None:
         )
 
 
+def _handle_re_engaged(session, contact_id, phone, entities, settings) -> None:
+    """
+    Cold lead expressed renewed interest — no status change, no scheduling.
+
+    The campaign switch (Cold Lead → New Lead) is handled by the campaign
+    switching hook in process_voicemail_tier immediately after handle_intent().
+    This handler is a no-op; it exists only so _HANDLERS dispatch succeeds.
+    """
+    logger.info(
+        "handle_intent: re_engaged — campaign switch will follow | contact_id=%s",
+        contact_id,
+    )
+
+
 def _handle_not_interested(session, contact_id, phone, entities, settings) -> None:
     """Close the lead — stop all future outreach."""
     _update_lead_state(session, contact_id, status="closed")
@@ -247,6 +261,7 @@ _HANDLERS: dict[str, Any] = {
     "wrong_number":       _handle_wrong_number,
     "not_interested":     _handle_not_interested,
     "enrolled":           _handle_enrolled,
+    "re_engaged":         _handle_re_engaged,
     "callback_with_time": _handle_callback_with_time,
     "callback_request":   _handle_callback_request,
     "interested_not_now": _handle_interested_not_now,
