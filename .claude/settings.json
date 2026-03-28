@@ -21,7 +21,9 @@
       "Bash(python execution/scenario_runner.py --url http://localhost:8000 --clean --scenarios sc5 sc6)",
       "Bash(.venv/Scripts/python.exe execution/scenario_runner.py --url http://localhost:8000 --clean --scenarios sc5 sc6)",
       "Bash(.venv/Scripts/python.exe execution/scenario_runner.py --url http://localhost:8000 --clean)",
-      "Bash(.venv/Scripts/python.exe -c \":*)"
+      "Bash(.venv/Scripts/python.exe -c \":*)",
+      "Bash(python -m pytest tests/unit/test_shadow_mode.py -v)",
+      "Bash(python -m pytest tests/unit/test_messaging.py::TestChannelJobs::test_sms_creates_outbound_message_when_no_reply tests/unit/test_shadow_mode.py -v)"
     ]
   }
 }

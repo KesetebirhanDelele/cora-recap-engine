@@ -551,8 +551,12 @@ class TestChannelJobs:
         _make_lead(session, contact_id=cid)
         job = self._make_claimed_sms_job(session, cid)
 
+        _settings_no_shadow = MagicMock()
+        _settings_no_shadow.shadow_mode_enabled = False
+
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session") as mock_gs,
+            patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings_no_shadow),
             patch("app.worker.jobs.channel_jobs.claim_job") as mock_claim,
             patch("app.worker.jobs.channel_jobs.mark_running"),
             patch("app.worker.jobs.channel_jobs.complete_job"),

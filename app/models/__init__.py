@@ -14,6 +14,7 @@ Tables:
   ShadowSheetRow       — Sheets mirror data (kept in schema; Phase 9 out of scope)
   ExceptionRecord      — surfaced failures for dashboard visibility
   AuditLog             — append-only operator action trail (Phase 8)
+  ShadowAction         — intercepted actions when shadow_mode_enabled=true
 
 Reporting views are defined in migrations/versions/0002_reporting_views.py
 and not represented as ORM models (read via raw SQL / reporting queries).
@@ -25,6 +26,7 @@ from app.models.classification import ClassificationResult
 from app.models.exception import ExceptionRecord
 from app.models.lead_state import LeadState
 from app.models.scheduled_job import ScheduledJob
+from app.models.shadow_action import ShadowAction
 from app.models.shadow_sheet import ShadowSheetRow
 from app.models.summary import SummaryResult
 from app.models.task_event import TaskEvent
@@ -40,4 +42,5 @@ __all__ = [
     "ShadowSheetRow",
     "ExceptionRecord",
     "AuditLog",
+    "ShadowAction",
 ]

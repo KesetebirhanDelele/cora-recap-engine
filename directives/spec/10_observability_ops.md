@@ -31,15 +31,23 @@
 - Postgres write failures
 - sheet mirror reconciliation failures above threshold
 
-## Dashboard scope v1
-- exception queue
-- retry controls
-- resolve/ignore controls
-- cancel future jobs
-- force finalize
-- search by call_id / phone / contact_id
-- health tiles for events, failures, stuck calls, duplicates
-- sheet mirror reconciliation status
+## Dashboard scope v1 — IMPLEMENTED
+Streamlit dashboard at `execution/dashboard.py`. Run with `streamlit run execution/dashboard.py` (Postgres only required).
+
+Sections:
+- **Overview** — metrics tiles (calls 24 h, shadow actions, open exceptions, failed jobs); bar charts by job status and shadow action type
+- **Recent Calls** — call events joined to lead state, transcript preview
+- **Lead State** — filterable by status and campaign
+- **Shadow Actions** — intercepted outbound actions (outbound_call, sms, email) when shadow mode is on
+- **Scheduled Jobs** — queue state, filterable by status and job type
+- **Exceptions** — operator exception queue; filter by severity and status
+- **Contact Drill-Down** — single contact_id view across all 6 tables
+
+Operator retry/cancel/finalize actions remain API-only (Bearer token required):
+- `POST /v1/exceptions/{id}/retry-now`
+- `POST /v1/exceptions/{id}/retry-delay`
+- `POST /v1/exceptions/{id}/cancel-future-jobs`
+- `POST /v1/exceptions/{id}/force-finalize`
 
 ## Reporting observability
 - reporting refresh success/failure

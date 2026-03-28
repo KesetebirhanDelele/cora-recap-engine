@@ -50,6 +50,24 @@ def launch_outbound_call_job(job_id: str) -> None:
         campaign_name = payload.get("campaign_name", "New_Lead")
         correlation_id = payload.get("correlation_id", job_id)
 
+        # ── Shadow mode: log and skip the real Synthflow call ─────────────────
+        if settings.shadow_mode_enabled:
+            from app.worker.shadow import log_shadow_action
+            log_shadow_action(
+                session,
+                contact_id=payload.get("contact_id") or phone,
+                action_type="outbound_call",
+                payload={
+                    "run_at": job.run_at.isoformat() if job.run_at else None,
+                    "campaign": campaign_name,
+                    "phone": phone,
+                    "lead_name": lead_name,
+                    "correlation_id": correlation_id,
+                },
+            )
+            complete_job(session, job)
+            return
+
         try:
             from app.adapters.synthflow import SynthflowClient
 

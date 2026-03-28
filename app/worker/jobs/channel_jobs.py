@@ -63,6 +63,22 @@ def send_sms_job(job_id: str) -> None:
                 complete_job(session, job)
                 return
 
+            # ── Shadow mode: log and skip AI generation + outbound write ──────
+            if settings.shadow_mode_enabled:
+                from app.worker.shadow import log_shadow_action
+                log_shadow_action(
+                    session,
+                    contact_id=contact_id,
+                    action_type="sms",
+                    payload={
+                        "contact_id": contact_id,
+                        "attempt_number": payload.get("attempt_number"),
+                        "campaign_name": payload.get("campaign_name"),
+                    },
+                )
+                complete_job(session, job)
+                return
+
             from app.core.ai_message_generator import generate_sms
             from app.core.conversation_context import get_conversation_context
             from app.models.outbound_message import OutboundMessage
@@ -132,6 +148,22 @@ def send_email_job(job_id: str) -> None:
                     "send_email_job: reply detected — suppressing email | "
                     "contact_id=%s job_id=%s",
                     contact_id, job_id,
+                )
+                complete_job(session, job)
+                return
+
+            # ── Shadow mode: log and skip AI generation + outbound write ──────
+            if settings.shadow_mode_enabled:
+                from app.worker.shadow import log_shadow_action
+                log_shadow_action(
+                    session,
+                    contact_id=contact_id,
+                    action_type="email",
+                    payload={
+                        "contact_id": contact_id,
+                        "attempt_number": payload.get("attempt_number"),
+                        "campaign_name": payload.get("campaign_name"),
+                    },
                 )
                 complete_job(session, job)
                 return

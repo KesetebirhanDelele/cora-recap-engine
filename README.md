@@ -66,10 +66,12 @@ cora-recap-engine/
 │   │       └── test_calls.py# POST /v1/test/calls/outbound (dev/staging only)
 │   ├── worker/
 │   │   ├── main.py          # RQ worker entrypoint
+│   │   ├── shadow.py        # log_shadow_action() — single write point for shadow_actions
 │   │   └── jobs/
 │   │       ├── call_processing.py  # process_call_event, normalize_synthflow_outcome
 │   │       ├── ai_jobs.py          # classify_call_event (run_call_analysis)
 │   │       ├── outbound_jobs.py    # launch_outbound_call_job
+│   │       ├── channel_jobs.py     # send_sms_job, send_email_job
 │   │       └── voicemail_jobs.py   # process_voicemail_tier
 │   ├── config/
 │   │   └── settings.py      # Pydantic settings with mode flags
@@ -81,6 +83,7 @@ cora-recap-engine/
 │   ├── models/              # SQLAlchemy ORM
 │   └── services/            # Business logic
 ├── execution/
+│   ├── dashboard.py          # Streamlit monitoring dashboard (read-only)
 │   └── test_scripts/
 │       ├── run_test_call.py  # CLI: trigger a live end-to-end test call
 │       └── watch_test_call.py# CLI: poll DB for test call result
@@ -218,8 +221,13 @@ alembic upgrade head --sql > migrations/upgrade.sql
 ```
 
 Migration files:
-- [migrations/versions/0001_initial_schema.py](migrations/versions/0001_initial_schema.py) — 8 tables with unique constraints and indexes
-- [migrations/versions/0002_reporting_views.py](migrations/versions/0002_reporting_views.py) — `fact_call_activity` and `fact_kpi_daily` views
+- [0001_initial_schema.py](migrations/versions/0001_initial_schema.py) — 8 tables with unique constraints and indexes
+- [0002_reporting_views.py](migrations/versions/0002_reporting_views.py) — `fact_call_activity` and `fact_kpi_daily` views
+- [0003_audit_log.py](migrations/versions/0003_audit_log.py) — `audit_log` table for operator action trail
+- [0004_call_event_synthflow_fields.py](migrations/versions/0004_call_event_synthflow_fields.py) — `model_id`, `timeline`, telephony fields on `call_events`
+- [0005_lead_state_intent_fields.py](migrations/versions/0005_lead_state_intent_fields.py) — intent fields on `lead_state`
+- [0006_messaging_tables.py](migrations/versions/0006_messaging_tables.py) — `outbound_messages` and related tables
+- [0007_shadow_actions.py](migrations/versions/0007_shadow_actions.py) — `shadow_actions` table for shadow mode interception log
 
 ### Start services
 
@@ -293,6 +301,48 @@ Expected:
 ```
 Listening on default, ai, callbacks, retries, sheet_mirror...
 ```
+
+---
+
+## Monitoring Dashboard
+
+A read-only Streamlit dashboard at `execution/dashboard.py` queries Postgres directly and displays live system state. The API and worker do **not** need to be running — only Postgres.
+
+### Install and run
+
+```powershell
+# One-time install (inside the project venv)
+.venv\Scripts\activate
+pip install streamlit
+
+# Launch
+streamlit run execution/dashboard.py
+```
+
+Opens at `http://localhost:8501` automatically.
+
+> **Note:** Alembic (and the dashboard) read `DATABASE_URL` from `.env`. If you see a connection error pointing to `host.docker.internal`, a shell environment variable is overriding `.env`. Clear it with:
+> ```powershell
+> Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
+> ```
+
+### Dashboard sections
+
+| Section | What it shows |
+|---|---|
+| **Overview** | Calls (24 h), shadow actions total, open exceptions, failed jobs (24 h); bar charts for job status and shadow action types |
+| **Recent Calls** | Last N call events joined to lead state — contact, status, duration, transcript preview, campaign |
+| **Lead State** | All leads; filter by status (`active`, `nurture`, `enrolled`, `closed`) and campaign |
+| **Shadow Actions** | Intercepted outbound actions logged when `SHADOW_MODE_ENABLED=true`; filter by type (`outbound_call`, `sms`, `email`) |
+| **Scheduled Jobs** | Job queue; filter by status and job type |
+| **Exceptions** | Open/resolved/ignored exceptions; filter by severity |
+| **Contact Drill-Down** | Enter a `contact_id` to see all data for that contact across every table |
+
+### Shadow mode and the dashboard
+
+When `SHADOW_MODE_ENABLED=true`, all outbound actions (calls, SMS, email) are intercepted before reaching Synthflow or the AI layer. Each interception writes one row to `shadow_actions`. The **Shadow Actions** and **Overview** sections of the dashboard show these rows so you can verify what _would have_ been sent in production.
+
+To switch to live mode, set `SHADOW_MODE_ENABLED=false` in `.env` (requires explicit approval per the autonomous execution contract).
 
 ---
 
@@ -378,7 +428,7 @@ INTEGRATION_TESTS=1 pytest tests/integration/
 |---|---|---|
 | `GHL_WRITE_MODE` | `shadow` | GHL writes are logged but not executed |
 | `GHL_WRITE_SHADOW_LOG_ONLY` | `true` | Shadow payloads are log-only |
-| `SHADOW_MODE_ENABLED` | `true` | Global shadow flag |
+| `SHADOW_MODE_ENABLED` | `true` | Intercepts all outbound actions (calls, SMS, email); logs to `shadow_actions` instead of executing |
 | `GOOGLE_SHADOW_MODE_ENABLED` | `true` | Sheets in mirror-only mode |
 
 To enable real GHL writes: set `GHL_WRITE_MODE=live` and `GHL_WRITE_SHADOW_LOG_ONLY=false`. This requires explicit approval per the autonomous execution contract.
