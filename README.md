@@ -331,6 +331,7 @@ Opens at `http://localhost:8501` automatically.
 | Section | What it shows |
 |---|---|
 | **Overview** | Calls (24 h), shadow actions total, open exceptions, failed jobs (24 h); bar charts for job status and shadow action types |
+| **Trends** | Date-range trend charts per campaign (New Lead, Cold Lead, Inbound): total calls, errors, % completed call, % Goodbye — by day/week/month |
 | **Recent Calls** | Last N call events joined to lead state — contact, status, duration, transcript preview, campaign |
 | **Lead State** | All leads; filter by status (`active`, `nurture`, `enrolled`, `closed`) and campaign |
 | **Shadow Actions** | Intercepted outbound actions logged when `SHADOW_MODE_ENABLED=true`; filter by type (`outbound_call`, `sms`, `email`) |

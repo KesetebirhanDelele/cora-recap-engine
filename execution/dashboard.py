@@ -74,6 +74,7 @@ section = st.sidebar.radio(
     "Section",
     [
         "Overview",
+        "Trends",
         "Recent Calls",
         "Lead State",
         "Shadow Actions",
@@ -128,6 +129,176 @@ if section == "Overview":
         st.bar_chart(shadow_by_type.set_index("action_type")["count"])
     else:
         st.info("No shadow actions recorded yet.")
+
+# ── Trends ────────────────────────────────────────────────────────────────────
+
+elif section == "Trends":
+    st.title("Trends")
+
+    from datetime import date, timedelta
+
+    # ── Filters ───────────────────────────────────────────────────────────────
+    col_f1, col_f2, col_f3 = st.columns([2, 2, 2])
+    default_start = date.today() - timedelta(days=29)
+    default_end = date.today()
+
+    start_date = col_f1.date_input("From", value=default_start)
+    end_date = col_f2.date_input("To", value=default_end)
+
+    granularity = col_f3.selectbox("Bucket", ["Day", "Week", "Month"], index=0)
+    trunc_map = {"Day": "day", "Week": "week", "Month": "month"}
+    trunc = trunc_map[granularity]
+
+    campaign_options = ["New Lead", "Cold Lead", "Inbound"]
+    selected_campaigns = st.multiselect(
+        "Campaigns",
+        campaign_options,
+        default=campaign_options,
+    )
+
+    if not selected_campaigns:
+        st.info("Select at least one campaign.")
+        st.stop()
+
+    # ── Core trend query ──────────────────────────────────────────────────────
+    #
+    # campaign_bucket derivation:
+    #   - call_events with direction='inbound'  → 'Inbound'
+    #   - otherwise join lead_state.campaign_name (New Lead / Cold Lead)
+    #
+    # Metrics per bucket per time period:
+    #   total_calls   — all call_events in range
+    #   completed     — status = 'completed'
+    #   goodbye       — end_call_reason ILIKE '%goodbye%'
+    #   errors        — distinct contact_ids that have ≥1 exception in range
+    #
+    campaign_filter_sql = ", ".join(f"'{c}'" for c in selected_campaigns)
+
+    trend_df = _query(
+        f"""
+        WITH base AS (
+            SELECT
+                DATE_TRUNC('{trunc}', ce.created_at)::date          AS period,
+                CASE
+                    WHEN ce.direction = 'inbound' THEN 'Inbound'
+                    ELSE COALESCE(ls.campaign_name, 'Unknown')
+                END                                                   AS campaign,
+                ce.id                                                 AS call_id,
+                ce.contact_id,
+                ce.status,
+                ce.end_call_reason
+            FROM call_events ce
+            LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
+            WHERE ce.created_at >= :start_ts
+              AND ce.created_at <  :end_ts
+        ),
+        errors AS (
+            SELECT DISTINCT e.entity_id AS contact_id
+            FROM exceptions e
+            WHERE e.created_at >= :start_ts
+              AND e.created_at <  :end_ts
+        )
+        SELECT
+            b.period,
+            b.campaign,
+            COUNT(*)                                                              AS total_calls,
+            COUNT(*) FILTER (WHERE b.status = 'completed')                       AS completed_calls,
+            COUNT(*) FILTER (WHERE b.end_call_reason ILIKE '%goodbye%')          AS goodbye_calls,
+            COUNT(DISTINCT b.contact_id)
+                FILTER (WHERE e.contact_id IS NOT NULL)                          AS error_contacts
+        FROM base b
+        LEFT JOIN errors e ON e.contact_id = b.contact_id
+        WHERE b.campaign IN ({campaign_filter_sql})
+        GROUP BY b.period, b.campaign
+        ORDER BY b.period ASC, b.campaign
+        """,
+        {
+            "start_ts": str(start_date),
+            "end_ts": str(end_date + timedelta(days=1)),
+        },
+    )
+
+    if trend_df.empty:
+        st.info("No call data in the selected date range.")
+        st.stop()
+
+    # Compute percentage columns
+    trend_df["pct_completed"] = (
+        trend_df["completed_calls"] / trend_df["total_calls"].replace(0, float("nan")) * 100
+    ).round(1)
+    trend_df["pct_goodbye"] = (
+        trend_df["goodbye_calls"] / trend_df["total_calls"].replace(0, float("nan")) * 100
+    ).round(1)
+
+    # ── Summary table ─────────────────────────────────────────────────────────
+    st.subheader("Summary by Campaign")
+    summary = (
+        trend_df.groupby("campaign")
+        .agg(
+            Total_Calls=("total_calls", "sum"),
+            Completed=("completed_calls", "sum"),
+            Goodbye=("goodbye_calls", "sum"),
+            Errors=("error_contacts", "sum"),
+        )
+        .assign(
+            **{
+                "% Completed": lambda d: (d["Completed"] / d["Total_Calls"].replace(0, float("nan")) * 100).round(1),
+                "% Goodbye":   lambda d: (d["Goodbye"]   / d["Total_Calls"].replace(0, float("nan")) * 100).round(1),
+            }
+        )
+        .reset_index()
+    )
+    st.dataframe(summary, use_container_width=True)
+
+    st.divider()
+
+    # ── Per-campaign trend charts ──────────────────────────────────────────────
+    for campaign in selected_campaigns:
+        camp_df = trend_df[trend_df["campaign"] == campaign].copy()
+        if camp_df.empty:
+            continue
+
+        camp_df = camp_df.set_index("period")
+
+        st.subheader(f"{campaign}")
+
+        c1, c2 = st.columns(2)
+
+        with c1:
+            st.markdown("**Total Calls per Period**")
+            st.bar_chart(camp_df[["total_calls"]])
+
+        with c2:
+            st.markdown("**Errors per Period**")
+            st.bar_chart(camp_df[["error_contacts"]])
+
+        c3, c4 = st.columns(2)
+
+        with c3:
+            st.markdown("**% Completed Call**")
+            st.line_chart(camp_df[["pct_completed"]])
+
+        with c4:
+            st.markdown("**% Goodbye**")
+            st.line_chart(camp_df[["pct_goodbye"]])
+
+        with st.expander(f"Raw data — {campaign}"):
+            st.dataframe(
+                camp_df[
+                    ["total_calls", "completed_calls", "pct_completed",
+                     "goodbye_calls", "pct_goodbye", "error_contacts"]
+                ].rename(columns={
+                    "total_calls":     "Total",
+                    "completed_calls": "Completed",
+                    "pct_completed":   "% Completed",
+                    "goodbye_calls":   "Goodbye",
+                    "pct_goodbye":     "% Goodbye",
+                    "error_contacts":  "Errors",
+                }),
+                use_container_width=True,
+            )
+
+        st.divider()
 
 # ── Recent Calls ──────────────────────────────────────────────────────────────
 

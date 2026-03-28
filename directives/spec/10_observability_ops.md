@@ -36,12 +36,19 @@ Streamlit dashboard at `execution/dashboard.py`. Run with `streamlit run executi
 
 Sections:
 - **Overview** — metrics tiles (calls 24 h, shadow actions, open exceptions, failed jobs); bar charts by job status and shadow action type
+- **Trends** — date-range trend charts per campaign (New Lead, Cold Lead, Inbound): total calls, errors, % completed call, % Goodbye; granularity: day/week/month
 - **Recent Calls** — call events joined to lead state, transcript preview
 - **Lead State** — filterable by status and campaign
 - **Shadow Actions** — intercepted outbound actions (outbound_call, sms, email) when shadow mode is on
 - **Scheduled Jobs** — queue state, filterable by status and job type
 - **Exceptions** — operator exception queue; filter by severity and status
 - **Contact Drill-Down** — single contact_id view across all 6 tables
+
+Trends metric definitions:
+- Total calls: all `call_events` rows in range for the campaign
+- % Completed call: `call_events.status = 'completed'` / total
+- % Goodbye: `call_events.end_call_reason ILIKE '%goodbye%'` / total
+- Errors: distinct contacts with ≥1 `exceptions` row in the same date range
 
 Operator retry/cancel/finalize actions remain API-only (Bearer token required):
 - `POST /v1/exceptions/{id}/retry-now`
