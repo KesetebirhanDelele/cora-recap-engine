@@ -74,6 +74,7 @@ section = st.sidebar.radio(
     "Section",
     [
         "Overview",
+        "Campaign Overview",
         "Trends",
         "Recent Calls",
         "Lead State",
@@ -130,6 +131,169 @@ if section == "Overview":
     else:
         st.info("No shadow actions recorded yet.")
 
+# ── Campaign Overview ─────────────────────────────────────────────────────────
+
+elif section == "Campaign Overview":
+    st.subheader("Campaign Overview (Minimal)")
+
+    import datetime as _dt
+
+    # ── Date filter ───────────────────────────────────────────────────────────
+    col_d1, col_d2 = st.columns(2)
+    today     = _dt.date.today()
+    date_from = col_d1.date_input("Next action from", value=today)
+    date_to   = col_d2.date_input("Next action to",   value=today + _dt.timedelta(days=7))
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    _JOB_LABEL = {
+        "launch_outbound_call": "Call",
+        "send_sms":             "SMS",
+        "send_email":           "Email",
+    }
+
+    def _fmt_delay(ts) -> str:
+        """Human-readable time until ts (tz-aware or naive treated as UTC)."""
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if ts is None or (hasattr(ts, "tzinfo") and ts.tzinfo is None):
+            ts = ts.replace(tzinfo=_dt.timezone.utc) if ts else None
+        if ts is None:
+            return "Now"
+        secs = (ts - now).total_seconds()
+        if secs <= 0:
+            return "Now"
+        if secs < 3600:
+            return f"{int(secs // 60)}m"
+        if secs < 86400:
+            h, m = int(secs // 3600), int((secs % 3600) // 60)
+            return f"{h}h {m}m" if m else f"{h}h"
+        d, h = int(secs // 86400), int((secs % 86400) // 3600)
+        return f"{d}d {h}h" if h else f"{d}d"
+
+    # ── Single query — all lead_state rows ────────────────────────────────────
+    # next_action_at  : nurture scheduler target (set on lead_state by intent handler)
+    # sj.run_at       : earliest pending scheduled_job for this contact
+    # effective_at    : whichever is sooner (preferring the concrete job)
+    raw = _query(
+        """
+        SELECT
+            ls.contact_id,
+            COALESCE(ls.normalized_phone, ls.contact_id)  AS contact,
+            ls.campaign_name,
+            ls.status,
+            ls.do_not_call,
+            ls.invalid,
+            ls.next_action_at,
+            sj.job_type,
+            sj.run_at                                      AS job_run_at,
+            ce.last_call_at,
+            CASE
+                WHEN sj.run_at IS NOT NULL AND ls.next_action_at IS NOT NULL
+                    THEN LEAST(sj.run_at, ls.next_action_at)
+                ELSE COALESCE(sj.run_at, ls.next_action_at)
+            END                                            AS effective_at
+        FROM lead_state ls
+        LEFT JOIN LATERAL (
+            SELECT job_type, run_at
+            FROM scheduled_jobs
+            WHERE entity_id = ls.contact_id
+              AND status    = 'pending'
+            ORDER BY run_at ASC
+            LIMIT 1
+        ) sj ON true
+        LEFT JOIN LATERAL (
+            SELECT MAX(created_at) AS last_call_at
+            FROM call_events
+            WHERE contact_id = ls.contact_id
+        ) ce ON true
+        ORDER BY ce.last_call_at DESC NULLS LAST
+        """,
+    )
+
+    if raw.empty:
+        st.info("No leads found.")
+        st.stop()
+
+    # ── Apply date filter on effective_at (in Python — avoids NULL edge cases) ─
+    def _to_utc(ts):
+        if ts is None or (not hasattr(ts, "tzinfo")):
+            return None
+        if ts.tzinfo is None:
+            return ts.replace(tzinfo=_dt.timezone.utc)
+        return ts
+
+    window_start = _dt.datetime.combine(date_from, _dt.time.min).replace(tzinfo=_dt.timezone.utc)
+    window_end   = _dt.datetime.combine(date_to + _dt.timedelta(days=1), _dt.time.min).replace(tzinfo=_dt.timezone.utc)
+
+    # ── Build display rows ────────────────────────────────────────────────────
+    rows = []
+    for _, r in raw.iterrows():
+        status_val = (r["status"] or "").lower()
+        dnc        = bool(r["do_not_call"])
+        inv        = bool(r["invalid"])
+        is_terminal = dnc or inv or status_val in ("enrolled", "closed")
+
+        effective = _to_utc(r["effective_at"])
+
+        # Apply date window: terminal contacts always shown; active contacts
+        # only shown if their effective_at falls within the window.
+        if not is_terminal:
+            if effective is None:
+                continue                        # no scheduled action at all
+            if not (window_start <= effective < window_end):
+                continue                        # outside the selected window
+
+        # ── Determine Next Action label ────────────────────────────────────
+        if is_terminal:
+            next_action = "—"
+        else:
+            job_type = r["job_type"] if pd.notna(r["job_type"]) else None
+            job_run_at = _to_utc(r["job_run_at"]) if pd.notna(r.get("job_run_at")) else None
+            naa        = _to_utc(r["next_action_at"]) if pd.notna(r["next_action_at"]) else None
+
+            # Use concrete job if it's the sooner (or the only) source
+            if job_run_at and (naa is None or job_run_at <= naa):
+                label = _JOB_LABEL.get(job_type, job_type or "Scheduled")
+                next_action = f"{label} in {_fmt_delay(job_run_at)}"
+            elif naa:
+                next_action = f"Follow-up in {_fmt_delay(naa)}"
+            else:
+                next_action = "None"
+
+        # ── Determine Status label ─────────────────────────────────────────
+        if dnc:
+            final_status = "Do Not Call"
+        elif inv:
+            final_status = "Invalid"
+        elif status_val == "enrolled":
+            final_status = "Enrolled"
+        elif status_val == "closed":
+            final_status = "Closed"
+        else:
+            final_status = "—"
+
+        last_call = r["last_call_at"]
+        if pd.notna(last_call) and last_call is not None:
+            lc = _to_utc(last_call)
+            last_call_str = lc.strftime("%Y-%m-%d %H:%M UTC") if lc else "—"
+        else:
+            last_call_str = "—"
+
+        rows.append({
+            "Contact":     r["contact"],
+            "Campaign":    r["campaign_name"] or "—",
+            "Last Call":   last_call_str,
+            "Next Action": next_action,
+            "Status":      final_status,
+        })
+
+    if not rows:
+        st.info(f"No contacts with scheduled activity between {date_from} and {date_to}.")
+        st.stop()
+
+    df_out = pd.DataFrame(rows)
+    st.caption(f"{len(df_out)} contact(s) — next action {date_from} → {date_to}")
+    st.dataframe(df_out, use_container_width=True, hide_index=True)
+
 # ── Trends ────────────────────────────────────────────────────────────────────
 
 elif section == "Trends":
@@ -176,41 +340,29 @@ elif section == "Trends":
 
     trend_df = _query(
         f"""
-        WITH base AS (
-            SELECT
-                DATE_TRUNC('{trunc}', ce.created_at)::date          AS period,
-                CASE
-                    WHEN ce.direction = 'inbound' THEN 'Inbound'
-                    ELSE COALESCE(ls.campaign_name, 'Unknown')
-                END                                                   AS campaign,
-                ce.id                                                 AS call_id,
-                ce.contact_id,
-                ce.status,
-                ce.end_call_reason
-            FROM call_events ce
-            LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
-            WHERE ce.created_at >= :start_ts
-              AND ce.created_at <  :end_ts
-        ),
-        errors AS (
-            SELECT DISTINCT e.entity_id AS contact_id
-            FROM exceptions e
-            WHERE e.created_at >= :start_ts
-              AND e.created_at <  :end_ts
-        )
         SELECT
-            b.period,
-            b.campaign,
-            COUNT(*)                                                              AS total_calls,
-            COUNT(*) FILTER (WHERE b.status = 'completed')                       AS completed_calls,
-            COUNT(*) FILTER (WHERE b.end_call_reason ILIKE '%goodbye%')          AS goodbye_calls,
-            COUNT(DISTINCT b.contact_id)
-                FILTER (WHERE e.contact_id IS NOT NULL)                          AS error_contacts
-        FROM base b
-        LEFT JOIN errors e ON e.contact_id = b.contact_id
-        WHERE b.campaign IN ({campaign_filter_sql})
-        GROUP BY b.period, b.campaign
-        ORDER BY b.period ASC, b.campaign
+            DATE_TRUNC('{trunc}', ce.created_at)::date          AS period,
+            CASE
+                WHEN ce.direction = 'inbound' THEN 'Inbound'
+                ELSE COALESCE(ls.campaign_name, 'Unknown')
+            END                                                   AS campaign,
+            COUNT(*)                                              AS total_calls,
+            COUNT(*) FILTER (WHERE ce.status = 'completed')      AS completed_calls,
+            COUNT(*) FILTER (
+                WHERE ce.end_call_reason ILIKE '%goodbye%'
+            )                                                     AS goodbye_calls
+        FROM call_events ce
+        LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
+        WHERE ce.created_at >= :start_ts
+          AND ce.created_at <  :end_ts
+          AND (
+              CASE
+                  WHEN ce.direction = 'inbound' THEN 'Inbound'
+                  ELSE COALESCE(ls.campaign_name, 'Unknown')
+              END
+          ) IN ({campaign_filter_sql})
+        GROUP BY period, campaign
+        ORDER BY period ASC, campaign
         """,
         {
             "start_ts": str(start_date),
@@ -238,7 +390,6 @@ elif section == "Trends":
             Total_Calls=("total_calls", "sum"),
             Completed=("completed_calls", "sum"),
             Goodbye=("goodbye_calls", "sum"),
-            Errors=("error_contacts", "sum"),
         )
         .assign(
             **{
@@ -262,23 +413,17 @@ elif section == "Trends":
 
         st.subheader(f"{campaign}")
 
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
 
         with c1:
             st.markdown("**Total Calls per Period**")
             st.bar_chart(camp_df[["total_calls"]])
 
         with c2:
-            st.markdown("**Errors per Period**")
-            st.bar_chart(camp_df[["error_contacts"]])
-
-        c3, c4 = st.columns(2)
-
-        with c3:
             st.markdown("**% Completed Call**")
             st.line_chart(camp_df[["pct_completed"]])
 
-        with c4:
+        with c3:
             st.markdown("**% Goodbye**")
             st.line_chart(camp_df[["pct_goodbye"]])
 
@@ -286,14 +431,13 @@ elif section == "Trends":
             st.dataframe(
                 camp_df[
                     ["total_calls", "completed_calls", "pct_completed",
-                     "goodbye_calls", "pct_goodbye", "error_contacts"]
+                     "goodbye_calls", "pct_goodbye"]
                 ].rename(columns={
                     "total_calls":     "Total",
                     "completed_calls": "Completed",
                     "pct_completed":   "% Completed",
                     "goodbye_calls":   "Goodbye",
                     "pct_goodbye":     "% Goodbye",
-                    "error_contacts":  "Errors",
                 }),
                 use_container_width=True,
             )
