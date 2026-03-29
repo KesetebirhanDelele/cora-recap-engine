@@ -37,6 +37,51 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Executed-actions parser (used to reinforce intent detection)
+# ---------------------------------------------------------------------------
+
+def _extract_executed_actions(executed_actions: list | None) -> dict:
+    """
+    Parse Synthflow executed_actions list into structured signal flags.
+
+    Returns:
+      {
+        "transfer_attempted": bool,
+        "transfer_failed":    bool,
+        "booking_success":    bool,
+        "booking_failed":     bool,
+      }
+    """
+    flags = {
+        "transfer_attempted": False,
+        "transfer_failed":    False,
+        "booking_success":    False,
+        "booking_failed":     False,
+    }
+    if not executed_actions:
+        return flags
+
+    for action in executed_actions:
+        if not isinstance(action, dict):
+            continue
+        action_type = (action.get("type") or action.get("action") or "").lower()
+        status      = (action.get("status") or action.get("result") or "").lower()
+
+        if any(kw in action_type for kw in ("transfer", "handoff", "live_agent")):
+            flags["transfer_attempted"] = True
+            if status in ("failed", "error", "timeout"):
+                flags["transfer_failed"] = True
+
+        if any(kw in action_type for kw in ("booking", "schedule", "appointment", "calendar")):
+            if status in ("success", "completed", "confirmed"):
+                flags["booking_success"] = True
+            elif status in ("failed", "error", "cancelled"):
+                flags["booking_failed"] = True
+
+    return flags
+
+
+# ---------------------------------------------------------------------------
 # Compiled pattern table — evaluated in PRIORITY ORDER
 # ---------------------------------------------------------------------------
 
@@ -84,6 +129,16 @@ _RAW_PATTERNS: list[tuple[str, list[str]]] = [
         r"\bi\s+completed\s+the\s+enrollment\b",
         r"\bsign\s+me\s+up\b",
     ]),
+    ("human_transfer_request", [
+        r"\btalk\s+to\s+(a\s+)?(real\s+)?(someone|person|human|agent|representative|rep)\b",
+        r"\bspeak\s+(with|to)\s+(a\s+)?(real\s+)?(person|human|agent|representative)\b",
+        r"\breal\s+person\b",
+        r"\bhuman\s+agent\b",
+        r"\btransfer\s+me\b",
+        r"\btransfer\s+to\s+(a\s+)?(human|person|agent|representative)\b",
+        r"\bconnect\s+me\s+(with|to)\s+(a\s+)?(human|person|agent|representative)\b",
+        r"\bcan\s+i\s+(talk|speak)\s+to\s+(a\s+)?(human|person|agent|representative)\b",
+    ]),
     ("re_engaged", [
         # Cold lead expressing genuine interest — triggers campaign switch to New Lead
         r"\bactually\s+i'?m?\s+(am\s+)?interested\b",
@@ -117,6 +172,15 @@ _RAW_PATTERNS: list[tuple[str, list[str]]] = [
         r"\bcan\s+you\s+call\b",
         r"\bi'?ll\s+answer\b",
         r"\bcall\s+me\s+when\b",
+    ]),
+    ("failed_booking", [
+        r"\bdidn'?t\s+work\b",
+        r"\bcouldn'?t\s+book\b",
+        r"\bunable\s+to\s+(book|schedule)\b",
+        r"\bbooking\s+(failed|didn'?t|didn\s+t)\b",
+        r"\b(booking|appointment|schedule|link)\b.*\btry\s+again\b",
+        r"\blink\s+(didn'?t|doesn'?t|not)\s+work\b",
+        r"\bsomething\s+went\s+wrong\b",
     ]),
     ("interested_not_now", [
         r"\bnot\s+right\s+now\b",
@@ -286,9 +350,29 @@ def _build_future_dt(
 # Public API
 # ---------------------------------------------------------------------------
 
-def detect_intent(transcript: str) -> dict[str, Any] | None:
+# Threshold constants (can be overridden in tests)
+_LOW_CONFIDENCE_MIN_CHARS: int = 5    # transcript shorter than this → low_confidence_audio
+_PARTIAL_ENGAGEMENT_MAX_SECONDS: int = 120  # call shorter than this → partial_engagement eligible
+
+
+def detect_intent(
+    transcript: str,
+    *,
+    executed_actions: list | None = None,
+    duration_seconds: int | None = None,
+) -> dict[str, Any] | None:
     """
     Detect the primary intent from a call transcript.
+
+    Extended to support live-call signals via executed_actions and duration_seconds.
+    Both parameters are optional — existing callers that omit them are unaffected.
+
+    Priority order:
+      1. executed_actions overrides (transfer / booking — highest priority)
+      2. low_confidence_audio  (length/noise check — BEFORE patterns)
+      3. Pattern-based intents (do_not_call → request_email)
+         including human_transfer_request, failed_booking
+      4. partial_engagement    (post-pattern fallback when nothing matched)
 
     Returns a result dict on match, None when no intent is found.
 
@@ -305,8 +389,39 @@ def detect_intent(transcript: str) -> dict[str, Any] | None:
     if not transcript or not transcript.strip():
         return None
 
-    normalized = transcript.strip().lower()
+    stripped = transcript.strip()
+    normalized = stripped.lower()
 
+    # ── 1. Executed-actions overrides — highest priority, fire before all checks ─
+    # When Synthflow reports a definitive action (transfer, booking), trust it
+    # regardless of transcript length.
+    ea_flags = _extract_executed_actions(executed_actions)
+    if ea_flags["transfer_attempted"]:
+        logger.info("live_call_detected: transfer_attempted via executed_actions")
+        return {"intent": "human_transfer_request", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "transfer_attempted": True}}
+
+    if ea_flags["booking_failed"] and not ea_flags["booking_success"]:
+        logger.info("failed_booking_detected: booking_failed via executed_actions")
+        return {"intent": "failed_booking", "confidence": 0.95, "entities": {"datetime": None, "channel": None}}
+
+    # ── 2. Low-confidence audio — checked BEFORE patterns ────────────────────
+    if len(stripped) < _LOW_CONFIDENCE_MIN_CHARS:
+        logger.info("low_confidence_audio_detected: transcript too short (%d chars)", len(stripped))
+        return {"intent": "low_confidence_audio", "confidence": 0.8, "entities": {"datetime": None, "channel": None}}
+
+    _LOW_CONFIDENCE_PATTERNS = [
+        re.compile(r"^\s*\.{2,}\s*$"),          # only dots
+        re.compile(r"^\s*\[?noise\]?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*\[?inaudible\]?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*\[?silence\]?\s*$", re.IGNORECASE),
+        re.compile(r"^\s*\[?background\s+noise\]?\s*$", re.IGNORECASE),
+    ]
+    for pat in _LOW_CONFIDENCE_PATTERNS:
+        if pat.match(stripped):
+            logger.info("low_confidence_audio_detected: noise/empty-like transcript")
+            return {"intent": "low_confidence_audio", "confidence": 0.8, "entities": {"datetime": None, "channel": None}}
+
+    # ── 3. Pattern-based intent matching ─────────────────────────────────────
     for intent, patterns in _COMPILED:
         for pattern in patterns:
             if pattern.search(normalized):
@@ -314,10 +429,8 @@ def detect_intent(transcript: str) -> dict[str, Any] | None:
 
                 if intent == "callback_with_time":
                     entities["datetime"] = _extract_callback_datetime(normalized)
-
                 elif intent == "request_sms":
                     entities["channel"] = "sms"
-
                 elif intent == "request_email":
                     entities["channel"] = "email"
 
@@ -331,5 +444,25 @@ def detect_intent(transcript: str) -> dict[str, Any] | None:
                     intent, pattern.pattern,
                 )
                 return result
+
+    # ── 4. Partial engagement — post-pattern fallback ─────────────────────────
+    # Fires when: transcript exists, nothing matched, and duration_seconds is
+    # explicitly provided (caller has real call metadata).
+    # Requires either a short call OR a short transcript with a known short duration.
+    # Does NOT fire when duration_seconds is None — that would produce false positives
+    # on transcripts that simply don't match any known intent.
+    if duration_seconds is not None:
+        is_short_call = duration_seconds < _PARTIAL_ENGAGEMENT_MAX_SECONDS
+        if is_short_call or len(stripped) < 300:
+            logger.info(
+                "partial_engagement_detected: no strong intent, "
+                "transcript_len=%d duration=%s",
+                len(stripped), duration_seconds,
+            )
+            return {
+                "intent": "partial_engagement",
+                "confidence": 0.6,
+                "entities": {"datetime": None, "channel": None},
+            }
 
     return None

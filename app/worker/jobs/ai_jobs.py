@@ -106,6 +106,60 @@ def run_call_analysis(job_id: str) -> None:
             _persist_classification(session, call_event_id, analysis)
             _persist_summary(session, call_event_id, summary, consent)
 
+            # ── Live-call intent routing ───────────────────────────────────────
+            # For completed (answered) calls, detect intent from the transcript
+            # and apply lifecycle / campaign routing just as voicemail_jobs does.
+            # Downstream jobs (update_lead_state, create_crm_task, etc.) are
+            # still scheduled regardless — they are additive, not conflicting.
+            if transcript:
+                from app.core.intent_detection import detect_intent
+                from app.core.intent_actions import handle_intent
+                from app.core.campaigns import (
+                    apply_campaign_switch,
+                    evaluate_campaign_switch,
+                )
+                from app.models.lead_state import LeadState
+                from sqlalchemy import select
+
+                ea = (call_event.raw_payload_json or {}).get("executed_actions") if call_event else None
+                dur = call_event.duration_seconds if call_event else None
+
+                intent_result = detect_intent(
+                    transcript,
+                    executed_actions=ea,
+                    duration_seconds=dur,
+                )
+
+                if intent_result is not None:
+                    live_lead = session.scalars(
+                        select(LeadState).where(LeadState.contact_id == contact_id)
+                    ).first()
+                    live_phone = live_lead.normalized_phone if live_lead else ""
+                    campaign_name = live_lead.campaign_name if live_lead else ""
+
+                    logger.info(
+                        "live_call_detected | contact_id=%s intent=%s",
+                        contact_id, intent_result["intent"],
+                    )
+                    handle_intent(
+                        session=session,
+                        intent_result=intent_result,
+                        contact_id=contact_id,
+                        phone=live_phone or "",
+                        current_job_id=job.id,
+                        settings=settings,
+                    )
+
+                    new_campaign = evaluate_campaign_switch(
+                        campaign_name or "", intent_result["intent"]
+                    )
+                    if new_campaign and live_lead is not None:
+                        session.refresh(live_lead)
+                        apply_campaign_switch(
+                            session, live_lead, new_campaign,
+                            reason=intent_result["intent"],
+                        )
+
             # Schedule downstream jobs (all run after this job completes)
             callbacks_queue = _make_callbacks_queue(settings)
             default_queue = _make_default_queue(settings)

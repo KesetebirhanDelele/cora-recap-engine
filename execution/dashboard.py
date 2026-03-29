@@ -234,12 +234,17 @@ elif section == "Campaign Overview":
 
         effective = _to_utc(r["effective_at"])
 
-        # Apply date window: terminal contacts always shown; active contacts
-        # only shown if their effective_at falls within the window.
+        # Apply date window:
+        # - Terminal contacts: always shown
+        # - Contacts with no effective_at but a recent call: always shown (unprocessed/orphaned)
+        # - Active contacts with effective_at: shown only if within window
+        has_recent_call = pd.notna(r["last_call_at"]) and r["last_call_at"] is not None
         if not is_terminal:
             if effective is None:
-                continue                        # no scheduled action at all
-            if not (window_start <= effective < window_end):
+                if not has_recent_call:
+                    continue                    # no call history and no action — skip
+                # else: fall through and show with "Unscheduled" label
+            elif not (window_start <= effective < window_end):
                 continue                        # outside the selected window
 
         # ── Determine Next Action label ────────────────────────────────────
@@ -257,7 +262,7 @@ elif section == "Campaign Overview":
             elif naa:
                 next_action = f"Follow-up in {_fmt_delay(naa)}"
             else:
-                next_action = "None"
+                next_action = "⚠ Unscheduled"
 
         # ── Determine Status label ─────────────────────────────────────────
         if dnc:

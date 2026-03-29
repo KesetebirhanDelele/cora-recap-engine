@@ -139,7 +139,15 @@ def process_voicemail_tier(job_id: str) -> None:
                 from app.core.intent_detection import detect_intent
                 from app.core.intent_actions import handle_intent
 
-                intent_result = detect_intent(transcript)
+                logger.info(
+                    "live_call_detected | contact_id=%s transcript_len=%d duration=%s",
+                    contact_id, len(transcript.strip()), payload.get("duration_seconds"),
+                )
+                intent_result = detect_intent(
+                    transcript,
+                    executed_actions=payload.get("executed_actions"),
+                    duration_seconds=payload.get("duration_seconds"),
+                )
                 if intent_result is not None:
                     logger.info(
                         "DETECTED INTENT: %s | contact_id=%s confidence=%.2f entities=%s",

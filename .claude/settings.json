@@ -26,7 +26,11 @@
       "Bash(python -m pytest tests/unit/test_messaging.py::TestChannelJobs::test_sms_creates_outbound_message_when_no_reply tests/unit/test_shadow_mode.py -v)",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''execution/dashboard.py''\\).read\\(\\)\\); print\\(''OK''\\)\")",
       "Bash(python -m psycopg2)",
-      "Bash(.venv/Scripts/python -c \":*)"
+      "Bash(.venv/Scripts/python -c \":*)",
+      "Bash(docker exec cora-recap-engine-api-1 python -c \":*)",
+      "Bash(python -m pytest tests/unit/test_live_call_intents.py -v)",
+      "Bash(python -m pytest tests/unit/ tests/evals/ -v --tb=no -q)",
+      "Bash(python -m pytest tests/unit/test_intent_detection.py::test_not_interested_no_thanks_short tests/unit/test_intent_detection.py::test_call_later_no_time_try_again tests/unit/test_intent_detection.py::test_unrecognised_text_returns_none tests/unit/test_intent_detection.py::test_uncertain_maybe -v)"
     ]
   }
 }

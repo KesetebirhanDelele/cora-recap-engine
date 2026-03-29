@@ -23,6 +23,21 @@
 - Send completed non-voicemail calls to call-through analysis.
 - Surface invalid-route outcomes as exceptions.
 
+### Live-call intent routing
+- After AI analysis on a completed (answered) call, run rule-based intent detection using the transcript, Synthflow `executed_actions` payload, and call duration.
+- Detect four live-call signals in addition to the existing voicemail-transcript intents:
+  - `human_transfer_request` — transcript keywords ("talk to a real person", "transfer me", etc.) or `executed_actions` transfer attempt
+  - `failed_booking` — transcript keywords ("didn't work", "couldn't book", etc.) or `executed_actions` booking failure
+  - `partial_engagement` — transcript exists, no strong intent matched, and call duration was short (< 120 s)
+  - `low_confidence_audio` — transcript shorter than 5 characters, or noise/inaudible-only content
+- Handler actions (one-shot, not tiered):
+  - `human_transfer_request`: lifecycle → `human_transfer`; schedule +2 h follow-up call if transfer not confirmed
+  - `failed_booking`: schedule +4 h retry call, same campaign
+  - `partial_engagement`: schedule +2 h retry call, same campaign; after 2 retries (cap), escalate to Cold Lead campaign (same path as `low_confidence_audio`)
+  - `low_confidence_audio` (**critical**): lifecycle → `cold`; enter Cold Lead campaign (cancel jobs, reset tier, schedule first outbound call)
+- Voicemail-path intent detection also receives `executed_actions` and `duration_seconds` from the job payload so these signals apply to calls routed through the voicemail tier job.
+- Existing intent priority order (highest → lowest): `do_not_call`, `wrong_number`, `not_interested`, `enrolled`, `human_transfer_request`, `re_engaged`, `callback_with_time`, `callback_request`, `failed_booking`, `interested_not_now`, `call_later_no_time`, `uncertain`, `partial_engagement`, `request_sms`, `request_email`, `low_confidence_audio`.
+
 ### Task creation and CRM updates
 - Create a GHL task for every completed non-voicemail call.
 - Leave the task due date empty.

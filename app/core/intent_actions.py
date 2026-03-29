@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Policy constants (override via settings fields if needed)
 CALLBACK_FALLBACK_MINUTES: int = 120    # 2 h default when no time was extracted
 NURTURE_DELAY_DAYS: int = 7             # days before nurture outbound call
+PARTIAL_ENGAGEMENT_RETRY_CAP: int = 2   # max retries before Cold Lead escalation
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +236,150 @@ def _handle_wrong_number(session, contact_id, phone, entities, settings) -> None
     )
 
 
+def _handle_human_transfer_request(session, contact_id, phone, entities, settings) -> None:
+    """
+    Human transfer was requested — a live agent will take over.
+
+    If booking was already confirmed (via executed_actions), cancel all pending jobs
+    and set status='human_transfer'.
+    If booking did NOT happen, schedule a follow-up call in 2 hours.
+    """
+    from app.core.lifecycle import transition_lead_state
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
+    from datetime import timedelta
+
+    transfer_confirmed = entities.get("transfer_attempted", False)
+
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+
+    if lead is not None:
+        transition_lead_state(session, lead, "human_transfer")
+        session.refresh(lead)
+
+    if not transfer_confirmed:
+        # Transfer or booking may not have completed — schedule follow-up in 2 hours
+        run_at = datetime.now(tz=timezone.utc) + timedelta(hours=2)
+        _schedule_outbound_call(
+            session, contact_id, phone, run_at, settings,
+            reason="transfer_requested",
+        )
+        logger.info(
+            "transfer_requested: follow-up scheduled +2h | contact_id=%s", contact_id
+        )
+    else:
+        logger.info(
+            "transfer_requested: transfer confirmed, no follow-up scheduled | contact_id=%s",
+            contact_id,
+        )
+
+
+def _handle_partial_engagement(session, contact_id, phone, entities, settings) -> None:
+    """
+    Lead partially engaged — transcript exists but no strong intent matched.
+
+    Schedules a retry call in 2 hours, up to PARTIAL_ENGAGEMENT_RETRY_CAP times.
+    Once the cap is reached, escalates to Cold Lead campaign instead of retrying.
+    """
+    from datetime import timedelta
+
+    prior_count = _count_partial_engagement_retries(session, contact_id)
+
+    if prior_count >= PARTIAL_ENGAGEMENT_RETRY_CAP:
+        logger.info(
+            "partial_engagement cap reached (%d/%d): escalating to cold_lead | contact_id=%s",
+            prior_count, PARTIAL_ENGAGEMENT_RETRY_CAP, contact_id,
+        )
+        from app.core.lifecycle import transition_lead_state
+        from app.core.campaigns import enter_campaign
+        from sqlalchemy import select
+        from app.models.lead_state import LeadState
+
+        lead = session.scalars(
+            select(LeadState).where(LeadState.contact_id == contact_id)
+        ).first()
+
+        if lead is None:
+            logger.warning(
+                "_handle_partial_engagement: no lead_state for contact_id=%s — skipping escalation",
+                contact_id,
+            )
+            return
+
+        transition_lead_state(session, lead, "low_confidence")
+        session.refresh(lead)
+        enter_campaign(session, lead, "cold_lead", settings=settings)
+        logger.info(
+            "partial_engagement escalated to cold_lead | contact_id=%s prior_retries=%d",
+            contact_id, prior_count,
+        )
+        return
+
+    run_at = datetime.now(tz=timezone.utc) + timedelta(hours=2)
+    _schedule_outbound_call(
+        session, contact_id, phone, run_at, settings,
+        reason="partial_engagement",
+    )
+    logger.info(
+        "partial_engagement_detected: retry %d/%d scheduled +2h | contact_id=%s",
+        prior_count + 1, PARTIAL_ENGAGEMENT_RETRY_CAP, contact_id,
+    )
+
+
+def _handle_failed_booking(session, contact_id, phone, entities, settings) -> None:
+    """
+    Booking was attempted but failed. Schedule retry call in 4 hours, same campaign.
+    """
+    from datetime import timedelta
+
+    run_at = datetime.now(tz=timezone.utc) + timedelta(hours=4)
+    _schedule_outbound_call(
+        session, contact_id, phone, run_at, settings,
+        reason="booking_retry",
+    )
+    logger.info(
+        "failed_booking_detected: retry scheduled +4h | contact_id=%s", contact_id
+    )
+
+
+def _handle_low_confidence_audio(session, contact_id, phone, entities, settings) -> None:
+    """
+    Low-confidence audio — transcript too short or noisy to classify.
+
+    CRITICAL: Transitions the lead to Cold Lead campaign.
+    1. Apply "low_confidence" lifecycle event (any non-terminal → cold)
+    2. Enter cold_lead campaign (cancels remaining jobs, resets tier, schedules call)
+    """
+    from app.core.lifecycle import transition_lead_state
+    from app.core.campaigns import enter_campaign
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
+
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+
+    if lead is None:
+        logger.warning(
+            "_handle_low_confidence_audio: no lead_state for contact_id=%s — skipping",
+            contact_id,
+        )
+        return
+
+    # 1. Transition status to "cold" via lifecycle event
+    transition_lead_state(session, lead, "low_confidence")
+    session.refresh(lead)
+
+    # 2. Enter cold_lead campaign (cancels remaining jobs, resets tier, schedules first call)
+    enter_campaign(session, lead, "cold_lead", settings=settings)
+    logger.info(
+        "low_confidence_audio_detected: lead moved to cold_lead | contact_id=%s",
+        contact_id,
+    )
+
+
 def _handle_request_sms(session, contact_id, phone, entities, settings) -> None:
     """Set preferred channel to SMS and schedule an SMS stub job."""
     _update_lead_state(session, contact_id, preferred_channel="sms")
@@ -257,18 +402,22 @@ def _handle_request_email(session, contact_id, phone, entities, settings) -> Non
 
 # Handler dispatch table (mirrors priority-ordered intent names)
 _HANDLERS: dict[str, Any] = {
-    "do_not_call":        _handle_do_not_call,
-    "wrong_number":       _handle_wrong_number,
-    "not_interested":     _handle_not_interested,
-    "enrolled":           _handle_enrolled,
-    "re_engaged":         _handle_re_engaged,
-    "callback_with_time": _handle_callback_with_time,
-    "callback_request":   _handle_callback_request,
-    "interested_not_now": _handle_interested_not_now,
-    "call_later_no_time": _handle_call_later_no_time,
-    "uncertain":          _handle_uncertain,
-    "request_sms":        _handle_request_sms,
-    "request_email":      _handle_request_email,
+    "do_not_call":              _handle_do_not_call,
+    "wrong_number":             _handle_wrong_number,
+    "not_interested":           _handle_not_interested,
+    "enrolled":                 _handle_enrolled,
+    "human_transfer_request":   _handle_human_transfer_request,
+    "re_engaged":               _handle_re_engaged,
+    "callback_with_time":       _handle_callback_with_time,
+    "callback_request":         _handle_callback_request,
+    "failed_booking":           _handle_failed_booking,
+    "interested_not_now":       _handle_interested_not_now,
+    "call_later_no_time":       _handle_call_later_no_time,
+    "uncertain":                _handle_uncertain,
+    "partial_engagement":       _handle_partial_engagement,
+    "request_sms":              _handle_request_sms,
+    "request_email":            _handle_request_email,
+    "low_confidence_audio":     _handle_low_confidence_audio,
 }
 
 
@@ -370,6 +519,27 @@ def _update_lead_state(
         .values(**updates)
     )
     session.flush()
+
+
+def _count_partial_engagement_retries(session: Session, contact_id: str) -> int:
+    """
+    Count how many partial_engagement outbound call jobs have been scheduled
+    for this contact (excluding cancelled jobs).
+
+    Used to enforce PARTIAL_ENGAGEMENT_RETRY_CAP.
+    """
+    from sqlalchemy import func, select
+    from app.models.scheduled_job import ScheduledJob
+
+    result = session.execute(
+        select(func.count()).select_from(ScheduledJob).where(
+            ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.payload_json["intent_reason"].as_string() == "partial_engagement",
+            ScheduledJob.status != "cancelled",
+        )
+    )
+    return result.scalar() or 0
 
 
 def _schedule_outbound_call(

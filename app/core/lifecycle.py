@@ -56,6 +56,8 @@ _TRANSITIONS: dict[str, tuple[frozenset[str | None] | None, str]] = {
     "uncertain":          (frozenset({None, "active", "cold"}), "nurture"),
     "timeout":            (frozenset({"nurture"}),              "cold"),
     "reactivate":         (frozenset({"cold", "nurture"}),      "active"),
+    "human_transfer":     (None,                                "human_transfer"),
+    "low_confidence":     (None,                                "cold"),
 }
 
 

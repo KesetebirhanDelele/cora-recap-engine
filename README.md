@@ -40,7 +40,7 @@ Provides durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates,
 
 ---
 
-## Status: Phases 1–10 Complete
+## Status: Phases 1–10 Complete + Live-Call Intent Routing
 
 All build phases are complete. Phase 9 (Google Sheets shadow sync) is **out of scope** — visual inspection is used instead.
 
@@ -69,10 +69,11 @@ cora-recap-engine/
 │   │   ├── shadow.py        # log_shadow_action() — single write point for shadow_actions
 │   │   └── jobs/
 │   │       ├── call_processing.py  # process_call_event, normalize_synthflow_outcome
-│   │       ├── ai_jobs.py          # classify_call_event (run_call_analysis)
+│   │       ├── ai_jobs.py          # classify_call_event (run_call_analysis) + live-call intent routing
+│   │       ├── lifecycle_jobs.py   # update_lead_state (post-AI lead stage update)
 │   │       ├── outbound_jobs.py    # launch_outbound_call_job
 │   │       ├── channel_jobs.py     # send_sms_job, send_email_job
-│   │       └── voicemail_jobs.py   # process_voicemail_tier
+│   │       └── voicemail_jobs.py   # process_voicemail_tier (+ executed_actions/duration intent signals)
 │   ├── config/
 │   │   └── settings.py      # Pydantic settings with mode flags
 │   ├── adapters/            # External service clients

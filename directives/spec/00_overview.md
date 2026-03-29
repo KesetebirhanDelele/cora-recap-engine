@@ -18,6 +18,7 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 4. The system updates CRM fields and creates one GHL task for each completed non-voicemail call.
 5. The system generates a student summary and consent decision.
 6. If consent is `YES`, the system writes the student summary back to the configured GHL recap field.
+7. The system runs intent detection on the transcript (including `executed_actions` signals) and applies live-call routing: schedule follow-up, move to Cold Lead, or take no additional action.
 
 ### 2. Unified voicemail recovery path
 1. A voicemail or voicemail-hangup outcome is detected.
@@ -27,7 +28,18 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 5. New Lead policy may use different timing/actions while preserving the same tier numbering model.
 6. Tier 3 turns off AI campaign activity in GHL and ends automated callback progression.
 
-### 3. Pending/stuck recovery via dashboard
+### 3. Live-call intent routing
+1. A completed (answered) call arrives.
+2. After AI analysis, `detect_intent()` is called with the transcript, `executed_actions` flags, and call duration.
+3. If a signal is detected, `handle_intent()` applies the appropriate lifecycle action:
+   - `human_transfer_request` → set status `human_transfer`; schedule +2 h follow-up if transfer unconfirmed
+   - `failed_booking` → keep campaign; schedule +4 h retry
+   - `partial_engagement` → keep campaign; schedule +2 h retry (after 2 retries: escalate to Cold Lead)
+   - `low_confidence_audio` → lifecycle transition to `cold`; enter Cold Lead campaign (resets tier, cancels jobs, schedules first call)
+4. Campaign switch rules apply after intent routing (e.g. `re_engaged` on a Cold Lead → switch to New Lead).
+5. Downstream AI jobs (`update_lead_state`, `create_crm_task`, `send_student_summary`) complete regardless of intent outcome.
+
+### 4. Pending/stuck recovery via dashboard
 1. A call remains `queue` or `in-progress`, or a critical dependency fails.
 2. The worker retries within bounded policy.
 3. If the event cannot complete safely, an exception is stored in Postgres.

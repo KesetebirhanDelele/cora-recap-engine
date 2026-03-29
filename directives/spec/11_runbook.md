@@ -81,6 +81,36 @@ All actions require: `Authorization: Bearer {SECRET_KEY}`
 Operator actions are audit-logged in the `audit_log` table.
 Concurrent actions: first wins, second gets HTTP 409.
 
+## Live-call intent routing
+
+After AI analysis on a completed call, `detect_intent()` is called with the transcript, `executed_actions` (from `call_event.raw_payload_json`), and `duration_seconds`. Detected signals trigger `handle_intent()` via the same pipeline as voicemail-transcript intents.
+
+### Signal reference
+
+| Signal | Primary trigger | Handler outcome |
+|---|---|---|
+| `human_transfer_request` | Transcript: "talk to a real person", "transfer me", etc. OR `executed_actions` transfer attempt | Status → `human_transfer`; +2 h follow-up scheduled if transfer unconfirmed |
+| `failed_booking` | Transcript: "didn't work", "couldn't book", etc. OR `executed_actions` booking failure | +4 h retry scheduled, campaign unchanged |
+| `partial_engagement` | No strong intent matched + call duration < 120 s | +2 h retry scheduled, campaign unchanged; after 2 retries → Cold Lead campaign |
+| `low_confidence_audio` | Transcript < 5 chars or noise/inaudible only | Status → `cold`; enters Cold Lead campaign (cancels jobs, resets tier, schedules first outbound) |
+
+`partial_engagement` only fires when `duration_seconds` is present in the payload and below threshold. Calls with no duration signal fall through to `None`.
+
+### Operator actions for live-call scenarios
+
+- **Lead stuck in `human_transfer` status** — the human agent did not complete enrollment. Check if a follow-up `launch_outbound_call` is pending in `scheduled_jobs`. If the lead should re-enter the AI campaign, use `force-finalize` or manually update `lead_state.status` and schedule a new call via the test endpoint.
+- **Lead unexpectedly moved to Cold Lead** — caused by `low_confidence_audio` detection. Check transcript in `call_events` and `classification_results`. If the classification was incorrect, use `cancel-future-jobs` to stop the queued Cold Lead call, then manually set `lead_state.campaign_name = 'New Lead'` and `ai_campaign_value = NULL`.
+- **Duplicate follow-up calls scheduled** — `_schedule_outbound_call` in `intent_actions.py` has an idempotency guard; inspect `scheduled_jobs` for `launch_outbound_call` rows with status `pending` for the contact. Cancel duplicates via the dashboard `cancel-future-jobs` endpoint.
+
+## Nurture scheduler
+
+The nurture scheduler runs every 5 minutes and graduates `status='nurture'` leads whose `next_action_at` has passed into the Cold Lead campaign.
+
+- `run_nurture_scheduler` job appears in `scheduled_jobs` with `entity_id='nurture_scheduler'`
+- On worker startup, `ensure_scheduled()` creates the first job automatically
+- Individual lead failures are isolated — one bad row does not stop the batch
+- If no `run_nurture_scheduler` job is pending, the worker may have been restarted without running `ensure_scheduled()` — restart the worker or manually insert a job
+
 ## Troubleshooting
 - duplicate task → inspect `dedupe_key` in `call_events` and `task_events`
 - missing summary → inspect `summary_results.summary_consent` and transcript length
@@ -89,7 +119,12 @@ Concurrent actions: first wins, second gets HTTP 409.
 - exception queue growing → use dashboard retry/cancel/finalize actions
 - expired job leases → `recover_expired_claims()` runs on worker restart
 - outbound calls/SMS/email not sending → check `SHADOW_MODE_ENABLED`; if `true`, actions are intercepted and logged to `shadow_actions` instead of executed
+- SMS/email not sending despite shadow mode off → check `inbound_messages` and `lead_state.last_replied_at`; reply detection suppresses sends if either signal is set
+- nurture lead not graduating to Cold Lead → check `next_action_at` in `lead_state`; check `run_nurture_scheduler` job exists in `scheduled_jobs` with `status=pending`
+- lead unexpectedly moved to Cold Lead after repeated answered calls → `partial_engagement` retry cap reached (2 retries); check `scheduled_jobs` count for `intent_reason='partial_engagement'` on the contact
 - `alembic current` or dashboard fails with `host.docker.internal` pg_hba error → a shell `DATABASE_URL` env var is overriding `.env`; remove it with `Remove-Item Env:DATABASE_URL`
+- lead moved to Cold Lead unexpectedly → check `call_events.transcript` length; may have triggered `low_confidence_audio` (transcript < 5 chars)
+- lead stuck in `human_transfer` status → check `scheduled_jobs` for pending follow-up; see Live-call intent routing section above
 
 ## Migration commands
 ```bash
