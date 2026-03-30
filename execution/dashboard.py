@@ -458,12 +458,24 @@ elif section == "Recent Calls":
     df = _query(
         f"""
         SELECT
-            ce.contact_id,
+            COALESCE(ls.normalized_phone, ce.contact_id)          AS contact,
             ce.call_id,
             ce.status,
             ce.duration_seconds,
-            LEFT(ce.transcript, 120) AS transcript_preview,
-            ls.campaign_name,
+            -- Campaign: lead_state value, fall back to call direction when NULL
+            COALESCE(
+                ls.campaign_name,
+                CASE
+                    WHEN ce.direction = 'inbound'  THEN 'Inbound'
+                    WHEN ce.direction = 'outbound' THEN 'Outbound'
+                    ELSE '—'
+                END
+            )                                                      AS campaign,
+            -- detected_intent written at processing time by ai_jobs / voicemail_jobs
+            ce.detected_intent,
+            -- lead status used as fallback qualifier for terminal outcomes
+            ls.status                                              AS lead_status,
+            LEFT(ce.transcript, 120)                               AS transcript_preview,
             ce.created_at
         FROM call_events ce
         LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
@@ -472,7 +484,40 @@ elif section == "Recent Calls":
         """
     )
     if not df.empty:
-        st.dataframe(df, use_container_width=True)
+        # Build human-readable "Outcome" column: "{status} · {intent qualifier}"
+        # Intent qualifier is only shown for completed (answered) calls.
+        def _outcome(row) -> str:
+            status  = (row.get("status") or "").lower()
+            intent  = (row.get("detected_intent") or "").strip()
+            lead_st = (row.get("lead_status") or "").lower()
+
+            if status != "completed":
+                return status
+
+            # Primary qualifier: detected_intent stored on the call_event row.
+            # Fallback: lead_state.status for terminal outcomes (enrolled, closed,
+            # human_transfer, cold) where no follow-up call is scheduled.
+            qualifier = ""
+            if intent:
+                qualifier = intent.replace("_", " ")
+            elif lead_st in ("enrolled", "closed", "human_transfer", "cold"):
+                qualifier = lead_st.replace("_", " ")
+
+            return f"{status} · {qualifier}" if qualifier else status
+
+        df["outcome"] = df.apply(_outcome, axis=1)
+
+        display_df = df[["contact", "call_id", "campaign", "outcome",
+                          "duration_seconds", "transcript_preview", "created_at"]]
+        display_df = display_df.rename(columns={
+            "call_id":            "Call ID",
+            "campaign":           "Campaign",
+            "outcome":            "Outcome",
+            "duration_seconds":   "Duration (s)",
+            "transcript_preview": "Transcript",
+            "created_at":         "Time",
+        })
+        st.dataframe(display_df, use_container_width=True)
     else:
         st.info("No call events found.")
 

@@ -107,11 +107,10 @@ def run_call_analysis(job_id: str) -> None:
             _persist_summary(session, call_event_id, summary, consent)
 
             # ── Live-call intent routing ───────────────────────────────────────
-            # For completed (answered) calls, detect intent from the transcript
-            # and apply lifecycle / campaign routing just as voicemail_jobs does.
-            # Downstream jobs (update_lead_state, create_crm_task, etc.) are
-            # still scheduled regardless — they are additive, not conflicting.
-            if transcript:
+            # Only run for completed (answered) calls. Voicemail-status calls
+            # are routed to process_voicemail_tier and never reach this job.
+            # The explicit status check is a safety guard for replays or edge cases.
+            if transcript and call_event and call_event.status == "completed":
                 from app.core.intent_detection import detect_intent
                 from app.core.intent_actions import handle_intent
                 from app.core.campaigns import (
@@ -141,6 +140,13 @@ def run_call_analysis(job_id: str) -> None:
                         "live_call_detected | contact_id=%s intent=%s",
                         contact_id, intent_result["intent"],
                     )
+
+                    # Persist detected intent on the call_event row so the
+                    # dashboard can display it without relying on scheduled_jobs.
+                    if call_event is not None:
+                        call_event.detected_intent = intent_result["intent"]
+                        session.flush()
+
                     handle_intent(
                         session=session,
                         intent_result=intent_result,

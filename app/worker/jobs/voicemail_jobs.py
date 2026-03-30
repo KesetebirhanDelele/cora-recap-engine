@@ -7,9 +7,9 @@ using the settings-configured tier delays.
 
 Phase 6: claim/fail/exception wiring complete. Tier advancement logic stubbed.
 Phase 7: Synthflow callback scheduling wired into this job.
-Phase 8: Intent detection — when a transcript is present, detect_intent() is
-  called before tier logic. A detected intent triggers handle_intent() and
-  short-circuits the tier loop (complete + return).
+Phase 8: Intent detection was removed from this job. Intent routing runs only
+  for completed (answered) calls via ai_jobs.py. Voicemail-status calls advance
+  the tier engine without intent detection.
 
 Stop condition (from autonomous execution contract):
   Do not advance tier without valid campaign_name and current tier state.
@@ -129,61 +129,6 @@ def process_voicemail_tier(job_id: str) -> None:
             # and for contacts whose lead_state was auto-created this invocation).
             campaign_name = lead.campaign_name or payload_campaign_name
 
-            # ── Intent detection ──────────────────────────────────────────────
-            # When the call produced a transcript (e.g. person left a voicemail
-            # message or spoke briefly before the call ended), check for an
-            # explicit intent.  A detected intent overrides tier logic entirely.
-            call_event_id = payload.get("call_event_id")
-            transcript = _load_transcript(session, call_event_id)
-            if transcript.strip():
-                from app.core.intent_detection import detect_intent
-                from app.core.intent_actions import handle_intent
-
-                logger.info(
-                    "live_call_detected | contact_id=%s transcript_len=%d duration=%s",
-                    contact_id, len(transcript.strip()), payload.get("duration_seconds"),
-                )
-                intent_result = detect_intent(
-                    transcript,
-                    executed_actions=payload.get("executed_actions"),
-                    duration_seconds=payload.get("duration_seconds"),
-                )
-                if intent_result is not None:
-                    logger.info(
-                        "DETECTED INTENT: %s | contact_id=%s confidence=%.2f entities=%s",
-                        intent_result["intent"], contact_id,
-                        intent_result.get("confidence", 0.0),
-                        intent_result.get("entities", {}),
-                    )
-                    handle_intent(
-                        session=session,
-                        intent_result=intent_result,
-                        contact_id=contact_id,
-                        phone=lead.normalized_phone or "",
-                        current_job_id=job.id,
-                        settings=settings,
-                    )
-
-                    # Campaign switch: update campaign_name if intent signals
-                    # a change in engagement level. Lightweight field update only —
-                    # no tier reset, no job cancellation.
-                    from app.core.campaigns import (
-                        apply_campaign_switch,
-                        evaluate_campaign_switch,
-                    )
-                    new_campaign = evaluate_campaign_switch(
-                        campaign_name, intent_result["intent"]
-                    )
-                    if new_campaign:
-                        session.refresh(lead)
-                        apply_campaign_switch(
-                            session, lead, new_campaign,
-                            reason=intent_result["intent"],
-                        )
-
-                    complete_job(session, job)
-                    return
-
             # Already at terminal tier — nothing to do, complete cleanly.
             if current_tier == _TERMINAL_TIER:
                 logger.info(
@@ -260,26 +205,6 @@ def process_voicemail_tier(job_id: str) -> None:
             )
             fail_job(session, job, reason=str(exc))
             raise
-
-
-def _load_transcript(session, call_event_id: str | None) -> str:
-    """
-    Load the transcript from the CallEvent row for this voicemail job.
-
-    Returns an empty string when call_event_id is absent, the row is not
-    found, or the transcript field is NULL.  Callers check `.strip()` to
-    decide whether intent detection is worth running.
-    """
-    if not call_event_id:
-        return ""
-    try:
-        from app.models.call_event import CallEvent
-        event = session.get(CallEvent, call_event_id)
-        return (event.transcript or "") if event else ""
-    except Exception as exc:  # pragma: no cover
-        logger.warning("_load_transcript: failed to load | call_event_id=%s: %s",
-                       call_event_id, exc)
-        return ""
 
 
 def _get_next_tier(current_tier: str | None) -> str | None:

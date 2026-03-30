@@ -52,6 +52,9 @@ class CallEvent(Base):
     telephony_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # dedupe_key format: "{call_id}:{action_type}" — unique per (call, action) pair
     dedupe_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    # detected_intent: rule-based intent detected from transcript at processing time
+    # (e.g. "callback_request", "partial_engagement", "enrolled"). NULL = none detected.
+    detected_intent: Mapped[Optional[str]] = mapped_column(String(100))
     # raw_payload_json: original webhook body preserved for replay
     raw_payload_json: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
