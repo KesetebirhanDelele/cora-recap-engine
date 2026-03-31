@@ -18,6 +18,12 @@ Covers:
   14. contact_id derived from phone_number_to when contact_id absent
   15. contact_id preserved when already present (no overwrite from phone_number_to)
   16. contact_id not set when both contact_id and phone_number_to absent
+  17. campaign_name inferred as 'Cold Lead' from Agent field containing 'ColdLead'
+  18. campaign_name inferred as 'Cold Lead' from Agent containing 'cold lead' (spaces)
+  19. campaign_name inferred as 'New Lead' from Agent containing 'NewLead'
+  20. Agent inference overrides an incorrect payload campaign_name
+  21. campaign_name falls back to payload value when Agent has no campaign keyword
+  22. campaign_name defaults to 'New Lead' when both Agent and payload are absent
 """
 from __future__ import annotations
 
@@ -162,6 +168,56 @@ def test_webhook_returns_422_when_no_call_id():
     resp = client.post("/v1/webhooks/calls", json=payload)
     assert resp.status_code == 422
     assert resp.json()["detail"]["error"]["code"] == "missing_call_id"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 17–22: campaign_name inference from Agent field
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_campaign_inferred_cold_lead_from_agent_coldlead():
+    """Agent containing 'ColdLead' → campaign_name = 'Cold Lead'."""
+    payload = {"call_id": "x", "Agent": "Cora Outbound ColdLead Completed Call", "campaign_name": "New Lead"}
+    result = normalize_synthflow_payload(payload)
+    assert result["campaign_name"] == "Cold Lead"
+
+
+def test_campaign_inferred_cold_lead_from_agent_with_spaces():
+    """Agent containing 'cold lead' (space-separated) → campaign_name = 'Cold Lead'."""
+    payload = {"call_id": "x", "Agent": "Cora Cold Lead Workflow"}
+    result = normalize_synthflow_payload(payload)
+    assert result["campaign_name"] == "Cold Lead"
+
+
+def test_campaign_inferred_new_lead_from_agent_newlead():
+    """Agent containing 'NewLead' → campaign_name = 'New Lead'."""
+    payload = {"call_id": "x", "Agent": "Cora Outbound NewLead Workflow"}
+    result = normalize_synthflow_payload(payload)
+    assert result["campaign_name"] == "New Lead"
+
+
+def test_agent_inference_overrides_wrong_payload_campaign_name():
+    """When Agent says 'ColdLead' but payload says 'New Lead', Agent wins."""
+    payload = {
+        "call_id": "x",
+        "Agent": "Cora Outbound ColdLead Completed Call",
+        "campaign_name": "New Lead",
+    }
+    result = normalize_synthflow_payload(payload)
+    assert result["campaign_name"] == "Cold Lead"
+
+
+def test_campaign_name_preserved_when_agent_has_no_keyword():
+    """No campaign keyword in Agent → payload campaign_name used as-is."""
+    payload = {"call_id": "x", "Agent": "Cora Generic Workflow", "campaign_name": "Cold Lead"}
+    result = normalize_synthflow_payload(payload)
+    assert result["campaign_name"] == "Cold Lead"
+
+
+def test_campaign_name_defaults_to_new_lead_when_both_absent():
+    """No Agent, no campaign_name → defaults to 'New Lead'."""
+    payload = {"call_id": "x", "status": "completed"}
+    result = normalize_synthflow_payload(payload)
+    assert result["campaign_name"] == "New Lead"
 
 
 def test_webhook_422_logs_original_keys(caplog):

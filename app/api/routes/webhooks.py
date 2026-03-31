@@ -115,10 +115,35 @@ def normalize_synthflow_payload(body: dict[str, Any]) -> dict[str, Any]:
                 payload["contact_id"],
             )
 
-    # ── campaign_name: default to 'New Lead' when absent ─────────────────────
-    # Synthflow webhook payloads may not include campaign_name.
-    # Defaulting ensures process_voicemail_tier can look up a valid tier policy.
-    if not payload.get("campaign_name"):
+    # ── campaign_name: infer from Agent field, then default ───────────────────
+    # Synthflow sends campaign_name = "New Lead" for ALL calls, including Cold
+    # Lead workflows.  The Agent field is a more reliable source of truth
+    # because it reflects the actual Synthflow workflow that launched the call.
+    #
+    # Inference rules (case-insensitive, checked in priority order):
+    #   "coldlead" or "cold lead" in Agent → "Cold Lead"
+    #   "newlead"  or "new lead"  in Agent → "New Lead"
+    #
+    # If neither keyword matches, the payload campaign_name is preserved as-is;
+    # if that is also absent, we default to "New Lead" as a last resort.
+    agent_raw = (payload.get("Agent") or payload.get("agent") or "").lower()
+    if "coldlead" in agent_raw or "cold lead" in agent_raw:
+        inferred_campaign = "Cold Lead"
+    elif "newlead" in agent_raw or "new lead" in agent_raw:
+        inferred_campaign = "New Lead"
+    else:
+        inferred_campaign = None
+
+    if inferred_campaign:
+        if payload.get("campaign_name") != inferred_campaign:
+            logger.info(
+                "normalize_synthflow_payload: campaign_name overridden by Agent field | "
+                "payload=%r agent=%r → %r",
+                payload.get("campaign_name"), payload.get("Agent") or payload.get("agent"),
+                inferred_campaign,
+            )
+        payload["campaign_name"] = inferred_campaign
+    elif not payload.get("campaign_name"):
         payload["campaign_name"] = "New Lead"
         logger.debug("normalize_synthflow_payload: defaulted campaign_name to 'New Lead'")
 

@@ -161,10 +161,28 @@ def run_call_analysis(job_id: str) -> None:
                     )
                     if new_campaign and live_lead is not None:
                         session.refresh(live_lead)
-                        apply_campaign_switch(
-                            session, live_lead, new_campaign,
-                            reason=intent_result["intent"],
-                        )
+                        # Guard: do not switch campaign while a lead is mid-voicemail-
+                        # sequence.  A New Lead that hasn't finished their voicemail
+                        # tier progression (ai_campaign_value is set but not terminal
+                        # "3") should maintain their campaign label until the sequence
+                        # completes.  Cold Lead → New Lead re-engagement upgrades are
+                        # exempt because they are always desirable regardless of tier.
+                        tier = live_lead.ai_campaign_value
+                        in_voicemail_sequence = tier is not None and tier != "3"
+                        is_upgrade = new_campaign == "New Lead"
+                        if not in_voicemail_sequence or is_upgrade:
+                            apply_campaign_switch(
+                                session, live_lead, new_campaign,
+                                reason=intent_result["intent"],
+                            )
+                        else:
+                            logger.info(
+                                "campaign_switch_deferred: lead mid-voicemail-sequence "
+                                "(tier=%r), switch %r→%r deferred until sequence ends | "
+                                "contact_id=%s intent=%s",
+                                tier, campaign_name, new_campaign,
+                                contact_id, intent_result["intent"],
+                            )
 
             # Schedule downstream jobs (all run after this job completes)
             callbacks_queue = _make_callbacks_queue(settings)

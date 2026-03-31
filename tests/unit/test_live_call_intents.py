@@ -425,3 +425,123 @@ def test_callback_request_regression():
 
 def test_uncertain_regression():
     assert detect_intent("I'm not sure, let me think about it")["intent"] == "uncertain"
+
+
+# ---------------------------------------------------------------------------
+# Voicemail-sequence guard in ai_jobs — campaign switch deferred
+# ---------------------------------------------------------------------------
+
+def _make_ai_jobs_deps(session, contact_id: str, *, campaign_name: str,
+                       ai_campaign_value: str | None):
+    """Seed a LeadState and a minimal CallEvent for ai_jobs tests."""
+    from app.models.call_event import CallEvent
+
+    now = datetime.now(tz=timezone.utc)
+    lead = LeadState(
+        id=str(uuid.uuid4()),
+        contact_id=contact_id,
+        normalized_phone="+15550009999",
+        campaign_name=campaign_name,
+        ai_campaign_value=ai_campaign_value,
+        status="active",
+        version=0,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(lead)
+
+    ce = CallEvent(
+        id=str(uuid.uuid4()),
+        call_id=f"call-{contact_id}",
+        contact_id=contact_id,
+        direction="outbound",
+        status="completed",
+        transcript="I'm not sure, maybe",
+        duration_seconds=45,
+        dedupe_key=f"dedup-{contact_id}",
+        raw_payload_json={},
+        created_at=now,
+    )
+    session.add(ce)
+    session.flush()
+    return lead, ce
+
+
+def test_campaign_switch_deferred_when_mid_voicemail_sequence(session):
+    """New Lead mid-voicemail (tier '1') — campaign must NOT switch to Cold Lead."""
+    from app.core.campaigns import apply_campaign_switch, evaluate_campaign_switch
+
+    contact_id = "guard-mid-vm-tier1"
+    lead, _ = _make_ai_jobs_deps(session, contact_id,
+                                  campaign_name="New Lead",
+                                  ai_campaign_value="1")
+
+    # Simulate what ai_jobs does after handle_intent
+    intent = "uncertain"
+    new_campaign = evaluate_campaign_switch(lead.campaign_name or "", intent)
+    assert new_campaign == "Cold Lead"   # rule exists
+
+    tier = lead.ai_campaign_value
+    in_voicemail_sequence = tier is not None and tier != "3"
+    is_upgrade = new_campaign == "New Lead"
+
+    # Guard: skip the switch
+    if not in_voicemail_sequence or is_upgrade:
+        apply_campaign_switch(session, lead, new_campaign, reason=intent)
+
+    session.refresh(lead)
+    assert lead.campaign_name == "New Lead", (
+        "Campaign must not change while lead is mid-voicemail-sequence"
+    )
+
+
+def test_campaign_switch_applied_when_not_in_voicemail_sequence(session):
+    """New Lead with no voicemail history (tier None) — switch IS applied."""
+    from app.core.campaigns import apply_campaign_switch, evaluate_campaign_switch
+
+    contact_id = "guard-no-vm-tier-none"
+    lead, _ = _make_ai_jobs_deps(session, contact_id,
+                                  campaign_name="New Lead",
+                                  ai_campaign_value=None)
+
+    intent = "interested_not_now"
+    new_campaign = evaluate_campaign_switch(lead.campaign_name or "", intent)
+    assert new_campaign == "Cold Lead"
+
+    tier = lead.ai_campaign_value
+    in_voicemail_sequence = tier is not None and tier != "3"
+    is_upgrade = new_campaign == "New Lead"
+
+    if not in_voicemail_sequence or is_upgrade:
+        apply_campaign_switch(session, lead, new_campaign, reason=intent)
+
+    session.refresh(lead)
+    assert lead.campaign_name == "Cold Lead", (
+        "Campaign should switch when lead has no active voicemail sequence"
+    )
+
+
+def test_re_engaged_upgrade_applied_even_mid_voicemail_sequence(session):
+    """Cold Lead re-engaging (upgrade) is never deferred — applies immediately."""
+    from app.core.campaigns import apply_campaign_switch, evaluate_campaign_switch
+
+    contact_id = "guard-reengaged-mid-vm"
+    lead, _ = _make_ai_jobs_deps(session, contact_id,
+                                  campaign_name="Cold Lead",
+                                  ai_campaign_value="1")
+
+    intent = "re_engaged"
+    new_campaign = evaluate_campaign_switch(lead.campaign_name or "", intent)
+    assert new_campaign == "New Lead"
+
+    tier = lead.ai_campaign_value
+    in_voicemail_sequence = tier is not None and tier != "3"
+    is_upgrade = new_campaign == "New Lead"
+
+    if not in_voicemail_sequence or is_upgrade:
+        apply_campaign_switch(session, lead, new_campaign, reason=intent)
+
+    session.refresh(lead)
+    assert lead.campaign_name == "New Lead", (
+        "Upgrade (re_engaged) must never be deferred regardless of tier"
+    )

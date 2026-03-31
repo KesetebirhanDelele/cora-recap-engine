@@ -82,6 +82,7 @@ section = st.sidebar.radio(
         "Scheduled Jobs",
         "Exceptions",
         "Contact Drill-Down",
+        "Lead Journey",
     ],
 )
 
@@ -744,3 +745,294 @@ elif section == "Contact Drill-Down":
         st.dataframe(exc_df, use_container_width=True)
     else:
         st.info("No exceptions.")
+
+# ── Lead Journey ──────────────────────────────────────────────────────────────
+
+elif section == "Lead Journey":
+    import datetime as _dt
+    import re as _re
+
+    st.title("Lead Journey")
+    st.caption(
+        "Full chronological history of every touchpoint Cora had with a lead — "
+        "calls, messages, campaign switches, and the next scheduled contact."
+    )
+
+    # ── Phone number input ────────────────────────────────────────────────────
+    raw_phone = st.text_input(
+        "Phone number",
+        placeholder="+13137029103",
+        help="Enter in E.164 format (+1XXXXXXXXXX) or digits only — normalised automatically.",
+    )
+
+    if not raw_phone.strip():
+        st.info("Enter a phone number to view this lead's journey.")
+        st.stop()
+
+    # Normalise: strip non-digits, prepend + if missing
+    digits = _re.sub(r"\D", "", raw_phone.strip())
+    normalised_phone = f"+{digits}" if not raw_phone.strip().startswith("+") else f"+{digits}"
+
+    # ── Resolve lead_state by phone (two-pass lookup) ────────────────────────
+    # Pass 1: normalized_phone column (fast — covers voicemail-first leads and
+    #         leads created after the lifecycle_jobs fix that sets normalized_phone).
+    lead_row = _query(
+        """
+        SELECT contact_id, normalized_phone, campaign_name, status,
+               do_not_call, invalid, next_action_at, ai_campaign_value,
+               preferred_channel, last_replied_at, created_at, updated_at
+        FROM lead_state
+        WHERE normalized_phone = :phone
+        LIMIT 1
+        """,
+        {"phone": normalised_phone},
+    )
+
+    # Pass 2: fall back to call_events payload when normalized_phone is NULL
+    # (leads whose first contact was a completed call; update_lead_state previously
+    # created the lead_state row without setting normalized_phone).
+    if lead_row.empty:
+        fallback = _query(
+            """
+            SELECT ls.contact_id, ls.normalized_phone, ls.campaign_name, ls.status,
+                   ls.do_not_call, ls.invalid, ls.next_action_at, ls.ai_campaign_value,
+                   ls.preferred_channel, ls.last_replied_at, ls.created_at, ls.updated_at
+            FROM call_events ce
+            JOIN lead_state ls ON ls.contact_id = ce.contact_id
+            WHERE ce.raw_payload_json->>'phone_number_to' = :phone
+               OR ce.raw_payload_json->>'phone_number'    = :phone
+               OR ce.raw_payload_json->>'phone'           = :phone
+            ORDER BY ce.created_at DESC
+            LIMIT 1
+            """,
+            {"phone": normalised_phone},
+        )
+        if not fallback.empty:
+            lead_row = fallback
+
+    if lead_row.empty:
+        st.warning(
+            f"No lead found for **{normalised_phone}**. "
+            "Check the number or try the Contact Drill-Down section."
+        )
+        st.stop()
+
+    lead = lead_row.iloc[0]
+    cid  = lead["contact_id"]
+
+    # ── Summary card ──────────────────────────────────────────────────────────
+    st.subheader("Lead Summary")
+
+    def _fmt_ts(ts) -> str:
+        if ts is None or (hasattr(ts, "__class__") and ts.__class__.__name__ == "NaTType"):
+            return "—"
+        if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        return ts.strftime("%Y-%m-%d %H:%M UTC")
+
+    def _delay_label(ts) -> str:
+        if ts is None:
+            return "—"
+        now = _dt.datetime.now(_dt.timezone.utc)
+        if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        secs = (ts - now).total_seconds()
+        if secs <= 0:
+            return "now"
+        if secs < 3600:
+            return f"in {int(secs // 60)}m"
+        if secs < 86400:
+            h, m = int(secs // 3600), int((secs % 3600) // 60)
+            return f"in {h}h {m}m" if m else f"in {h}h"
+        d, h = int(secs // 86400), int((secs % 86400) // 3600)
+        return f"in {d}d {h}h" if h else f"in {d}d"
+
+    _STATUS_ICON = {
+        "active":  "🟢",
+        "nurture": "🟡",
+        "closed":  "🔴",
+        "human_transfer": "🔵",
+    }
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Campaign",  lead["campaign_name"] or "—")
+    col2.metric("Status",    f"{_STATUS_ICON.get(lead['status'] or '', '⚪')} {lead['status'] or '—'}")
+    col3.metric("VM Tier",   lead["ai_campaign_value"] if lead["ai_campaign_value"] is not None else "none")
+    col4.metric("DNC",       "Yes ⛔" if lead["do_not_call"] else "No")
+
+    col5, col6 = st.columns(2)
+    col5.metric("Contact ID", cid)
+    col6.metric("Pref. Channel", lead["preferred_channel"] or "voice (default)")
+
+    # Next pending job
+    next_job = _query(
+        """
+        SELECT job_type, run_at, payload_json->>'campaign_name' AS campaign
+        FROM scheduled_jobs
+        WHERE entity_id = :cid AND status = 'pending'
+        ORDER BY run_at ASC
+        LIMIT 1
+        """,
+        {"cid": cid},
+    )
+
+    _JOB_ICON = {
+        "launch_outbound_call": "📞",
+        "send_sms":  "💬",
+        "send_email": "📧",
+    }
+
+    if not next_job.empty:
+        nj = next_job.iloc[0]
+        icon = _JOB_ICON.get(nj["job_type"], "⏰")
+        label = {"launch_outbound_call": "Call", "send_sms": "SMS", "send_email": "Email"}.get(
+            nj["job_type"], nj["job_type"]
+        )
+        st.info(
+            f"**Next action:** {icon} {label} — "
+            f"{_fmt_ts(nj['run_at'])} ({_delay_label(nj['run_at'])})"
+        )
+    else:
+        st.info("**Next action:** none scheduled")
+
+    st.divider()
+
+    # ── Unified timeline query ─────────────────────────────────────────────────
+    timeline_df = _query(
+        """
+        SELECT
+            ce.created_at                                       AS ts,
+            'call'                                              AS event_type,
+            ce.status                                           AS call_status,
+            ce.duration_seconds,
+            ce.detected_intent                                  AS intent,
+            COALESCE(
+                ce.raw_payload_json->>'campaign_name',
+                '—'
+            )                                                   AS campaign,
+            CASE
+                WHEN ce.status IN ('completed')
+                    THEN COALESCE(
+                        LEFT(ce.transcript, 200),
+                        '(no transcript)'
+                    )
+                ELSE NULL
+            END                                                 AS detail,
+            ce.recording_url
+        FROM call_events ce
+        WHERE ce.contact_id = :cid
+           OR ce.raw_payload_json->>'phone_number_to' = :phone
+           OR ce.raw_payload_json->>'phone_number'    = :phone
+           OR ce.raw_payload_json->>'phone'           = :phone
+
+        UNION ALL
+
+        SELECT
+            om.created_at                                       AS ts,
+            'message'                                           AS event_type,
+            om.channel                                          AS call_status,
+            NULL                                                AS duration_seconds,
+            NULL                                                AS intent,
+            '—'                                                 AS campaign,
+            LEFT(om.body, 200)                                  AS detail,
+            NULL                                                AS recording_url
+        FROM outbound_messages om
+        WHERE om.contact_id = :cid
+
+        UNION ALL
+
+        SELECT
+            al.created_at                                       AS ts,
+            'campaign_switch'                                   AS event_type,
+            NULL                                                AS call_status,
+            NULL                                                AS duration_seconds,
+            al.context_json->>'reason'                          AS intent,
+            al.context_json->>'from'                            AS campaign,
+            al.context_json->>'to'                              AS detail,
+            NULL                                                AS recording_url
+        FROM audit_log al
+        WHERE al.entity_id = :cid
+          AND al.action = 'campaign_switch'
+
+        ORDER BY ts DESC
+        """,
+        {"cid": cid, "phone": normalised_phone},
+    )
+
+    # De-duplicate rows — the phone-based OR clauses can produce duplicate call
+    # rows when contact_id == normalised_phone (phone-derived contact IDs).
+    if not timeline_df.empty:
+        timeline_df = timeline_df.drop_duplicates(subset=["ts", "event_type", "call_status"])
+
+    st.subheader("Journey Timeline")
+
+    if timeline_df.empty:
+        st.info("No touchpoints recorded yet for this lead.")
+        st.stop()
+
+    # ── Render timeline ───────────────────────────────────────────────────────
+    _CALL_STATUS_ICON = {
+        "completed":            "📞 Answered",
+        "voicemail":            "📵 Voicemail",
+        "hangup_on_voicemail":  "📵 VM (hangup)",
+        "left_voicemail":       "📵 VM (left)",
+        "voicemail_detected":   "📵 VM (detected)",
+        "machine_detected":     "📵 VM (machine)",
+        "failed":               "❌ Failed",
+        "in-progress":          "🔄 In progress",
+        "queue":                "⏳ Queue",
+        "sms":                  "💬 SMS",
+        "email":                "📧 Email",
+    }
+
+    for _, row in timeline_df.iterrows():
+        etype = row["event_type"]
+        ts    = _fmt_ts(row["ts"])
+
+        if etype == "campaign_switch":
+            frm = row["campaign"] or "?"
+            to  = row["detail"] or "?"
+            reason = row["intent"] or "—"
+            st.markdown(
+                f"🔄 **Campaign switch** &nbsp; `{frm}` → `{to}` &nbsp;&nbsp; "
+                f"reason: *{reason}* &nbsp;&nbsp; <small>{ts}</small>",
+                unsafe_allow_html=True,
+            )
+            st.divider()
+            continue
+
+        if etype == "message":
+            channel_icon = "💬 SMS" if row["call_status"] == "sms" else "📧 Email"
+            with st.expander(f"{channel_icon} &nbsp; {ts}", expanded=False):
+                st.text(row["detail"] or "(empty)")
+            continue
+
+        # etype == "call"
+        status_label = _CALL_STATUS_ICON.get(row["call_status"] or "", f"📞 {row['call_status']}")
+        duration = (
+            f"{int(row['duration_seconds'] // 60)}m {int(row['duration_seconds'] % 60)}s"
+            if row["duration_seconds"] is not None
+            else "—"
+        )
+        intent   = row["intent"] or "—"
+        campaign = row["campaign"] or "—"
+
+        header = (
+            f"{status_label} &nbsp; "
+            f"Campaign: **{campaign}** &nbsp; "
+            f"Intent: **{intent}** &nbsp; "
+            f"Duration: {duration} &nbsp; "
+            f"<small>{ts}</small>"
+        )
+
+        is_answered = (row["call_status"] or "") == "completed"
+        with st.expander(header, expanded=False):
+            if is_answered and row["detail"]:
+                st.markdown("**Transcript preview:**")
+                st.text(row["detail"])
+                if row["recording_url"]:
+                    st.markdown(f"[🎙 Recording]({row['recording_url']})")
+            elif is_answered:
+                st.info("No transcript recorded.")
+            else:
+                st.info("Voicemail — no transcript.")

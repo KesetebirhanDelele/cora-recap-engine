@@ -11,6 +11,9 @@ Switch rules:
   New Lead + uncertain          → Cold Lead
   Cold Lead + re_engaged        → New Lead
 
+Guard: switches are skipped for leads that are mid-voicemail-sequence
+(ai_campaign_value not None and not "3").  The guard is in ai_jobs.py.
+
 No switch for: callback_with_time, callback_request, call_later_no_time,
 not_interested, do_not_call, wrong_number, request_sms, request_email,
 same-direction intents (cold lead + interested_not_now → stays cold).
@@ -200,6 +203,47 @@ class TestApplyCampaignSwitch:
         apply_campaign_switch(session, lead, "Cold Lead", reason="uncertain")
         session.refresh(lead)
         assert lead.status == "nurture"
+
+    def test_writes_audit_log_on_switch(self, session):
+        """Successful switch must write one audit_log row with from/to/reason."""
+        from sqlalchemy import select
+        from app.models.audit import AuditLog
+
+        lead = _make_lead(session, campaign_name="New Lead")
+        apply_campaign_switch(session, lead, "Cold Lead", reason="interested_not_now")
+
+        log = session.scalars(
+            select(AuditLog)
+            .where(AuditLog.entity_id == lead.contact_id)
+            .where(AuditLog.action == "campaign_switch")
+        ).first()
+
+        assert log is not None
+        assert log.context_json["from"] == "New Lead"
+        assert log.context_json["to"] == "Cold Lead"
+        assert log.context_json["reason"] == "interested_not_now"
+        assert log.operator_id == "system"
+
+    def test_no_audit_log_on_version_conflict(self, session):
+        """Version conflict must not write an audit_log row."""
+        from sqlalchemy import select
+        from app.models.audit import AuditLog
+
+        lead = _make_lead(session, campaign_name="New Lead")
+        contact_id = lead.contact_id
+        # Use no_autoflush so the Python-side version change is not flushed to
+        # the DB before apply_campaign_switch runs its UPDATE — the WHERE clause
+        # then sees version=999 vs DB version=0 → rowcount=0 → early return.
+        with session.no_autoflush:
+            lead.version = 999  # force conflict
+            apply_campaign_switch(session, lead, "Cold Lead", reason="uncertain")
+
+        log = session.scalars(
+            select(AuditLog)
+            .where(AuditLog.entity_id == contact_id)
+            .where(AuditLog.action == "campaign_switch")
+        ).first()
+        assert log is None
 
 
 # ---------------------------------------------------------------------------

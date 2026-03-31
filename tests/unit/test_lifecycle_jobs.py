@@ -10,6 +10,8 @@ Covers:
   6.  update_lead_state: version conflict → raises RuntimeError, fails job
   7.  update_lead_state: job already claimed → returns immediately
   8.  update_lead_state: supports 'stage' key as alias for 'lead_stage' in output_json
+  9.  update_lead_state: sets normalized_phone from call_event raw_payload_json on create
+  10. update_lead_state: falls back to contact_id itself as normalized_phone when it looks like a phone
 """
 from __future__ import annotations
 
@@ -286,3 +288,79 @@ def test_stage_alias_supported(session):
     ).first()
     assert lead is not None
     assert lead.lead_stage == "Enrolled"
+
+
+def test_creates_lead_state_with_normalized_phone_from_payload(session):
+    """New lead_state row sets normalized_phone from call_event raw_payload_json.
+
+    Regression: update_lead_state previously created rows without normalized_phone,
+    causing Lead Journey phone-number lookup to miss completed-call-only leads.
+    """
+    contact_id = f"ghl-{uuid.uuid4().hex[:8]}"
+    phone = "+15550009999"
+
+    # CallEvent carries phone_number_to in its raw payload (as Synthflow sends)
+    ev = CallEvent(
+        id=str(uuid.uuid4()),
+        call_id=f"call-phone-{uuid.uuid4().hex[:6]}",
+        contact_id=contact_id,
+        direction="outbound",
+        status="completed",
+        dedupe_key=f"call-phone-test:{uuid.uuid4().hex}",
+        raw_payload_json={"phone_number_to": phone, "campaign_name": "New Lead"},
+        created_at=datetime.now(tz=timezone.utc),
+    )
+    session.add(ev)
+    session.flush()
+    _make_classification(session, ev.id, {"lead_stage": "Hot Lead"})
+
+    job = _run(session, {
+        "call_id": ev.call_id,
+        "call_event_id": ev.id,
+        "contact_id": contact_id,
+    })
+    assert job.status == "completed"
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead is not None
+    assert lead.normalized_phone == phone
+
+
+def test_creates_lead_state_with_normalized_phone_from_contact_id(session):
+    """Falls back to contact_id as normalized_phone when it starts with '+'.
+
+    Covers Synthflow payloads where contact_id was derived from phone_number_to
+    by the webhook normalizer (no GHL contact ID present).
+    """
+    phone_as_contact_id = "+15550008888"
+
+    ev = CallEvent(
+        id=str(uuid.uuid4()),
+        call_id=f"call-cidphone-{uuid.uuid4().hex[:6]}",
+        contact_id=phone_as_contact_id,
+        direction="outbound",
+        status="completed",
+        dedupe_key=f"call-cidphone-test:{uuid.uuid4().hex}",
+        raw_payload_json={},  # no phone_number_to in payload
+        created_at=datetime.now(tz=timezone.utc),
+    )
+    session.add(ev)
+    session.flush()
+    _make_classification(session, ev.id, {"lead_stage": "Warm"})
+
+    job = _run(session, {
+        "call_id": ev.call_id,
+        "call_event_id": ev.id,
+        "contact_id": phone_as_contact_id,
+    })
+    assert job.status == "completed"
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == phone_as_contact_id)
+    ).first()
+    assert lead is not None
+    assert lead.normalized_phone == phone_as_contact_id

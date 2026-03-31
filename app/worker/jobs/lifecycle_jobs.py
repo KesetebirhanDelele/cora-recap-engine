@@ -140,10 +140,21 @@ def update_lead_state(job_id: str) -> None:
                     resolved_contact_id, new_lead_stage, last_call_status,
                 )
             else:
-                # No existing row — create one
+                # No existing row — create one.
+                # Derive normalized_phone so Lead Journey phone-number lookup works.
+                # Priority: raw payload phone fields → contact_id itself (if it looks
+                # like a phone number, i.e. starts with '+').
+                raw_payload = call_event.raw_payload_json or {} if call_event else {}
+                derived_phone = (
+                    raw_payload.get("phone_number_to")
+                    or raw_payload.get("phone_number")
+                    or raw_payload.get("phone")
+                    or (resolved_contact_id if resolved_contact_id.startswith("+") else None)
+                ) or None
                 lead = LeadState(
                     id=str(uuid.uuid4()),
                     contact_id=resolved_contact_id,
+                    normalized_phone=derived_phone,
                     lead_stage=new_lead_stage,
                     last_call_status=last_call_status,
                     version=0,
@@ -153,8 +164,8 @@ def update_lead_state(job_id: str) -> None:
                 session.add(lead)
                 session.flush()
                 logger.info(
-                    "update_lead_state: created | contact_id=%s lead_stage=%r",
-                    resolved_contact_id, new_lead_stage,
+                    "update_lead_state: created | contact_id=%s lead_stage=%r phone=%r",
+                    resolved_contact_id, new_lead_stage, derived_phone,
                 )
 
             complete_job(session, job)

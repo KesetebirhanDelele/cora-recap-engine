@@ -51,6 +51,11 @@ _CAMPAIGN_NAMES: dict[str, str] = {
 #
 # Callback/call-later intents are intentionally excluded — they signal the lead
 # wants to engage at a better time, not a change in engagement level.
+#
+# Guard: these switches are only applied to leads that are NOT currently in an
+# active voicemail tier sequence.  A lead mid-sequence (ai_campaign_value not
+# None and not terminal "3") maintains its campaign_name until the sequence
+# ends.  The guard is enforced in ai_jobs.py before calling apply_campaign_switch.
 _SWITCH_RULES: dict[tuple[str, str], str] = {
     ("new lead", "interested_not_now"): "Cold Lead",
     ("new lead", "uncertain"):          "Cold Lead",
@@ -178,9 +183,13 @@ def apply_campaign_switch(
     delay policy on the next voicemail job.
 
     Uses optimistic concurrency (version increment).
+    Writes one audit_log row on success so Lead Journey can show campaign history.
     """
+    import uuid
+
     from sqlalchemy import update
 
+    from app.models.audit import AuditLog
     from app.models.lead_state import LeadState
 
     old_campaign = lead.campaign_name
@@ -209,6 +218,17 @@ def apply_campaign_switch(
         "CAMPAIGN SWITCH: %r → %r | contact_id=%s reason=%s",
         old_campaign, new_campaign_name, lead.contact_id, reason,
     )
+
+    session.add(AuditLog(
+        id=str(uuid.uuid4()),
+        entity_type="lead",
+        entity_id=lead.contact_id,
+        action="campaign_switch",
+        operator_id="system",
+        context_json={"from": old_campaign, "to": new_campaign_name, "reason": reason},
+        created_at=now,
+    ))
+    session.flush()
 
 
 # ---------------------------------------------------------------------------

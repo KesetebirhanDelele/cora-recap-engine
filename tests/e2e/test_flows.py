@@ -19,7 +19,7 @@ Scenarios:
   SC7  Cold Lead Reactivation (re_engaged) — EXPECTED FAIL (known gap: no handler)
   SC8  Enrollment — campaign terminated (status: enrolled, tier: 3)
   SC9  Callback with time — outbound call scheduled at future time
-  SC10 Campaign switch — New Lead + interested_not_now → Cold Lead + nurture
+  SC10 Voicemail transcript does not switch campaign (Phase 8: intent detection removed from voicemail path)
 
 Hard rules enforced in this file:
   - NO application logic changes
@@ -649,59 +649,56 @@ class TestSC9CallbackWithTime:
 
 
 # ---------------------------------------------------------------------------
-# SC10: Campaign switch — New Lead + interested_not_now → Cold Lead + nurture
+# SC10: Voicemail transcript does not change campaign (Phase 8: intent detection removed)
 # ---------------------------------------------------------------------------
 
 class TestSC10CampaignSwitch:
     """
-    Input:  New Lead says "not right now maybe later" in voicemail transcript.
-    Expect: campaign_name='Cold Lead', status='nurture', next_action_at set,
-            no retry outbound call job.
+    Phase 8: intent detection was removed from voicemail_jobs.  A transcript in
+    the voicemail payload is stored on the CallEvent row but does NOT trigger
+    intent routing or campaign switches.
+
+    Campaign switches (New Lead → Cold Lead) happen only from completed calls
+    processed by ai_jobs.  The campaign_name changes to "Cold Lead" only when
+    the nurture scheduler fires enter_campaign("cold_lead") — not immediately.
+
+    Input:  New Lead voicemail with transcript "not right now maybe later".
+    Expect: tier advances (None → 0), campaign stays "New Lead", status stays
+            "active", retry outbound call scheduled.
     """
 
-    def test_campaign_switches_to_cold_lead(self, session):
+    def test_campaign_stays_new_lead_after_voicemail(self, session):
+        """Voicemail path does not switch campaign — stays 'New Lead'."""
         lead = seed_new_lead(session, tier=None)
         _run_voicemail_flow(
             session, lead.contact_id,
             campaign_name="New Lead",
             transcript="not right now maybe later",
         )
-        assert_lead_campaign(session, lead.contact_id, "Cold Lead")
+        assert_lead_campaign(session, lead.contact_id, "New Lead")
 
-    def test_lead_status_set_to_nurture(self, session):
+    def test_tier_still_advances_on_voicemail_with_soft_transcript(self, session):
+        """Voicemail tier advances normally regardless of transcript content."""
         lead = seed_new_lead(session, tier=None)
         _run_voicemail_flow(
             session, lead.contact_id,
             campaign_name="New Lead",
             transcript="not right now maybe later",
         )
-        assert_lead_status(session, lead.contact_id, "nurture")
+        assert_lead_tier(session, lead.contact_id, "0")
 
-    def test_next_action_at_is_set(self, session):
-        """next_action_at must be set by interested_not_now handler."""
+    def test_retry_outbound_scheduled_after_voicemail(self, session):
+        """Normal retry call is scheduled — no early termination from transcript."""
         lead = seed_new_lead(session, tier=None)
         _run_voicemail_flow(
             session, lead.contact_id,
             campaign_name="New Lead",
             transcript="not right now maybe later",
         )
-        refreshed = get_lead(session, lead.contact_id)
-        assert refreshed.next_action_at is not None, (
-            "Expected next_action_at to be set for nurture lead"
-        )
+        assert_pending_outbound_call(session, lead.contact_id)
 
-    def test_no_retry_outbound_after_nurture(self, session):
-        """interested_not_now short-circuits tier logic — no retry outbound call."""
-        lead = seed_new_lead(session, tier=None)
-        _run_voicemail_flow(
-            session, lead.contact_id,
-            campaign_name="New Lead",
-            transcript="not right now maybe later",
-        )
-        assert_no_pending_outbound_call(session, lead.contact_id)
-
-    def test_cold_lead_uncertain_does_not_switch_campaign(self, session):
-        """Cold Lead expressing uncertainty must NOT switch campaign (stays cold)."""
+    def test_cold_lead_uncertain_stays_cold_lead(self, session):
+        """Cold Lead expressing uncertainty stays Cold Lead — no downgrade or upgrade."""
         lead = seed_cold_lead(session, tier=None)
         _run_voicemail_flow(
             session, lead.contact_id,

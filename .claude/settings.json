@@ -31,7 +31,14 @@
       "Bash(python -m pytest tests/unit/test_live_call_intents.py -v)",
       "Bash(python -m pytest tests/unit/ tests/evals/ -v --tb=no -q)",
       "Bash(python -m pytest tests/unit/test_intent_detection.py::test_not_interested_no_thanks_short tests/unit/test_intent_detection.py::test_call_later_no_time_try_again tests/unit/test_intent_detection.py::test_unrecognised_text_returns_none tests/unit/test_intent_detection.py::test_uncertain_maybe -v)",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''execution/dashboard.py''\\).read\\(\\)\\); print\\(''syntax OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''execution/dashboard.py''\\).read\\(\\)\\); print\\(''syntax OK''\\)\")",
+      "Bash(python -m pytest tests/unit/test_campaign_switching.py tests/e2e/test_flows.py -v)",
+      "Bash(python -m pytest tests/unit/test_campaign_switching.py tests/e2e/test_flows.py::TestSC10CampaignSwitch -v)",
+      "Bash(python -m pytest tests/unit/test_campaign_switching.py tests/unit/test_live_call_intents.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/ tests/evals/ -q --tb=no)",
+      "Bash(python -m pytest tests/unit/test_webhook_normalization.py tests/unit/test_campaign_switching.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/ -q --tb=short)",
+      "Bash(python -m pytest tests/unit/test_lifecycle_jobs.py -v --tb=short)"
     ]
   }
 }
