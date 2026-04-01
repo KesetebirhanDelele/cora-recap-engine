@@ -2,14 +2,14 @@
 
 ## Logs
 - event receipt
-- enrich success/failure
+- webhook payload normalisation (campaign_name override from Agent field, contact_id derivation)
 - dedupe decision
 - AI job execution
 - summary consent result
 - task creation result
 - tier transition
-- callback scheduled
-- shadow mirror sync result
+- outbound call / SMS / email scheduled or intercepted (shadow mode)
+- campaign switch applied or deferred (voicemail-sequence guard)
 - exception created/resolved
 
 ## Metrics
@@ -21,7 +21,6 @@
 - exception volume
 - queue lag
 - dependency error rate
-- sheet mirror reconciliation drift count
 
 ## Alerts
 - GHL auth failure: critical immediately
@@ -29,20 +28,21 @@
 - stuck-call volume spike: warning/critical thresholds
 - queue lag breach
 - Postgres write failures
-- sheet mirror reconciliation failures above threshold
 
-## Dashboard scope v1 — IMPLEMENTED
+## Dashboard — IMPLEMENTED (8 sections)
 Streamlit dashboard at `execution/dashboard.py`. Run with `streamlit run execution/dashboard.py` (Postgres only required).
 
 Sections:
 - **Overview** — metrics tiles (calls 24 h, shadow actions, open exceptions, failed jobs); bar charts by job status and shadow action type
+- **Campaign Overview** — all leads with next scheduled action; filterable by date window; shows campaign, status, effective next action time and channel
 - **Trends** — date-range trend charts per campaign (New Lead, Cold Lead, Inbound): total calls, errors, % completed call, % Goodbye; granularity: day/week/month
 - **Recent Calls** — call events joined to lead state, transcript preview
 - **Lead State** — filterable by status and campaign
 - **Shadow Actions** — intercepted outbound actions (outbound_call, sms, email) when shadow mode is on
 - **Scheduled Jobs** — queue state, filterable by status and job type
 - **Exceptions** — operator exception queue; filter by severity and status
-- **Contact Drill-Down** — single contact_id view across all 6 tables
+- **Contact Drill-Down** — single contact_id view across all 6 operational tables (raw data)
+- **Lead Journey** — per-lead chronological touchpoint history; filterable by phone number; shows calls, messages, campaign switches, and next scheduled action. Two-pass phone lookup: `lead_state.normalized_phone` first, then `call_events.raw_payload_json` fallback. Note: SMS and outbound calls appear in `shadow_actions` (not `outbound_messages`) when shadow mode is on.
 
 Trends metric definitions:
 - Total calls: all `call_events` rows in range for the campaign
@@ -60,4 +60,3 @@ Operator retry/cancel/finalize actions remain API-only (Bearer token required):
 - reporting refresh success/failure
 - KPI query latency
 - filter and cross-filter interaction latency, where measurable
-- reporting reconciliation drift between Google Sheets mirror data and Postgres authoritative data

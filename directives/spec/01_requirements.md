@@ -10,11 +10,11 @@
 - Reject events with no resolvable identity and create an exception.
 
 ### Authoritative state and idempotency
-- Use Postgres as the authoritative store for campaign state, call events, audit records, exceptions, and scheduled-job metadata.
+- Use Postgres as the authoritative store for campaign state, call events, audit records, exceptions, outbound/inbound messages, shadow actions, and scheduled-job metadata.
 - Use Redis + RQ for job execution, retries, and delayed processing while treating Postgres as canonical state.
 - Treat GHL as authoritative for contacts, tasks, notes, and custom-field writes.
 - Prevent duplicate irreversible actions by checking dedupe keys based on `(call_id, action_type)`.
-- Support active Google Sheets shadow mode and mirror sheet data into Postgres while production logic remains database-authoritative.
+- Google Sheets shadow sync is out of scope; shadow mode logs intercepted actions to `shadow_actions` table only.
 
 ### Routing and lifecycle management
 - Route events into pending, call-through, or voicemail branches.
@@ -61,6 +61,33 @@
 - Tier 3 is the terminal state for all campaigns.
 - Finalization sets `AI Campaign = No` in GHL when defined by campaign policy.
 - Voicemail content generation populates CRM fields used by GHL automations rather than sending SMS directly from the app.
+
+### Webhook payload normalisation
+- Accept Synthflow `call_id` under any of three observed field names: `call_id`, `Call_id`, `callId`; resolve to internal `call_id` at webhook entry.
+- Accept `duration` as an alias for `duration_seconds` when `duration_seconds` is absent.
+- Default `direction` to `outbound` when absent from the Synthflow payload.
+- Derive `contact_id` from the first available phone field (`phone_number_to` → `phone` → `phone_number`) when not explicitly provided.
+- Infer `campaign_name` from the Synthflow `Agent` field (more reliable than the payload's `campaign_name`):
+  - `Agent` contains `coldlead` or `cold lead` (case-insensitive) → `campaign_name = "Cold Lead"`
+  - `Agent` contains `newlead` or `new lead` → `campaign_name = "New Lead"`
+  - No keyword match → preserve payload `campaign_name`; if absent, default to `"New Lead"`.
+  - Agent-inferred value overrides an incorrect payload `campaign_name` (Synthflow sends `"New Lead"` for all workflows regardless of actual campaign type).
+- All normalisation is additive: original Synthflow fields are preserved alongside normalised aliases.
+
+### Campaign switching
+- Evaluate a bidirectional campaign switch after intent detection on every answered call.
+- Switch rules:
+  - New Lead + `interested_not_now` → Cold Lead
+  - New Lead + `uncertain` → Cold Lead
+  - Cold Lead + `re_engaged` → New Lead
+- Guard: do not apply a downgrade switch (New Lead → Cold Lead) while a lead is mid-voicemail-sequence (`ai_campaign_value` is not `None` and not terminal `"3"`). Upgrade switches (Cold Lead → New Lead) are always applied regardless of tier.
+- Every successful `apply_campaign_switch()` writes one row to `audit_log` (action=`campaign_switch`, operator_id=`system`, context includes `from`, `to`, `reason`). This is the authoritative record for Lead Journey campaign history.
+
+### Lead Journey dashboard page
+- Provide a per-lead chronological touchpoint history page filterable by phone number.
+- Resolve lead by `lead_state.normalized_phone`; fall back to `call_events.raw_payload_json` phone fields if `normalized_phone` is null (handles leads created before the normalisation fix).
+- Timeline must include: all call events (answered and voicemail), all outbound messages, all campaign switches (from `audit_log`), and the next scheduled action.
+- When shadow mode is active, the `shadow_actions` table is the source for SMS and outbound call touchpoints (they do not appear in `outbound_messages`).
 
 ### Failure handling and dashboard visibility
 - Retry transient failures such as timeouts, HTTP 429, and 5xx responses with bounded backoff.

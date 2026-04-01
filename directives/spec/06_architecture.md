@@ -4,14 +4,14 @@
 Hybrid Python architecture with API layer + background workers.
 
 ## Components
-1. API service: webhook intake, dashboard APIs, replay APIs.
-2. Worker service: AI jobs, CRM writes, retries, delays, callback jobs, nurture scheduler, channel delivery.
+1. API service: webhook intake (`POST /v1/webhooks/calls`), dashboard exception APIs, test call route (dev/staging only).
+2. Worker service: AI jobs, CRM writes, retries, delays, outbound call launch, nurture scheduler, SMS/email channel delivery.
 3. Postgres: authoritative store for state, jobs, audit, exceptions, outbound/inbound messages, shadow actions.
-4. Redis + RQ: queue and job execution.
-5. GHL adapter: contacts, notes, fields, tasks.
-6. Synthflow adapter: delayed callback creation (voicemail tiers), outbound call launch (new leads).
-7. OpenAI service: transcript analysis, summary generation, consent detection, voicemail content, AI-generated SMS/email bodies.
-8. Google Sheets mirror: active during shadow mode; data mirrored into Postgres for comparison and cutover tracking.
+4. Redis + RQ: queue and job execution (three queues: `default`, `ai`, `callbacks`).
+5. GHL adapter: contacts, notes, fields, tasks; all writes shadow-gated.
+6. Synthflow adapter: outbound call launch for all campaigns (`launch_new_lead_call()`); voicemail tier callback scheduling via `schedule_callback()`.
+7. OpenAI service: transcript analysis, summary generation, consent detection, AI-generated SMS/email bodies.
+8. Shadow mode: when `SHADOW_MODE_ENABLED=true`, all outbound calls, SMS, and email are intercepted after reply detection and logged to `shadow_actions` instead of executed. Jobs complete normally. No Google Sheets sync.
 
 ## Live-call intent routing layer
 
@@ -49,18 +49,35 @@ Handlers live in `app/core/intent_actions.py`. Live-call routing is wired into `
 
 Fault tolerance: individual lead errors are caught and logged; the scheduler always self-reschedules even on fatal failure. Batch size capped at 50 rows per run. First job created by `ensure_scheduled()` on worker startup.
 
+## Webhook payload normalisation
+
+`normalize_synthflow_payload()` in `app/api/routes/webhooks.py` runs at webhook entry before any routing logic. Rules (additive — original fields preserved):
+
+- **call_id**: resolved from `call_id` → `Call_id` → `callId` (first truthy value wins).
+- **duration_seconds**: aliased from `duration` when `duration_seconds` absent.
+- **direction**: defaults to `"outbound"` when absent.
+- **phones**: if nested `phones.callee` / `phones.caller` present, extracted to `phone_number` / `phone_number_from`.
+- **contact_id**: derived from `phone_number_to` → `phone` → `phone_number` when not present.
+- **campaign_name**: inferred from `Agent` field (case-insensitive keyword match):
+  - contains `coldlead` or `cold lead` → `"Cold Lead"`
+  - contains `newlead` or `new lead` → `"New Lead"`
+  - no keyword → preserve payload value; absent → default `"New Lead"`.
+  - Rationale: Synthflow sends `campaign_name = "New Lead"` for all workflows. The `Agent` field uniquely identifies which Synthflow workflow ran the call and is the authoritative campaign signal.
+
 ## Campaign switching
 
 `app/core/campaigns.py` provides two entry points:
 
 - `evaluate_campaign_switch(campaign_name, intent)` — pure function, returns new campaign name or `None`.
-- `apply_campaign_switch(session, lead, new_campaign_name, reason=...)` — lightweight field update; does NOT reset tier or cancel jobs.
+- `apply_campaign_switch(session, lead, new_campaign_name, reason=...)` — lightweight field update; does NOT reset tier or cancel jobs. Writes one `audit_log` row (action=`campaign_switch`, operator_id=`system`) on success. Version conflicts produce no log row.
 
 Switch rules:
 - New Lead + `interested_not_now` or `uncertain` → Cold Lead
 - Cold Lead + `re_engaged` → New Lead
 
-Applied in `ai_jobs.py` after `handle_intent()` and in `voicemail_jobs.py` via `process_voicemail_tier`.
+Voicemail-sequence guard (enforced in `ai_jobs.py`): downgrade switches (New Lead → Cold Lead) are skipped when `lead_state.ai_campaign_value` is not `None` and not terminal `"3"`. Upgrade switches (Cold Lead → New Lead) are always applied.
+
+Applied in `ai_jobs.py` after `handle_intent()`.
 
 ## Reply detection and message suppression
 
@@ -69,6 +86,20 @@ Applied in `ai_jobs.py` after `handle_intent()` and in `voicemail_jobs.py` via `
 2. `lead_state.last_replied_at` is not null.
 
 Both `send_sms_job` and `send_email_job` call this gate immediately after claiming. If a reply is detected, the job completes silently (no message sent). Fail-open: DB errors return `False` so messaging is never suppressed due to a detection failure.
+
+## lead_state normalised_phone guarantee
+
+`update_lead_state` (lifecycle_jobs.py) — when creating a new `lead_state` row for a contact whose first interaction was a completed (answered) call, derives `normalized_phone` from:
+1. `call_event.raw_payload_json['phone_number_to']`
+2. `call_event.raw_payload_json['phone_number']`
+3. `call_event.raw_payload_json['phone']`
+4. `contact_id` itself if it starts with `+` (phone-derived contact IDs)
+
+This ensures Lead Journey phone-number lookup works for all leads regardless of which path (voicemail or call-through) created their `lead_state` row.
+
+## Shadow mode loop behaviour
+
+When `SHADOW_MODE_ENABLED=true`, `launch_outbound_call_job` intercepts the Synthflow call and logs to `shadow_actions` without placing a real call. Because no real call is placed, Synthflow never sends a completion webhook. The voicemail tier loop therefore does not advance beyond the intercepted step. Leads remain at their current `ai_campaign_value` with no further pending jobs until shadow mode is disabled and a real call completes.
 
 ## Key trade-offs
 - Postgres chosen by business requirement despite earlier Postgres drafts.

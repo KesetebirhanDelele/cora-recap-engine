@@ -1,7 +1,7 @@
 # spec/00_overview.md
 
 ## Product one-liner
-Cora Outbound Recap Engine is a Python-based API + worker platform that replaces the current Zapier workflows for inbound recap, outbound cold-lead recap, and outbound new-lead recap with durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates, Synthflow callback scheduling, OpenAI-generated summaries, and consent-gated recap writeback.
+Cora Outbound Recap Engine is a Python-based API + worker platform that replaces the current Zapier workflows for inbound recap, outbound cold-lead recap, and outbound new-lead recap with durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates, Synthflow outbound call scheduling, OpenAI-generated summaries, and consent-gated recap writeback.
 
 ## Target users
 - **Admissions / Sales Reps**: receive CRM tasks for completed calls and continue human follow-up.
@@ -48,24 +48,24 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 ## System boundary
 ### In scope
 - Python API service for webhook intake and admin operations.
-- Python worker service for retries, delayed jobs, callbacks, AI jobs, and CRM writes.
-- Postgres as authoritative store for campaign state, call events, audit, exceptions, and scheduled-job records.
+- Python worker service for retries, delayed jobs, AI jobs, CRM writes, outbound call scheduling, SMS/email channel delivery.
+- Postgres as authoritative store for campaign state, call events, audit, exceptions, outbound/inbound messages, shadow actions, and scheduled-job records.
 - Redis + RQ for job execution.
-- GHL / LeadConnector for contact lookup, custom-field writes, notes, and task creation.
-- Synthflow for callback creation on eligible voicemail tiers.
-- OpenAI for completed-call analysis, student summary generation, consent detection, and voicemail content generation.
-- Postgres-authoritative reporting dataset and dashboard support
-- dashboard filtering and cross-filtering across supported visuals
-- Google Sheets mirror in shadow mode, with sheet data mirrored into Postgres during cutover.
-
+- GHL / LeadConnector for contact lookup, custom-field writes, notes, and task creation. Full integration contract: `spec/16_ghl_integration.md`.
+- Synthflow for outbound call launch (voicemail tiers and campaign entry).
+- OpenAI for completed-call analysis, student summary generation, consent detection, and AI-generated SMS/email bodies.
+- Postgres-authoritative reporting dataset and Streamlit monitoring dashboard.
+- Shadow mode: all GHL writes and outbound actions intercepted and logged to `shadow_actions` when `SHADOW_MODE_ENABLED=true`.
+- Campaign switching: bidirectional New Lead ↔ Cold Lead based on detected intent.
+- Lead Journey dashboard page: per-lead chronological touchpoint history, filterable by phone number.
 
 ### Out of scope
 - Replacing GHL as CRM.
-- Direct SMS/email sending inside this app; the app writes fields and state used by GHL automations.
+- Direct SMS/email sending as a primary channel; the app writes fields and state used by GHL automations, and sends AI-generated messages as secondary follow-up only.
 - Building a custom dialer in place of Synthflow.
 - Regulated health-data workflows.
-- dashboard drill-down interactions in the current phase
-- KPI tooltip interactions in the current phase
+- Google Sheets shadow sync (removed — user visually inspects Sheets; no programmatic mirror required).
+- Dashboard drill-down and KPI tooltip interactions (deferred).
 
 ## Success metrics
 1. Appointment / enrollment conversion rate from inbound and outbound leads improves versus current baseline.

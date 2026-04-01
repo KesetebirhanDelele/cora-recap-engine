@@ -37,17 +37,36 @@ Synthflow completed-call payloads use non-standard field names. The webhook hand
 Raw original payload is always preserved in `scheduled_jobs.payload_json` for audit.
 
 ## Internal interfaces
-- `normalize_synthflow_outcome(payload)` — extract canonical routing status from completed-call payload; handles field aliases and defaults missing status to `"completed"` with a warning
-- `launch_new_lead_call(phone, lead_name, campaign_name, metadata)` — trigger Synthflow Make Call workflow via `SYNTHFLOW_LAUNCH_WORKFLOW_URL`
-- `get_call_details(call_id)`
-- `upsert_contact_and_fields(contact_payload)`
-- `create_ghl_task(task_payload)`
-- `generate_summary(transcript_payload)`
-- `detect_summary_consent(transcript_payload)`
-- `generate_voicemail_content(vm_payload)`
-- `schedule_synthflow_callback(callback_payload)`
-- `mirror_google_sheet_rows(sync_payload)`
-- `apply_campaign_policy(campaign_name, campaign_value, context)`
+
+### Synthflow adapter — `app/adapters/synthflow.py`
+- `SynthflowClient.launch_new_lead_call(phone, lead_name, campaign_name, metadata)` — triggers Make Call workflow via `SYNTHFLOW_LAUNCH_WORKFLOW_URL`
+- `SynthflowClient.schedule_callback(phone, tier, delay_minutes)` — schedules a voicemail tier callback
+
+### GHL adapter — `app/adapters/ghl.py`
+See `spec/16_ghl_integration.md` for full GHL integration contract.
+- `GHLClient.search_contact_by_phone(phone)` — resolve contact_id from phone
+- `GHLClient.get_contact(contact_id)` — fetch full contact record
+- `GHLClient.update_contact_fields(contact_id, field_updates)` — write custom fields (shadow-gated)
+- `GHLClient.create_task(contact_id, title, description)` — create follow-up task (shadow-gated)
+- `GHLClient.append_note(contact_id, content)` — append note to contact (shadow-gated)
+
+### Call processing — `app/worker/jobs/call_processing.py`
+- `normalize_synthflow_outcome(payload)` — extract canonical routing status; handles field aliases; defaults to `"completed"` with a warning if missing
+- `process_call_event(job_id)` — main call event ingest: dedupe, persist, route to voicemail or call-through path
+
+### AI services — `app/services/ai.py`
+- `run_call_analysis(call_event_id)` — classify lead stage from transcript
+- `generate_student_summary(call_event_id)` — generate recap and detect consent
+
+### Campaign — `app/core/campaigns.py`
+- `evaluate_campaign_switch(campaign_name, intent)` — pure function; returns new campaign name or None
+- `apply_campaign_switch(session, lead, new_campaign_name, reason)` — updates lead, writes audit_log row
+
+### Intent — `app/core/intent_detection.py`
+- `detect_intent(transcript, executed_actions, duration_seconds)` — rule-based intent detection; returns intent string or None
+
+### Intent handlers — `app/core/intent_actions.py`
+- `handle_intent(session, lead, intent, call_event, settings)` — applies handler for detected intent; schedules downstream jobs
 
 ## Standard error
 ```json

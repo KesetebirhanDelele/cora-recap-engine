@@ -29,7 +29,26 @@ pip install streamlit
 streamlit run execution/dashboard.py
 ```
 
-Opens at http://localhost:8501. Sections: Overview, Recent Calls, Lead State, Shadow Actions, Scheduled Jobs, Exceptions, Contact Drill-Down.
+Opens at http://localhost:8501.
+
+Sections (10):
+1. **Overview** — system health tiles and charts
+2. **Campaign Overview** — all active leads with next action; filterable by date window
+3. **Trends** — call volume and rate trends by campaign
+4. **Recent Calls** — call event log with transcript preview
+5. **Lead State** — filterable lead table
+6. **Shadow Actions** — intercepted actions (visible when `SHADOW_MODE_ENABLED=true`)
+7. **Scheduled Jobs** — job queue state
+8. **Exceptions** — operator exception queue
+9. **Contact Drill-Down** — raw data view per contact_id
+10. **Lead Journey** — per-lead timeline filterable by phone number
+
+### Using Lead Journey
+Enter a phone number in E.164 format (`+1XXXXXXXXXX`). The page shows:
+- Summary card: campaign, status, VM tier, DNC flag, next scheduled action
+- Chronological timeline: voicemail calls, answered calls (with transcript preview), SMS/email, campaign switches
+- Campaign switches sourced from `audit_log` (written automatically by `apply_campaign_switch()`)
+- When shadow mode is on: SMS and outbound call touchpoints are in `shadow_actions`, not `outbound_messages` — they do not appear in the Lead Journey timeline until shadow mode is added as a timeline source
 
 If `alembic current` or the dashboard fail with `host "192.168.1.x" ... no pg_hba.conf entry`, a shell environment variable is overriding `.env`:
 ```bash
@@ -114,7 +133,7 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 ## Troubleshooting
 - duplicate task → inspect `dedupe_key` in `call_events` and `task_events`
 - missing summary → inspect `summary_results.summary_consent` and transcript length
-- lost callback → inspect `scheduled_jobs` where `job_type='synthflow_callback'`
+- lost callback → inspect `scheduled_jobs` where `job_type='process_voicemail_tier'`
 - GHL write failure → inspect `GHL_API_KEY` and `GHL_LOCATION_ID` in `.env`
 - exception queue growing → use dashboard retry/cancel/finalize actions
 - expired job leases → `recover_expired_claims()` runs on worker restart
@@ -125,6 +144,10 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - `alembic current` or dashboard fails with `host.docker.internal` pg_hba error → a shell `DATABASE_URL` env var is overriding `.env`; remove it with `Remove-Item Env:DATABASE_URL`
 - lead moved to Cold Lead unexpectedly → check `call_events.transcript` length; may have triggered `low_confidence_audio` (transcript < 5 chars)
 - lead stuck in `human_transfer` status → check `scheduled_jobs` for pending follow-up; see Live-call intent routing section above
+- lead showing wrong campaign in Campaign Overview or Lead Journey → check `call_events.raw_payload_json->>'Agent'`; if it contains 'ColdLead' but `lead_state.campaign_name = 'New Lead'`, the lead was processed before the `Agent`-field normalisation fix; correct manually or re-process
+- lead not visible in Lead Journey by phone number → `lead_state.normalized_phone` may be null (lead created by `update_lead_state` before the normalised_phone fix on 2026-03-31); Lead Journey will fall back to `call_events.raw_payload_json` phone match, but if no call_events exist the lead won't resolve
+- voicemail tier not advancing after shadow mode was on → shadow mode intercepted `launch_outbound_call` without placing a real call; Synthflow never sent a callback; re-trigger from tier 0 once shadow mode is disabled
+- Lead Journey shows only 1 event despite multiple outreach attempts → SMS and outbound calls in shadow mode are in `shadow_actions`, not `outbound_messages`; they are not currently displayed in Lead Journey timeline
 
 ## Migration commands
 ```bash
@@ -134,12 +157,12 @@ alembic downgrade -1     # roll back one step
 ```
 
 Migrations (in order):
-- `0001` — 8 core tables
+- `0001` — 8 core tables (lead_state, call_events, scheduled_jobs, exceptions, classification_results, summary_results, task_events, inbound_messages)
 - `0002` — reporting views (`fact_call_activity`, `fact_kpi_daily`)
 - `0003` — `audit_log` table
-- `0004` — Synthflow fields on `call_events`
-- `0005` — intent fields on `lead_state`
-- `0006` — `outbound_messages` and related tables
+- `0004` — Synthflow fields on `call_events` (model_id, lead_name, agent_phone_number, timeline, telephony_*)
+- `0005` — intent fields on `lead_state` (status, do_not_call, invalid, preferred_channel, next_action_at, last_replied_at)
+- `0006` — `outbound_messages` and `inbound_messages` tables
 - `0007` — `shadow_actions` table
 
 ## Reporting runbook notes

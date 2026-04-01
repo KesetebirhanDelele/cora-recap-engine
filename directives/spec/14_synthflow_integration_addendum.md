@@ -1,6 +1,6 @@
 # spec/14_synthflow_integration_addendum.md
 
-## Implementation status — COMPLETE (2026-03-11)
+## Implementation status — COMPLETE (updated 2026-03-31)
 
 All requirements in this spec are implemented:
 
@@ -12,10 +12,11 @@ All requirements in this spec are implemented:
 | Dedupe by `call_id` | `dedupe_key = "{call_id}:process_call_event"` unique constraint in `call_events` |
 | Persist raw payload | `raw_payload_json` column in `call_events` |
 | Persist normalised fields | `model_id`, `lead_name`, `agent_phone_number`, `timeline`, `telephony_*` — migration `0004_call_event_synthflow_fields` |
-| Voicemail routing | `_VOICEMAIL_STATUSES = {"voicemail", "hangup_on_voicemail"}` → `_route_to_voicemail()` |
+| Voicemail routing | `VOICEMAIL_STATUSES = {"voicemail", "hangup_on_voicemail", "left_voicemail", "voicemail_detected", "machine_detected"}` → `_route_to_voicemail()` |
 | Call-through routing | `_COMPLETED_STATUSES = {"completed"}` → `_route_to_call_through()` → `classify_call_event` |
 | `executed_actions` logging | `_log_executed_actions()` — logs failures ≥ 400 as warnings |
-| Webhook field normalisation | `webhooks.py` normalises `Call_id` → `call_id`, `duration` → `duration_seconds` |
+| Webhook field normalisation | `normalize_synthflow_payload()` in `webhooks.py`: resolves `call_id` from `Call_id`/`callId`/`call_id`; maps `duration` → `duration_seconds`; derives `contact_id` from phone fields; infers `campaign_name` from `Agent` field |
+| `Agent`-field campaign inference | `Agent` containing `coldlead`/`cold lead` → `"Cold Lead"`; `newlead`/`new lead` → `"New Lead"`; overrides payload's always-`"New Lead"` default |
 | `SYNTHFLOW_LAUNCH_WORKFLOW_URL` config | `settings.synthflow_launch_workflow_url` with `validate_for_synthflow_launch()` |
 | Make Call worker job | `launch_outbound_call_job` — `app/worker/jobs/outbound_jobs.py` |
 
@@ -198,15 +199,29 @@ Used for:
 ## Normalization rules
 The app shall normalize Synthflow completion payloads into internal workflow states.
 
-### Example mapping
-- `call_status = hangup_on_voicemail` + `end_call_reason = voicemail`
-  - route to voicemail/tier engine
+### call_id resolution (priority order)
+1. `call_id` (lowercase — direct match)
+2. `Call_id` (Synthflow capitalisation variant)
+3. `callId` (camelCase variant)
+First truthy value wins. Empty strings are skipped.
 
-- completed human conversation with usable transcript
-  - route to call-through path
+### campaign_name resolution (priority order)
+1. `Agent` field keyword match (overrides payload):
+   - contains `coldlead` or `cold lead` → `"Cold Lead"`
+   - contains `newlead` or `new lead` → `"New Lead"`
+2. Payload `campaign_name` (if no Agent keyword matched)
+3. Default `"New Lead"` (if both absent)
 
-- technical failure or missing required identity
-  - route to exception path
+Rationale: Synthflow sends `campaign_name = "New Lead"` for all workflows regardless of which agent ran the call. The `Agent` field value (e.g. `"Cora Outbound ColdLead Completed Call"`) reliably identifies the campaign.
+
+### voicemail status set
+`VOICEMAIL_STATUSES = {"voicemail", "hangup_on_voicemail", "left_voicemail", "voicemail_detected", "machine_detected"}`
+Any of these routes to the voicemail tier engine.
+
+### Example mappings
+- `call_status = hangup_on_voicemail` + `end_call_reason = voicemail` → voicemail/tier engine
+- `call_status = completed` with usable transcript → call-through path
+- Technical failure or missing identity → exception path
 
 The app must persist both:
 - raw provider values
