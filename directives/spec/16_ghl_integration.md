@@ -7,17 +7,20 @@
 | Auth (Bearer JWT + Version header) | IMPLEMENTED |
 | Retry policy (429/5xx + timeout, bounded exponential backoff) | IMPLEMENTED |
 | Shadow gate (`GHL_WRITE_MODE`, `ghl_writes_enabled`) | IMPLEMENTED |
-| Read ops: `search_contact_by_phone`, `get_contact` | IMPLEMENTED |
+| Read ops: `search_contact_by_phone`, `get_contact` | IMPLEMENTED (always active, not shadow-gated) |
 | Field resolution: `resolve_field_id`, `get_field_value` | IMPLEMENTED |
-| Write op: `create_task` | IMPLEMENTED (shadow-gated) |
+| Write op: `create_task` with `assigned_to` + `due_date` | IMPLEMENTED (shadow-gated) |
 | Write op: `update_contact_fields` (student summary delivery) | IMPLEMENTED (shadow-gated) |
+| Write op: `update_contact_fields` (Path 1 — call analysis fields) | IMPLEMENTED (shadow-gated) |
+| Write op: `update_contact_fields` (Path 2 — VM message fields) | IMPLEMENTED (shadow-gated) |
+| Write op: `update_contact_fields` (Path 3 — finalization) | IMPLEMENTED (shadow-gated) |
 | Write op: `append_note` | IMPLEMENTED (shadow-gated) |
 | CRM task dedupe via `task_events` | IMPLEMENTED |
 | Student summary consent gate | IMPLEMENTED |
 | Audit log on summary delivery | IMPLEMENTED |
-| Voicemail finalization field writes | PLANNED — not yet live |
+| GHL call analysis AI (`generate_ghl_call_analysis`) | IMPLEMENTED |
+| `_persist_ghl_analysis` → `classification_results` | IMPLEMENTED |
 | `LAST_CALL_STATUS` field write | PLANNED — not yet live |
-| `MARK_AS_LEAD` field write | PLANNED — not yet live |
 | `NOTES` field write (transcript/summary to notes) | PLANNED — not yet live |
 
 ---
@@ -45,7 +48,7 @@ Accept: application/json
 - `GHL_LOCATION_ID` — required for contact search queries; sent as a query param
 - Base URL: `https://services.leadconnectorhq.com` (configurable via `GHL_BASE_URL`)
 
-Read operations require `validate_for_ghl_reads()` (checks `ghl_api_key` and `ghl_location_id`).
+Read operations require `validate_for_ghl_reads()` (checks `ghl_api_key` and `ghl_location_id`). **Reads are always active regardless of write-mode settings.**
 Write operations require `validate_for_ghl_writes()` — only reachable when `ghl_writes_enabled=True`.
 
 ---
@@ -150,12 +153,12 @@ All write operations are implemented in `app/adapters/ghl.py` and are shadow-gat
 - Used for: student summary delivery, voicemail finalization fields (planned)
 - Field labels in `field_updates` must be resolved to IDs via `resolve_field_id()` before live writes
 
-### `create_task(contact_id, title, description="") → dict`
+### `create_task(contact_id, title, description="", assigned_to="", due_date="") → dict`
 
 - Endpoint: `POST /contacts/{contact_id}/tasks`
-- Payload: `{"title": ..., "status": "incompleted", "dueDate": null, ...}`
-- `dueDate` is always null (`task_due_date_mode=blank`)
-- No `assignedTo` — GHL-side assignment rules own final assignment
+- `assignedTo` and `dueDate` are omitted entirely from the payload when blank (not set to null) — prevents GHL from assigning to no-one
+- `assigned_to` is populated from `GhlCallAnalysisResult.assign_to` (one of three staff GHL user IDs)
+- `due_date` is populated from `GhlCallAnalysisResult.task_due_date` (ISO 8601 string derived from call transcript, e.g. "follow up Thursday at 2pm")
 - Used for: follow-up task on completed call (via `create_crm_task` job)
 
 ### `append_note(contact_id, content) → dict`
@@ -167,22 +170,93 @@ All write operations are implemented in `app/adapters/ghl.py` and are shadow-gat
 
 ---
 
-## Job contexts and lifecycle
+## GHL write paths
 
-### `create_crm_task` — `app/worker/jobs/crm_jobs.py`
+### Path 1 — Completed call AI analysis (`create_crm_task`)
 
 Triggered after: completed call (call-through path), after AI analysis completes.
 Queue: `callbacks`
+File: `app/worker/jobs/crm_jobs.py`
 
 **Flow:**
 1. Claim job
 2. Load `CallEvent` by `call_event_id`
 3. **Dedupe check**: if `task_events` has a row with `call_event_id` + `status='created'`, skip
-4. Call `GHLClient.create_task(contact_id, title="Completed call — {call_id}")`
-5. Write `TaskEvent` row with `provider_task_id` (null in shadow mode)
-6. Complete job
+4. **GHL read**: `GHLClient.get_contact(contact_id)` — fetch live contact to resolve field IDs and get current tags
+5. **AI analysis**: `generate_ghl_call_analysis(transcript, call_start_time_ms, duration_seconds, contact_phone, settings)` → `GhlCallAnalysisResult`
+   - Model: `settings.openai_model_ghl_analysis` (default: `gpt-4o-mini`)
+   - On error: fallback result with `create_task=False`, `lead_classification='not_a_lead'`
+6. **GHL contact field writes** (shadow-gated): 5 fields —
+   - `Mark as Lead` = `"Yes"`
+   - `AI Lead Assign To` = `analysis.assign_to` (GHL user ID)
+   - `Support Issue Ticket #3` = task/call description
+   - `AI Lead Classification` = classification tag
+   - `AI Campaign` = `"Yes"`
+7. **GHL task creation** (shadow-gated, conditional on `analysis.create_task=True`): `GHLClient.create_task(contact_id, analysis.task_title, analysis.task_description, analysis.assign_to, analysis.task_due_date)`
+8. Write `TaskEvent` row with `provider_task_id` (null in shadow mode)
+9. **Persist analysis** → `_persist_ghl_analysis()` writes to `classification_results` with `prompt_family='ghl_call_analysis'`; fields: `lead_classification`, `is_lead`, `ai_campaign`, `call_detailed_summary`, `task_title`, `assign_to`, `call_start_time`, `task_due_date`
+10. Complete job
 
 On error: creates `exceptions` row (type: `crm_task_failed`, severity: `warning`).
+
+### Path 2 — Voicemail-tier SMS/Email follow-up (`update_ghl_after_vm_message`)
+
+Triggered after: each SMS or email sent during voicemail tier progression.
+Queue: `callbacks`
+File: `app/worker/jobs/crm_jobs.py`
+
+Scheduled by `_schedule_ghl_vm_update()` in `channel_jobs.py` after every successful `send_sms_job` / `send_email_job`.
+
+**Flow:**
+1. Claim job
+2. **GHL read**: `GHLClient.get_contact(contact_id)` — fetch live contact
+3. **GHL contact field writes** (shadow-gated): 4–5 fields —
+   - `Mark as Lead` = `"Yes"`
+   - `Support Issue Ticket #2` = brief message identifier (email subject or SMS snippet, ≤ 50 chars)
+   - `Message` = full generated SMS/email body
+   - `AI Campaign` = `"Yes"`
+   - `Support Issue Ticket #4` = latest lead classification from `classification_results` (via `_get_latest_classification()`)
+4. Complete job
+
+On error: logged as non-fatal warning; does not create exception row (voicemail messaging already succeeded).
+
+### Path 3 — Campaign finalization (`_finalize_campaign`)
+
+Triggered when: voicemail tier reaches terminal (`tier >= 2` with `finalize=True`).
+File: `app/worker/jobs/voicemail_jobs.py`
+
+**Flow:**
+1. **GHL contact field writes** (shadow-gated): 2 fields —
+   - `Mark as Lead` = `"Yes"`
+   - `AI Campaign` = `"No"`
+2. These writes signal GHL automations to stop AI-driven outreach for this lead.
+
+Requires `GHL_WRITE_FINALIZATION=true`. Currently runs in shadow mode.
+
+---
+
+## `GhlCallAnalysisResult` — AI output contract
+
+Produced by `generate_ghl_call_analysis()` in `app/core/ai_message_generator.py`.
+Prompt family: `ghl_call_analysis` / version `v1` — `app/prompts/families/ghl_call_analysis.py`.
+
+| Field | Type | Description |
+|---|---|---|
+| `task_title` | str | Short task title for GHL (e.g. "Follow up: interested, wants to talk Thursday") |
+| `task_description` | str | Full call narrative for the task body |
+| `assign_to` | str | GHL user ID (Bala=`yIhCTptvoNLixaWkLcRd`, Shveta=`mW2OSEYWWGDSB9JcKBcr`, Taiwo=`93bhNRgb5pzSoHmaSimH`) |
+| `is_lead_classification` | bool | Whether AI classified this as a likely lead |
+| `lead_classification` | str | Tag value for AI Lead Classification field |
+| `create_task` | bool | Whether to create a GHL task (False for do_not_call, enrolled, etc.) |
+| `outbound_call_details` | str | Brief structured call detail for notes |
+| `call_detailed_summary` | str | Full narrative call summary (stored in `classification_results`, shown in dashboard timeline) |
+| `ai_campaign` | str | "Yes" / "No" for AI Campaign field |
+| `call_start_time_formatted` | str | Human-readable call start time string |
+| `task_due_date` | str | ISO 8601 due date extracted from transcript ("follow up Thursday at 2pm" → next occurrence) |
+
+---
+
+## Job contexts and lifecycle
 
 ### `send_student_summary` — `app/worker/jobs/crm_jobs.py`
 
@@ -201,39 +275,30 @@ Queue: `callbacks`
 
 On error: creates `exceptions` row (type: `student_summary_delivery_failed`, severity: `warning`).
 
-### Voicemail finalization (planned)
-
-On terminal tier (`ai_campaign_value = "3"`), the voicemail job is planned to write:
-- `LAST_CALL_STATUS` field
-- `MARK_AS_LEAD` field
-- `NOTES` field (transcript summary)
-
-These writes require `GHL_WRITE_FINALIZATION=true`. Currently all fields resolve to None (not yet configured in `.env`).
-
 ---
 
-## Unresolved external field IDs
+## Field mapping reference
 
-The following GHL field identifiers are config-driven. Their values vary by GHL location and must be set in `.env` before live writes can execute:
+All GHL field identifiers are config-driven. Field IDs are resolved at runtime via `resolve_field_id()` from a freshly fetched contact — no IDs are ever hard-coded.
 
-| Env var | Purpose | Live write |
-|---|---|---|
-| `GHL_FIELD_AI_CAMPAIGN` | AI campaign field label | Planned |
-| `GHL_FIELD_AI_CAMPAIGN_VALUE` | Voicemail tier field label | Planned |
-| `GHL_FIELD_AI_LEAD_CLASSIFICATION` | AI classification field label | Planned |
-| `GHL_FIELD_AI_LEAD_ASSIGN_TO` | Assignment field label | Planned |
-| `GHL_FIELD_CALL_DETAILED_SUMMARY` | Call summary field label | Planned |
-| `GHL_FIELD_STUDENT_SUMMARY` | Student recap field label | Active (student summary job) |
-| `GHL_FIELD_VM_EMAIL_HTML` | Voicemail email HTML body field | Planned |
-| `GHL_FIELD_VM_EMAIL_SUBJECT` | Voicemail email subject field | Planned |
-| `GHL_FIELD_VM_SMS_TEXT` | Voicemail SMS text field | Planned |
-| `GHL_FIELD_LAST_CALL_STATUS` | Last call status field | Planned |
-| `GHL_FIELD_MARK_AS_LEAD` | Mark-as-lead flag field | Planned |
-| `GHL_FIELD_NOTES` | Notes field (transcript) | Planned |
-| `GHL_TASK_PIPELINE_ID` | GHL pipeline for task routing | Planned |
-| `GHL_TASK_DEFAULT_OWNER_ID` | Default task assignee | Planned |
-
-Field ID resolution happens at write time via `resolve_field_id()` from a freshly fetched contact — no field IDs are ever hard-coded.
+| Env var | Default value | Used in | Status |
+|---|---|---|---|
+| `GHL_FIELD_MARK_AS_LEAD` | `"Mark as Lead"` | Path 1, 2, 3 | Active (shadow-gated) |
+| `GHL_FIELD_AI_LEAD_ASSIGN_TO` | `"AI Lead Assign To"` | Path 1 | Active (shadow-gated) |
+| `GHL_FIELD_SUPPORT_TICKET_3` | `"Support Issue Ticket #3"` | Path 1 — task description | Active (shadow-gated) |
+| `GHL_FIELD_AI_LEAD_CLASSIFICATION` | `"AI Lead Classification"` | Path 1 | Active (shadow-gated) |
+| `GHL_FIELD_AI_CAMPAIGN` | `"Yes"` (value) | Path 1, 2, 3 | Active (shadow-gated) |
+| `GHL_FIELD_SUPPORT_TICKET_2` | `"Support Issue Ticket #2"` | Path 2 — brief identifier | Active (shadow-gated) |
+| `GHL_FIELD_MESSAGE` | `"Message"` | Path 2 — full message body | Active (shadow-gated) |
+| `GHL_FIELD_SUPPORT_TICKET_4` | `"Support Issue Ticket #4"` | Path 2 — classification tag | Active (shadow-gated) |
+| `GHL_FIELD_STUDENT_SUMMARY` | `"Student Summary"` | Student summary job | Active (shadow-gated) |
+| `GHL_FIELD_VM_EMAIL_HTML` | `"Support Issue Ticket #2"` | Legacy VM email field | Config-driven |
+| `GHL_FIELD_VM_EMAIL_SUBJECT` | `"Message:"` | Legacy VM email subject | Config-driven |
+| `GHL_FIELD_VM_SMS_TEXT` | `"Support Issue Ticket #4"` | Legacy VM SMS field | Config-driven |
+| `GHL_FIELD_LAST_CALL_STATUS` | (unset) | Last call status | Planned |
+| `GHL_FIELD_NOTES` | (unset) | Notes (transcript) | Planned |
+| `GHL_TASK_PIPELINE_ID` | (unset) | Task pipeline routing | Planned |
+| `GHL_TASK_DEFAULT_OWNER_ID` | (unset) | Default task assignee | Planned |
 
 ---
 
@@ -258,13 +323,14 @@ When `GHL_WRITE_CAMPAIGN_STATE=true`:
 2. Resolve `ghl_field_ai_campaign_value` field ID
 3. Write current tier value to contact field
 
-### Voicemail finalization writes
-When `GHL_WRITE_FINALIZATION=true` and tier reaches terminal (`ai_campaign_value = "3"`):
+### Last call status and notes
+When `GHL_WRITE_FINALIZATION=true` (fully activated):
 1. Write `LAST_CALL_STATUS` = final voicemail status
-2. Write `MARK_AS_LEAD` = true/configured value
-3. Append `NOTES` = AI summary of voicemail sequence
+2. Append `NOTES` = AI summary of voicemail sequence
 
 These are not yet configured or activated. Safe to leave `GHL_WRITE_FINALIZATION=false` until field IDs are confirmed.
+
+Note: `MARK_AS_LEAD` and `AI_CAMPAIGN` writes in Path 3 are already implemented via `_finalize_campaign()` — these are the live parts of finalization that run in shadow mode today.
 
 ---
 
@@ -287,3 +353,7 @@ These are not yet configured or activated. Safe to leave `GHL_WRITE_FINALIZATION
 4. Given a transient GHL 429 response, when `_request()` runs, then it retries up to `ghl_retry_max` times with exponential backoff and raises `GHLError` after exhaustion.
 5. Given a live write attempt (`ghl_writes_enabled=True`) with `ghl_api_key=None`, when `validate_for_ghl_writes()` is called, then a `ConfigError` is raised before any API call is made.
 6. Given `GHL_WRITE_MODE=live` and valid credentials, when `create_task` is called, then `PUT /contacts/{id}/tasks` is called exactly once and a `task_events` row is written.
+7. Given a completed call, when `create_crm_task` runs, then `_persist_ghl_analysis()` writes a `classification_results` row with `prompt_family='ghl_call_analysis'` containing `call_detailed_summary` and `lead_classification`.
+8. Given an SMS or email successfully sent, when `_schedule_ghl_vm_update()` runs, then a `update_ghl_after_vm_message` job is enqueued with the message body.
+9. Given a GHL read (`get_contact`) called during shadow-mode write path, then the read executes normally and the result is used to resolve field IDs even when writes are shadow-gated.
+10. Given a voicemail tier reaching terminal, when `_finalize_campaign()` runs, then `Mark as Lead=Yes` and `AI Campaign=No` are written (shadow-gated) to the GHL contact.

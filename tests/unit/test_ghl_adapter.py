@@ -284,11 +284,18 @@ def test_get_field_value_returns_none_when_not_found():
 # 9 + 10. build_task_payload
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_build_task_payload_due_date_is_none():
+def test_build_task_payload_no_due_date_when_blank():
     s = _settings()
     client, _ = _make_client(s)
     payload = client.build_task_payload("Follow-up call")
-    assert payload["dueDate"] is None
+    assert "dueDate" not in payload
+
+
+def test_build_task_payload_due_date_set_when_provided():
+    s = _settings()
+    client, _ = _make_client(s)
+    payload = client.build_task_payload("Follow-up call", due_date="2026-04-05T10:00:00-05:00")
+    assert payload["dueDate"] == "2026-04-05T10:00:00-05:00"
 
 
 def test_build_task_payload_no_assigned_to():

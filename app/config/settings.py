@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     ghl_field_last_call_status: Optional[str] = None
     ghl_field_mark_as_lead: Optional[str] = None
     ghl_field_notes: Optional[str] = None
+    ghl_field_support_ticket_2: Optional[str] = None   # VM tier: ticket/message field
+    ghl_field_support_ticket_3: Optional[str] = None   # Completed call: task description field
+    ghl_field_support_ticket_4: Optional[str] = None   # VM tier: additional field
+    ghl_field_message: Optional[str] = None            # VM tier: generated message body
     ghl_task_pipeline_id: Optional[str] = None
     ghl_task_default_owner_id: Optional[str] = None
 
@@ -139,6 +143,7 @@ class Settings(BaseSettings):
             return "https://" + v
         return v
     openai_model_call_analysis: str = "gpt-4o-mini"
+    openai_model_ghl_analysis: str = "gpt-4o-mini"    # GHL call analysis (rich output)
     openai_model_student_summary: str = "gpt-4o-mini"
     openai_model_consent_detector: str = "gpt-4o-mini"
     openai_model_vm_content: str = "gpt-4o-mini"
@@ -186,6 +191,18 @@ class Settings(BaseSettings):
     # Messaging follow-up delays after missed calls / voicemails
     sms_followup_delay_minutes: int = 30    # SMS sent N minutes after missed call
     email_followup_delay_days: int = 1      # Email sent N days after 2nd missed call
+
+    # Campaign active windows — outbound calls are deferred outside these windows.
+    # Days: comma-separated ISO weekday numbers (0=Monday … 6=Sunday).
+    # Hours: 24-hour integers; window is [start_hour, end_hour) exclusive of end.
+    # All times apply in default_timezone (default: America/Chicago).
+    new_lead_active_days: str = "0,1,2,3,4,5,6"  # all days
+    new_lead_active_start_hour: int = 8
+    new_lead_active_end_hour: int = 22
+    cold_lead_active_days: str = "0,1,2,3,4"     # Mon–Fri only
+    cold_lead_active_start_hour: int = 8
+    cold_lead_active_end_hour: int = 22
+
     shadow_mode_enabled: bool = True
     # 90-day default: must survive delayed retries, replayed webhooks,
     # shadow-mode reconciliation, and re-runs across the full call lifecycle.

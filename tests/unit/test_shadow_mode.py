@@ -98,6 +98,15 @@ def _settings(shadow_on: bool):
     s = MagicMock()
     s.shadow_mode_enabled = shadow_on
     s.is_shadow_mode = shadow_on
+    # Campaign active-window fields — required when shadow_on=False and the
+    # window check runs for outbound/channel jobs.
+    s.default_timezone = "America/Chicago"
+    s.new_lead_active_days = "0,1,2,3,4,5,6"
+    s.new_lead_active_start_hour = 8
+    s.new_lead_active_end_hour = 22
+    s.cold_lead_active_days = "0,1,2,3,4"
+    s.cold_lead_active_start_hour = 8
+    s.cold_lead_active_end_hour = 22
     return s
 
 

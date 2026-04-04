@@ -342,10 +342,30 @@ def test_duplicate_task_creation_blocked_by_application_layer(session):
         session.flush()
         return j
 
+    from app.core.ai_message_generator import GhlCallAnalysisResult
+
+    fake_analysis = GhlCallAnalysisResult(
+        task_title="Follow-Up: Test",
+        task_description="Test description",
+        assign_to="mW2OSEYWWGDSB9JcKBcr",
+        is_lead_classification=True,
+        lead_classification="warm_lead",
+        create_task=True,
+        outbound_call_details="",
+        call_detailed_summary="",
+        ai_campaign="Yes",
+        call_start_time_formatted="",
+        task_due_date="",
+    )
+
     with (
         patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
         patch("app.adapters.ghl.GHLClient.create_task",
               return_value={"shadow": True}) as mock_create,
+        patch("app.adapters.ghl.GHLClient.update_contact_fields",
+              return_value={"shadow": True}),
+        patch("app.core.ai_message_generator.generate_ghl_call_analysis",
+              return_value=fake_analysis),
     ):
         mock_sess.return_value.__enter__ = lambda _: session
         mock_sess.return_value.__exit__ = MagicMock(return_value=False)

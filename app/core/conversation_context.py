@@ -33,13 +33,17 @@ class ConversationContext:
     status: Optional[str]          # active | nurture | cold | closed | ...
     tier: Optional[str]            # None | '0' | '1' | '2' | '3'
     preferred_channel: Optional[str]
+    lead_first_name: Optional[str] = None   # from raw_payload_json['Name']
+    attempt_number: int = 1                 # 1-based voicemail tier attempt
     transcripts: list[str] = field(default_factory=list)        # newest first
     outbound_messages: list[dict] = field(default_factory=list) # channel/body/subject
     inbound_replies: list[dict] = field(default_factory=list)   # channel/body
 
 
 def get_conversation_context(
-    session: Session, contact_id: str
+    session: Session,
+    contact_id: str,
+    attempt_number: int = 1,
 ) -> ConversationContext:
     """
     Build a ConversationContext for a contact.
@@ -54,6 +58,7 @@ def get_conversation_context(
         status=None,
         tier=None,
         preferred_channel=None,
+        attempt_number=attempt_number,
     )
 
     try:
@@ -83,6 +88,21 @@ def get_conversation_context(
             .limit(_MAX_TRANSCRIPTS)
         ).all()
         ctx.transcripts = [e.transcript for e in events if e.transcript]
+
+        # ── Lead first name from most recent call_event payload ───────────────
+        # raw_payload_json['Name'] is set by Synthflow from the GHL contact.
+        # Use the most recent event regardless of transcript availability.
+        most_recent_event = session.scalars(
+            select(CallEvent)
+            .where(CallEvent.contact_id == contact_id)
+            .order_by(CallEvent.created_at.desc())
+            .limit(1)
+        ).first()
+        if most_recent_event and most_recent_event.raw_payload_json:
+            raw_name = most_recent_event.raw_payload_json.get("Name", "")
+            # Take first word only (first name), strip whitespace
+            first = (raw_name or "").strip().split()[0] if raw_name and raw_name.strip() else ""
+            ctx.lead_first_name = first or None
 
         # ── Outbound message history ──────────────────────────────────────────
         outbound = session.scalars(

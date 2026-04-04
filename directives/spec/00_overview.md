@@ -15,7 +15,7 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 1. A call event arrives with `call_id`, phones, status, and timing.
 2. The system enriches the event from GHL/LeadConnector and canonical call-analysis source.
 3. The system upserts an idempotent call record keyed by `call_id`.
-4. The system updates CRM fields and creates one GHL task for each completed non-voicemail call.
+4. **GHL Path 1 — AI call analysis + CRM update**: `create_crm_task` fetches the GHL contact, runs `generate_ghl_call_analysis()` (OpenAI gpt-4o-mini), writes 5 contact fields (`Mark as Lead`, `AI Lead Assign To`, call summary ticket, `AI Lead Classification`, `AI Campaign`), creates a GHL task with `assigned_to` and `task_due_date`, and persists the analysis to `classification_results` (prompt_family=`ghl_call_analysis`).
 5. The system generates a student summary and consent decision.
 6. If consent is `YES`, the system writes the student summary back to the configured GHL recap field.
 7. The system runs intent detection on the transcript (including `executed_actions` signals) and applies live-call routing: schedule follow-up, move to Cold Lead, or take no additional action.
@@ -26,7 +26,8 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 3. The system uses one shared tier engine, but applies campaign-specific policy for delays, actions, and finalization writes.
 4. Cold Lead policy uses: None→0 = 2 hours, 0→1 = 2 days, 1→2 = 2 days, 2→3 = finalize with no Synthflow callback.
 5. New Lead policy may use different timing/actions while preserving the same tier numbering model.
-6. Tier 3 turns off AI campaign activity in GHL and ends automated callback progression.
+6. After each voicemail-triggered SMS or email, **GHL Path 2** runs: `update_ghl_after_vm_message` writes `Mark as Lead=Yes`, the brief message identifier (Support Ticket #2), the full message body (`Message` field), `AI Campaign=Yes`, and the latest lead classification (Support Ticket #4) to the GHL contact.
+7. Tier 3 triggers **GHL Path 3** — finalization: `_finalize_campaign` writes `Mark as Lead=Yes` and `AI Campaign=No`, marking the end of automated follow-up in GHL.
 
 ### 3. Live-call intent routing
 1. A completed (answered) call arrives.
@@ -80,4 +81,7 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 - No additional lead classification mapping is required beyond current workflow outputs.
 - Indefinite retention is required for transcripts, AI outputs, and audit metadata.
 - GHL is authenticated using per-location API keys.
+- The AI knowledge base for SMS/email generation is a CSV file at `app/prompts/knowledge_base/video_transcripts.csv` with columns: `video name`, `transcript`, `summary`, `platform`, `category`, `URL`. The loader is `@lru_cache`-backed and immutable at runtime.
+- GHL reads (contact lookup) are always active regardless of write-mode settings. Only writes are shadow-gated.
+- `classification_results` stores rows from two prompt families for the same call: `lead_stage_classifier` (from `run_call_analysis`) and `ghl_call_analysis` (from `create_crm_task`). Both coexist; the timeline joins specifically on `prompt_family='ghl_call_analysis'` for rich call-summary data.
 

@@ -8,9 +8,11 @@ outbound call scheduler.
 Job lifecycle:
   1. Claim the ScheduledJob row
   2. Read phone, lead_name, campaign_name from payload
-  3. Call SynthflowClient.launch_new_lead_call()
-  4. Log the result and complete the job
-  5. On failure: create exception record, fail the job
+  3. Check campaign active window in caller's local timezone (live mode only).
+     If outside window: cancel current job, reschedule at next window-open time.
+  4. Call SynthflowClient.launch_new_lead_call()
+  5. Log the result and complete the job
+  6. On failure: create exception record, fail the job
 
 The Synthflow call completion arrives separately via:
   POST /v1/webhooks/calls (completed-call webhook)
@@ -18,6 +20,7 @@ The Synthflow call completion arrives separately via:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
@@ -31,8 +34,9 @@ def launch_outbound_call_job(job_id: str) -> None:
     """
     Worker job: invoke Synthflow Make Call workflow.
 
-    Reads job payload, calls SynthflowClient.launch_new_lead_call(),
-    logs the result. Call completion arrives via webhook callback.
+    Reads job payload, checks campaign active window in the caller's local
+    timezone, then calls SynthflowClient.launch_new_lead_call(). Call
+    completion arrives via webhook callback.
     """
     settings = get_settings()
     worker_id = get_worker_id()
@@ -43,19 +47,56 @@ def launch_outbound_call_job(job_id: str) -> None:
             logger.info("launch_outbound_call_job: already claimed | job_id=%s", job_id)
             return
 
-        mark_running(session, job)
+        # Load payload before mark_running so the window check can cancel
+        # the job while it is still in 'claimed' status (cancel_job requires
+        # pending or claimed).
         payload = job.payload_json or {}
         phone = payload.get("phone_number", "")
         lead_name = payload.get("lead_name", "")
         campaign_name = payload.get("campaign_name", "New_Lead")
         correlation_id = payload.get("correlation_id", job_id)
+        contact_id = payload.get("contact_id") or phone
+
+        # ── Campaign active-window check (live mode only) ─────────────────────
+        # Shadow mode skips this — no real outbound action is taken so there
+        # is nothing to defer.
+        if not settings.shadow_mode_enabled:
+            from app.core.campaign_schedule import (
+                get_contact_timezone,
+                is_campaign_active,
+                next_active_window_start,
+            )
+            from app.worker.claim import cancel_job
+            from app.worker.scheduler import schedule_job
+
+            now = datetime.now(tz=timezone.utc)
+            contact_tz = get_contact_timezone(session, contact_id, settings)
+            if not is_campaign_active(campaign_name, now, settings, contact_tz, session):
+                next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
+                logger.info(
+                    "launch_outbound_call_job: outside active window — deferring | "
+                    "campaign=%s contact_tz=%s job_id=%s rescheduled_for=%s",
+                    campaign_name, contact_tz, job_id, next_open.isoformat(),
+                )
+                cancel_job(session, job.id)
+                schedule_job(
+                    session=session,
+                    job_type="launch_outbound_call",
+                    entity_type=job.entity_type,
+                    entity_id=job.entity_id,
+                    run_at=next_open,
+                    payload=payload,
+                )
+                return
+
+        mark_running(session, job)
 
         # ── Shadow mode: log and skip the real Synthflow call ─────────────────
         if settings.shadow_mode_enabled:
             from app.worker.shadow import log_shadow_action
             log_shadow_action(
                 session,
-                contact_id=payload.get("contact_id") or phone,
+                contact_id=contact_id,
                 action_type="outbound_call",
                 payload={
                     "run_at": job.run_at.isoformat() if job.run_at else None,

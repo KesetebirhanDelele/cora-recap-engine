@@ -38,7 +38,18 @@
       "Bash(python -m pytest tests/unit/ tests/evals/ -q --tb=no)",
       "Bash(python -m pytest tests/unit/test_webhook_normalization.py tests/unit/test_campaign_switching.py -v --tb=short)",
       "Bash(python -m pytest tests/unit/ -q --tb=short)",
-      "Bash(python -m pytest tests/unit/test_lifecycle_jobs.py -v --tb=short)"
+      "Bash(python -m pytest tests/unit/test_lifecycle_jobs.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/test_campaign_schedule.py -v)",
+      "Bash(python -c ':*)",
+      "Bash(.venv/Scripts/python -c ':*)",
+      "Bash(.venv/Scripts/python -m pytest tests/unit/test_campaign_schedule.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/unit/test_shadow_mode.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/unit/test_shadow_mode.py tests/unit/test_campaign_schedule.py -v)",
+      "Bash(.venv/Scripts/python -m pytest tests/unit/ -q)",
+      "Bash(.venv/Scripts/python -m alembic upgrade head)",
+      "Bash(python -m pytest tests/unit/ -x -q)",
+      "Bash(docker exec:*)",
+      "Bash(grep -n \"lead_classification\\\\|lead_stage\\\\|classification\" c:/Users/keset/cora-recap-engine/app/prompts/families/*.py)"
     ]
   }
 }

@@ -45,13 +45,18 @@ One row per (call_id, action_type) dedupe_key. Idempotent under replay.
 - created_at
 
 ## classification_results
+One row per (call_event_id, prompt_family) — multiple rows may exist for the same call.
 - id
 - call_event_id
 - model_used
-- prompt_family
+- prompt_family — `"lead_stage_classifier"` (from `run_call_analysis`) or `"ghl_call_analysis"` (from `create_crm_task`)
 - prompt_version
-- output_json
+- output_json — schema varies by prompt_family:
+  - `lead_stage_classifier`: `{lead_stage, confidence, reasoning, ...}`
+  - `ghl_call_analysis`: `{lead_classification, is_lead, ai_campaign, call_detailed_summary, task_title, assign_to, call_start_time, task_due_date}`
 - created_at
+
+Dashboard timeline joins on `prompt_family = 'ghl_call_analysis'` to display `lead_classification` and `call_detailed_summary` in the call event row.
 
 ## summary_results
 - id
@@ -112,10 +117,10 @@ Append-only; never updated or deleted.
 ## outbound_messages
 One row per send attempt. Written by send_sms_job / send_email_job (NOT written in shadow mode).
 - id
-- contact_id
+- contact_id — GHL contact ID or phone number; dashboard queries include `OR contact_id = :phone` fallback for phone-as-ID leads
 - channel — "sms" | "email"
-- subject — email only
-- body
+- subject — email subject line (email only); null for SMS
+- body — full message body (AI-generated via `generate_vm_followup()`)
 - status — pending | sent | failed
 - created_at
 

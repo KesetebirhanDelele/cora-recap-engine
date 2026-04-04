@@ -34,7 +34,8 @@ _TIER_SEQUENCE = [None, "0", "1", "2", "3"]
 _TERMINAL_TIER = "3"
 
 # Maps tier → 1-based attempt number (for observability in payload_json)
-_TIER_TO_ATTEMPT: dict[str | None, int] = {None: 1, "0": 2, "1": 3}
+# Tier "2" → attempt 4 = the fourth and final voicemail follow-up
+_TIER_TO_ATTEMPT: dict[str | None, int] = {None: 1, "0": 2, "1": 3, "2": 4}
 
 
 def process_voicemail_tier(job_id: str) -> None:
@@ -151,7 +152,7 @@ def process_voicemail_tier(job_id: str) -> None:
             # Get campaign-specific policy (delay, callback flag, terminal flag)
             from app.services.tier_policy import get_tier_policy
 
-            policy = get_tier_policy(campaign_name, current_tier, settings)
+            policy = get_tier_policy(campaign_name, current_tier, settings, session)
 
             logger.info(
                 "voicemail tier advance | contact_id=%s %r → %r campaign=%s "
@@ -184,7 +185,7 @@ def process_voicemail_tier(job_id: str) -> None:
                 # Schedule SMS/email follow-ups after missed call (non-blocking, failure-safe)
                 attempt_number = _TIER_TO_ATTEMPT.get(current_tier, 0)
                 _schedule_messaging_after_voicemail(
-                    session, contact_id, attempt_number, settings
+                    session, contact_id, attempt_number, campaign_name, settings
                 )
 
             complete_job(session, job)
@@ -253,22 +254,30 @@ def _advance_tier(session, lead, next_tier: str) -> None:
 
 def _finalize_campaign(session, lead, settings) -> None:
     """
-    Execute finalization writes when tier reaches 3.
+    Execute finalization writes when final VM tier is reached.
 
-    Sets AI Campaign = 'No' in GHL (shadow-gated).
-    This terminates AI campaign activity for the contact.
+    Path 3 — After last VM attempt:
+      Mark as Lead → "Yes" (confirmed lead record even if not converting)
+      AI Campaign  → "No"  (stop outbound AI outreach)
+    Both writes are shadow-gated.
     """
     from app.adapters.ghl import GHLClient
 
     logger.info(
-        "voicemail finalization | contact_id=%s tier=3 shadow=%s",
+        "voicemail finalization | contact_id=%s shadow=%s",
         lead.contact_id, not settings.ghl_writes_enabled,
     )
     ghl = GHLClient(settings=settings)
+
+    field_updates: dict[str, str] = {}
+    if settings.ghl_field_mark_as_lead:
+        field_updates[settings.ghl_field_mark_as_lead] = "Yes"
     ai_campaign_field = settings.ghl_field_ai_campaign or "AI Campaign"
+    field_updates[ai_campaign_field] = "No"
+
     ghl.update_contact_fields(
         contact_id=lead.contact_id,
-        field_updates={ai_campaign_field: "No"},
+        field_updates=field_updates,
     )
 
 
@@ -395,13 +404,19 @@ def _schedule_messaging_after_voicemail(
     session,
     contact_id: str,
     attempt_number: int,
+    campaign_name: str,
     settings,
 ) -> None:
     """
     Schedule SMS (and optionally email) follow-up jobs after a missed call.
 
-    SMS: always scheduled at now + 30 minutes (idempotent).
-    Email: only on attempt_number == 2, scheduled at now + 1 day (idempotent).
+    SMS: always scheduled at now + sms_followup_delay_minutes (idempotent).
+    Email: scheduled on attempt_number == 2 and attempt_number == 4 (final).
+      attempt 2 → 1 day delay
+      attempt 4 → sent at same time as SMS (this is the final outreach)
+
+    campaign_name is forwarded in the job payload so channel_jobs can select
+    the correct tier-specific prompt.
 
     Silently skips if:
       - Contact has a recent reply (has_recent_reply check)
@@ -446,6 +461,7 @@ def _schedule_messaging_after_voicemail(
                 payload={
                     "contact_id": contact_id,
                     "attempt_number": attempt_number,
+                    "campaign_name": campaign_name,
                 },
             )
             logger.info(
@@ -453,8 +469,8 @@ def _schedule_messaging_after_voicemail(
                 sms_delay, contact_id, attempt_number,
             )
 
-        # ── Email: N days after 2nd call attempt only ─────────────────────────
-        if attempt_number == 2:
+        # ── Email: attempt 2 (1 day delay) and attempt 4 / final (same as SMS) ─
+        if attempt_number in (2, 4):
             has_pending_email = session.scalars(
                 select(ScheduledJob).where(
                     ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
@@ -464,21 +480,31 @@ def _schedule_messaging_after_voicemail(
             ).first() is not None
 
             if not has_pending_email:
-                email_delay = getattr(settings, "email_followup_delay_days", 1)
+                if attempt_number == 4:
+                    # Final attempt — send email at the same time as the SMS
+                    email_delay_secs = getattr(settings, "sms_followup_delay_minutes", 30) * 60
+                    email_run_at = now + timedelta(seconds=email_delay_secs)
+                    delay_label = f"+{email_delay_secs // 60}min (final)"
+                else:
+                    email_delay = getattr(settings, "email_followup_delay_days", 1)
+                    email_run_at = now + timedelta(days=email_delay)
+                    delay_label = f"+{email_delay}d"
+
                 schedule_job(
                     session=session,
                     job_type="send_email",
                     entity_type="lead",
                     entity_id=contact_id,
-                    run_at=now + timedelta(days=email_delay),
+                    run_at=email_run_at,
                     payload={
                         "contact_id": contact_id,
                         "attempt_number": attempt_number,
+                        "campaign_name": campaign_name,
                     },
                 )
                 logger.info(
-                    "_schedule_messaging: email scheduled +%dd | contact_id=%s attempt=%d",
-                    email_delay, contact_id, attempt_number,
+                    "_schedule_messaging: email scheduled %s | contact_id=%s attempt=%d",
+                    delay_label, contact_id, attempt_number,
                 )
 
     except Exception as exc:

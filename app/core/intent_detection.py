@@ -332,6 +332,9 @@ def _build_future_dt(
 ) -> datetime:
     """Convert 12-hour clock + am/pm to a UTC-aware datetime."""
     now = datetime.now(tz=timezone.utc)
+    # Clamp to valid 12-hour range; out-of-range values come from noisy transcripts
+    hour_12 = max(1, min(hour_12, 12))
+    minute  = max(0, min(minute, 59))
     hour = hour_12
     ampm = ampm.lower()
     if ampm == "pm" and hour != 12:

@@ -11,11 +11,15 @@ send_email_job:
   Scheduled 1 day after the second call attempt.
   Same AI-generation + fallback + suppression pattern as SMS.
 
-Both jobs check has_recent_reply() immediately after claiming —
-a reply received between scheduling and execution cancels the send.
+Both jobs:
+  1. Check campaign active window in caller's local timezone (live mode only).
+     If outside window: cancel current job, reschedule at next window-open time.
+  2. Check has_recent_reply() immediately after claiming —
+     a reply received between scheduling and execution cancels the send.
 
 Payload fields (both jobs):
   contact_id      — GHL contact identifier
+  campaign_name   — used for active-window policy selection
   attempt_number  — 1-based attempt count (for context)
 """
 from __future__ import annotations
@@ -32,10 +36,53 @@ from app.worker.exceptions import create_exception
 logger = logging.getLogger(__name__)
 
 
+def _check_active_window(session, job, contact_id: str, campaign_name: str, settings) -> bool:
+    """
+    Check whether the campaign is within its active window in the caller's timezone.
+
+    Returns True if the job should proceed.
+    Returns False (and handles cancel + reschedule) if the job was deferred.
+    Only active in live mode — shadow mode always returns True.
+    """
+    if settings.shadow_mode_enabled:
+        return True
+
+    from app.core.campaign_schedule import (
+        get_contact_timezone,
+        is_campaign_active,
+        next_active_window_start,
+    )
+    from app.worker.claim import cancel_job
+    from app.worker.scheduler import schedule_job
+
+    now = datetime.now(tz=timezone.utc)
+    contact_tz = get_contact_timezone(session, contact_id, settings)
+    if is_campaign_active(campaign_name, now, settings, contact_tz, session):
+        return True
+
+    next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
+    logger.info(
+        "%s: outside active window — deferring | "
+        "contact_id=%s campaign=%s contact_tz=%s rescheduled_for=%s",
+        job.job_type, contact_id, campaign_name, contact_tz, next_open.isoformat(),
+    )
+    cancel_job(session, job.id)
+    schedule_job(
+        session=session,
+        job_type=job.job_type,
+        entity_type=job.entity_type,
+        entity_id=job.entity_id,
+        run_at=next_open,
+        payload=job.payload_json or {},
+    )
+    return False
+
+
 def send_sms_job(job_id: str) -> None:
     """
     Worker job: generate and record an outbound SMS.
 
+    Defers to next active window if outside calling hours.
     Skips silently if the contact has already replied.
     """
     settings = get_settings()
@@ -47,9 +94,17 @@ def send_sms_job(job_id: str) -> None:
             logger.info("send_sms_job: already claimed | job_id=%s", job_id)
             return
 
-        mark_running(session, job)
+        # Load payload before mark_running so the window check can cancel
+        # the job while it is still in 'claimed' status.
         payload = job.payload_json or {}
         contact_id = payload.get("contact_id", "")
+        campaign_name = payload.get("campaign_name", "")
+
+        # ── Campaign active-window check ──────────────────────────────────────
+        if not _check_active_window(session, job, contact_id, campaign_name, settings):
+            return
+
+        mark_running(session, job)
 
         try:
             from app.core.reply_detection import has_recent_reply
@@ -73,34 +128,44 @@ def send_sms_job(job_id: str) -> None:
                     payload={
                         "contact_id": contact_id,
                         "attempt_number": payload.get("attempt_number"),
-                        "campaign_name": payload.get("campaign_name"),
+                        "campaign_name": campaign_name,
                     },
                 )
                 complete_job(session, job)
                 return
 
-            from app.core.ai_message_generator import generate_sms
+            from app.core.ai_message_generator import generate_vm_followup
             from app.core.conversation_context import get_conversation_context
             from app.models.outbound_message import OutboundMessage
 
-            context = get_conversation_context(session, contact_id)
-            sms_body = generate_sms(context, settings)
+            attempt_number = int(payload.get("attempt_number") or 1)
+            context = get_conversation_context(session, contact_id, attempt_number=attempt_number)
+            result = generate_vm_followup(context, settings, session)
 
             now = datetime.now(tz=timezone.utc)
             outbound = OutboundMessage(
                 id=str(uuid.uuid4()),
                 contact_id=contact_id,
                 channel="sms",
-                body=sms_body,
+                body=result.sms_text,
                 status="pending",
                 created_at=now,
             )
             session.add(outbound)
             session.flush()
 
+            # ── Path 2: GHL field update after VM-tier SMS ────────────────
+            _schedule_ghl_vm_update(
+                session=session,
+                contact_id=contact_id,
+                channel="sms",
+                message_body=result.sms_text,
+                message_subject="",
+            )
+
             logger.info(
-                "send_sms_job: SMS recorded | contact_id=%s length=%d job_id=%s",
-                contact_id, len(sms_body), job_id,
+                "send_sms_job: SMS recorded | contact_id=%s length=%d attempt=%d job_id=%s",
+                contact_id, len(result.sms_text), attempt_number, job_id,
             )
             complete_job(session, job)
 
@@ -125,6 +190,7 @@ def send_email_job(job_id: str) -> None:
     """
     Worker job: generate and record an outbound email.
 
+    Defers to next active window if outside calling hours.
     Skips silently if the contact has already replied.
     """
     settings = get_settings()
@@ -136,9 +202,17 @@ def send_email_job(job_id: str) -> None:
             logger.info("send_email_job: already claimed | job_id=%s", job_id)
             return
 
-        mark_running(session, job)
+        # Load payload before mark_running so the window check can cancel
+        # the job while it is still in 'claimed' status.
         payload = job.payload_json or {}
         contact_id = payload.get("contact_id", "")
+        campaign_name = payload.get("campaign_name", "")
+
+        # ── Campaign active-window check ──────────────────────────────────────
+        if not _check_active_window(session, job, contact_id, campaign_name, settings):
+            return
+
+        mark_running(session, job)
 
         try:
             from app.core.reply_detection import has_recent_reply
@@ -162,35 +236,45 @@ def send_email_job(job_id: str) -> None:
                     payload={
                         "contact_id": contact_id,
                         "attempt_number": payload.get("attempt_number"),
-                        "campaign_name": payload.get("campaign_name"),
+                        "campaign_name": campaign_name,
                     },
                 )
                 complete_job(session, job)
                 return
 
-            from app.core.ai_message_generator import generate_email
+            from app.core.ai_message_generator import generate_vm_followup
             from app.core.conversation_context import get_conversation_context
             from app.models.outbound_message import OutboundMessage
 
-            context = get_conversation_context(session, contact_id)
-            email = generate_email(context, settings)
+            attempt_number = int(payload.get("attempt_number") or 1)
+            context = get_conversation_context(session, contact_id, attempt_number=attempt_number)
+            result = generate_vm_followup(context, settings, session)
 
             now = datetime.now(tz=timezone.utc)
             outbound = OutboundMessage(
                 id=str(uuid.uuid4()),
                 contact_id=contact_id,
                 channel="email",
-                subject=email.subject,
-                body=email.body,
+                subject=result.email_subject,
+                body=result.email_html,
                 status="pending",
                 created_at=now,
             )
             session.add(outbound)
             session.flush()
 
+            # ── Path 2: GHL field update after VM-tier Email ──────────────
+            _schedule_ghl_vm_update(
+                session=session,
+                contact_id=contact_id,
+                channel="email",
+                message_body=result.email_html,
+                message_subject=result.email_subject,
+            )
+
             logger.info(
-                "send_email_job: email recorded | contact_id=%s subject=%r job_id=%s",
-                contact_id, email.subject, job_id,
+                "send_email_job: email recorded | contact_id=%s subject=%r attempt=%d job_id=%s",
+                contact_id, result.email_subject, attempt_number, job_id,
             )
             complete_job(session, job)
 
@@ -209,3 +293,46 @@ def send_email_job(job_id: str) -> None:
             )
             fail_job(session, job, reason=str(exc))
             raise
+
+
+# ── GHL path-2 scheduler ─────────────────────────────────────────────────────
+
+def _schedule_ghl_vm_update(
+    session,
+    contact_id: str,
+    channel: str,
+    message_body: str,
+    message_subject: str,
+) -> None:
+    """
+    Enqueue update_ghl_after_vm_message immediately after a VM message is generated.
+    Non-fatal — failure is logged but must not disrupt the parent SMS/email job.
+    """
+    try:
+        from app.worker.jobs.crm_jobs import update_ghl_after_vm_message
+        from app.worker.scheduler import schedule_job
+
+        schedule_job(
+            session=session,
+            job_type="update_ghl_after_vm_message",
+            entity_type="lead",
+            entity_id=contact_id,
+            run_at=datetime.now(tz=timezone.utc),
+            payload={
+                "contact_id": contact_id,
+                "channel": channel,
+                "message_body": message_body,
+                "message_subject": message_subject,
+            },
+            rq_queue=None,
+            rq_job_func=update_ghl_after_vm_message,
+        )
+        logger.info(
+            "_schedule_ghl_vm_update: scheduled | contact_id=%s channel=%s",
+            contact_id, channel,
+        )
+    except Exception as exc:
+        logger.error(
+            "_schedule_ghl_vm_update: failed (non-fatal) | contact_id=%s: %s",
+            contact_id, exc,
+        )

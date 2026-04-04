@@ -8,10 +8,12 @@ Hybrid Python architecture with API layer + background workers.
 2. Worker service: AI jobs, CRM writes, retries, delays, outbound call launch, nurture scheduler, SMS/email channel delivery.
 3. Postgres: authoritative store for state, jobs, audit, exceptions, outbound/inbound messages, shadow actions.
 4. Redis + RQ: queue and job execution (three queues: `default`, `ai`, `callbacks`).
-5. GHL adapter: contacts, notes, fields, tasks; all writes shadow-gated.
+5. GHL adapter: contacts, notes, fields, tasks; reads always active; all writes shadow-gated. Three write paths: (1) completed-call AI analysis + task, (2) VM-tier SMS/email follow-up, (3) campaign finalization.
 6. Synthflow adapter: outbound call launch for all campaigns (`launch_new_lead_call()`); voicemail tier callback scheduling via `schedule_callback()`.
-7. OpenAI service: transcript analysis, summary generation, consent detection, AI-generated SMS/email bodies.
+7. OpenAI service: transcript analysis, summary generation, consent detection, AI-generated SMS/email bodies, GHL call analysis (`generate_ghl_call_analysis()`).
 8. Shadow mode: when `SHADOW_MODE_ENABLED=true`, all outbound calls, SMS, and email are intercepted after reply detection and logged to `shadow_actions` instead of executed. Jobs complete normally. No Google Sheets sync.
+9. Knowledge base: CSV file at `app/prompts/knowledge_base/video_transcripts.csv`; loaded by `load_video_transcripts()` with `@lru_cache`; used as story context for AI-generated SMS/email messages.
+10. Streamlit dashboard (`execution/dashboard.py`): read-only monitoring UI backed by Postgres; 8 sections including Lead Journey with per-lead timeline, next-action previews, and SMS/email content preview.
 
 ## Live-call intent routing layer
 

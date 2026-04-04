@@ -83,6 +83,7 @@ section = st.sidebar.radio(
         "Exceptions",
         "Contact Drill-Down",
         "Lead Journey",
+        "Settings",
     ],
 )
 
@@ -867,7 +868,9 @@ elif section == "Lead Journey":
     # Next pending job
     next_job = _query(
         """
-        SELECT job_type, run_at, payload_json->>'campaign_name' AS campaign
+        SELECT job_type, run_at,
+               payload_json->>'campaign_name'   AS campaign,
+               payload_json->>'attempt_number'  AS attempt_number
         FROM scheduled_jobs
         WHERE entity_id = :cid AND status = 'pending'
         ORDER BY run_at ASC
@@ -875,6 +878,22 @@ elif section == "Lead Journey":
         """,
         {"cid": cid},
     )
+
+    # Most recently generated SMS and email (already stored in outbound_messages)
+    # Include phone fallback: contact_id may be stored as phone number
+    last_messages = _query(
+        """
+        SELECT channel, subject, body, created_at
+        FROM outbound_messages
+        WHERE (contact_id = :cid OR contact_id = :phone)
+          AND channel IN ('sms', 'email')
+        ORDER BY created_at DESC
+        LIMIT 10
+        """,
+        {"cid": cid, "phone": normalised_phone},
+    )
+    last_sms   = last_messages[last_messages["channel"] == "sms"].iloc[0]   if not last_messages.empty and (last_messages["channel"] == "sms").any()   else None
+    last_email = last_messages[last_messages["channel"] == "email"].iloc[0] if not last_messages.empty and (last_messages["channel"] == "email").any() else None
 
     _JOB_ICON = {
         "launch_outbound_call": "📞",
@@ -888,12 +907,98 @@ elif section == "Lead Journey":
         label = {"launch_outbound_call": "Call", "send_sms": "SMS", "send_email": "Email"}.get(
             nj["job_type"], nj["job_type"]
         )
+        attempt = f" (attempt {nj['attempt_number']})" if nj.get("attempt_number") else ""
         st.info(
-            f"**Next action:** {icon} {label} — "
+            f"**Next action:** {icon} {label}{attempt} — "
             f"{_fmt_ts(nj['run_at'])} ({_delay_label(nj['run_at'])})"
         )
+
+        # Show message content for SMS / Email next actions
+        if nj["job_type"] in ("send_sms", "send_email"):
+            _col_sms, _col_email = st.columns(2)
+            _attempt_num = int(nj.get("attempt_number") or 1)
+
+            def _render_preview_sms(col, last_sms, contact_id, attempt_num):
+                with col:
+                    if last_sms is not None:
+                        with st.expander("Last generated SMS", expanded=(nj["job_type"] == "send_sms")):
+                            st.caption(f"Generated {_fmt_ts(last_sms['created_at'])}")
+                            st.text(last_sms["body"])
+                    else:
+                        st.caption("No SMS sent yet for this contact.")
+                        _preview_key = f"sms_preview_{contact_id}"
+                        if st.button("Generate SMS preview", key=f"btn_sms_{contact_id}"):
+                            st.session_state[_preview_key] = None
+                            with st.spinner("Generating…"):
+                                try:
+                                    from app.config import get_settings as _gs
+                                    from app.core.ai_message_generator import generate_vm_followup
+                                    from app.core.conversation_context import get_conversation_context
+                                    from app.db import get_sync_session as _gss
+                                    with _gss() as _s:
+                                        _ctx = get_conversation_context(_s, contact_id, attempt_number=attempt_num)
+                                        _r = generate_vm_followup(_ctx, _gs(), _s)
+                                    st.session_state[_preview_key] = _r
+                                except Exception as _e:
+                                    st.error(f"Preview failed: {_e}")
+                        if st.session_state.get(_preview_key):
+                            _r = st.session_state[_preview_key]
+                            st.caption("Preview (not yet sent)")
+                            st.text(_r.sms_text)
+
+            def _render_preview_email(col, last_email, contact_id, attempt_num):
+                with col:
+                    if last_email is not None:
+                        with st.expander("Last generated Email", expanded=(nj["job_type"] == "send_email")):
+                            st.caption(f"Generated {_fmt_ts(last_email['created_at'])}")
+                            if last_email.get("subject"):
+                                st.markdown(f"**Subject:** {last_email['subject']}")
+                            st.markdown(last_email["body"], unsafe_allow_html=True)
+                    else:
+                        st.caption("No email sent yet for this contact.")
+                        _preview_key = f"email_preview_{contact_id}"
+                        if st.button("Generate Email preview", key=f"btn_email_{contact_id}"):
+                            st.session_state[_preview_key] = None
+                            with st.spinner("Generating…"):
+                                try:
+                                    from app.config import get_settings as _gs
+                                    from app.core.ai_message_generator import generate_vm_followup
+                                    from app.core.conversation_context import get_conversation_context
+                                    from app.db import get_sync_session as _gss
+                                    with _gss() as _s:
+                                        _ctx = get_conversation_context(_s, contact_id, attempt_number=attempt_num)
+                                        _r = generate_vm_followup(_ctx, _gs(), _s)
+                                    st.session_state[_preview_key] = _r
+                                except Exception as _e:
+                                    st.error(f"Preview failed: {_e}")
+                        if st.session_state.get(_preview_key):
+                            _r = st.session_state[_preview_key]
+                            st.caption("Preview (not yet sent)")
+                            if _r.email_subject:
+                                st.markdown(f"**Subject:** {_r.email_subject}")
+                            st.markdown(_r.email_html, unsafe_allow_html=True)
+
+            _render_preview_sms(_col_sms, last_sms, cid, _attempt_num)
+            _render_preview_email(_col_email, last_email, cid, _attempt_num)
+
     else:
         st.info("**Next action:** none scheduled")
+
+        # Still show last generated messages even when nothing is pending
+        if last_sms is not None or last_email is not None:
+            _col_sms, _col_email = st.columns(2)
+            with _col_sms:
+                if last_sms is not None:
+                    with st.expander("Last generated SMS"):
+                        st.caption(f"Generated {_fmt_ts(last_sms['created_at'])}")
+                        st.text(last_sms["body"])
+            with _col_email:
+                if last_email is not None:
+                    with st.expander("Last generated Email"):
+                        st.caption(f"Generated {_fmt_ts(last_email['created_at'])}")
+                        if last_email.get("subject"):
+                            st.markdown(f"**Subject:** {last_email['subject']}")
+                        st.markdown(last_email["body"], unsafe_allow_html=True)
 
     st.divider()
 
@@ -901,25 +1006,29 @@ elif section == "Lead Journey":
     timeline_df = _query(
         """
         SELECT
-            ce.created_at                                       AS ts,
-            'call'                                              AS event_type,
-            ce.status                                           AS call_status,
+            ce.created_at                                               AS ts,
+            'call'                                                      AS event_type,
+            ce.status                                                   AS call_status,
             ce.duration_seconds,
-            ce.detected_intent                                  AS intent,
-            COALESCE(
-                ce.raw_payload_json->>'campaign_name',
-                '—'
-            )                                                   AS campaign,
+            ce.detected_intent                                          AS intent,
+            COALESCE(ce.raw_payload_json->>'campaign_name', '—')        AS campaign,
             CASE
-                WHEN ce.status IN ('completed')
-                    THEN COALESCE(
-                        LEFT(ce.transcript, 200),
-                        '(no transcript)'
-                    )
+                WHEN ce.status = 'completed'
+                    THEN COALESCE(LEFT(ce.transcript, 300), '(no transcript)')
                 ELSE NULL
-            END                                                 AS detail,
-            ce.recording_url
+            END                                                         AS detail,
+            ce.recording_url,
+            cr.output_json->>'lead_classification'                      AS lead_classification,
+            cr.output_json->>'call_detailed_summary'                    AS call_detailed_summary
         FROM call_events ce
+        LEFT JOIN LATERAL (
+            SELECT output_json
+            FROM classification_results
+            WHERE call_event_id = ce.id
+              AND prompt_family = 'ghl_call_analysis'
+            ORDER BY created_at DESC
+            LIMIT 1
+        ) cr ON true
         WHERE ce.contact_id = :cid
            OR ce.raw_payload_json->>'phone_number_to' = :phone
            OR ce.raw_payload_json->>'phone_number'    = :phone
@@ -928,28 +1037,33 @@ elif section == "Lead Journey":
         UNION ALL
 
         SELECT
-            om.created_at                                       AS ts,
-            'message'                                           AS event_type,
-            om.channel                                          AS call_status,
-            NULL                                                AS duration_seconds,
-            NULL                                                AS intent,
-            '—'                                                 AS campaign,
-            LEFT(om.body, 200)                                  AS detail,
-            NULL                                                AS recording_url
+            om.created_at                                               AS ts,
+            'message'                                                   AS event_type,
+            om.channel                                                  AS call_status,
+            NULL                                                        AS duration_seconds,
+            NULL                                                        AS intent,
+            '—'                                                         AS campaign,
+            COALESCE(om.subject || E'\\n\\n', '') || LEFT(om.body, 300) AS detail,
+            NULL                                                        AS recording_url,
+            NULL                                                        AS lead_classification,
+            NULL                                                        AS call_detailed_summary
         FROM outbound_messages om
         WHERE om.contact_id = :cid
+           OR om.contact_id = :phone
 
         UNION ALL
 
         SELECT
-            al.created_at                                       AS ts,
-            'campaign_switch'                                   AS event_type,
-            NULL                                                AS call_status,
-            NULL                                                AS duration_seconds,
-            al.context_json->>'reason'                          AS intent,
-            al.context_json->>'from'                            AS campaign,
-            al.context_json->>'to'                              AS detail,
-            NULL                                                AS recording_url
+            al.created_at                                               AS ts,
+            'campaign_switch'                                           AS event_type,
+            NULL                                                        AS call_status,
+            NULL                                                        AS duration_seconds,
+            al.context_json->>'reason'                                  AS intent,
+            al.context_json->>'from'                                    AS campaign,
+            al.context_json->>'to'                                      AS detail,
+            NULL                                                        AS recording_url,
+            NULL                                                        AS lead_classification,
+            NULL                                                        AS call_detailed_summary
         FROM audit_log al
         WHERE al.entity_id = :cid
           AND al.action = 'campaign_switch'
@@ -1003,8 +1117,19 @@ elif section == "Lead Journey":
 
         if etype == "message":
             channel_icon = "💬 SMS" if row["call_status"] == "sms" else "📧 Email"
-            with st.expander(f"{channel_icon} &nbsp; {ts}", expanded=False):
-                st.text(row["detail"] or "(empty)")
+            body = row["detail"] or "(empty)"
+            # First line is the subject (if email), rest is body
+            lines = body.split("\n\n", 1)
+            subject_line = lines[0] if row["call_status"] == "email" and len(lines) > 1 else ""
+            body_text = lines[1] if subject_line else body
+            header_text = f"{channel_icon} &nbsp; {subject_line or ''} &nbsp; <small>{ts}</small>"
+            with st.expander(header_text, expanded=False):
+                if subject_line:
+                    st.markdown(f"**Subject:** {subject_line}")
+                if row["call_status"] == "email":
+                    st.markdown(body_text, unsafe_allow_html=True)
+                else:
+                    st.text(body_text)
             continue
 
         # etype == "call"
@@ -1016,17 +1141,26 @@ elif section == "Lead Journey":
         )
         intent   = row["intent"] or "—"
         campaign = row["campaign"] or "—"
+        lead_cls = row.get("lead_classification") or ""
+        cls_badge = f" &nbsp; 🏷 **{lead_cls}**" if lead_cls else ""
 
         header = (
             f"{status_label} &nbsp; "
             f"Campaign: **{campaign}** &nbsp; "
-            f"Intent: **{intent}** &nbsp; "
+            f"Intent: **{intent}**{cls_badge} &nbsp; "
             f"Duration: {duration} &nbsp; "
             f"<small>{ts}</small>"
         )
 
         is_answered = (row["call_status"] or "") == "completed"
         with st.expander(header, expanded=False):
+            # AI analysis block (GHL analysis result)
+            call_summary = row.get("call_detailed_summary") or ""
+            if call_summary:
+                st.markdown("**AI Call Summary:**")
+                st.markdown(call_summary)
+                st.divider()
+
             if is_answered and row["detail"]:
                 st.markdown("**Transcript preview:**")
                 st.text(row["detail"])
@@ -1036,3 +1170,335 @@ elif section == "Lead Journey":
                 st.info("No transcript recorded.")
             else:
                 st.info("Voicemail — no transcript.")
+
+# ── Settings ──────────────────────────────────────────────────────────────────
+
+elif section == "Settings":
+    import uuid as _uuid
+    from datetime import datetime as _dt, timezone as _tz
+
+    st.title("Campaign Settings")
+    st.caption(
+        "Changes take effect immediately — no restart required. "
+        "Every save is recorded in the audit log."
+    )
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @st.cache_data(ttl=10)
+    def _load_config() -> dict:
+        """Return all app_config rows as {key: value}."""
+        df = _query("SELECT key, value FROM app_config")
+        if df.empty:
+            return {}
+        return dict(zip(df["key"], df["value"]))
+
+    def _get(cfg: dict, key: str, default) -> str:
+        return cfg.get(key, str(default))
+
+    def _save_all(values: dict, operator: str) -> None:
+        from sqlalchemy import text as _text
+        engine = _engine()
+        with engine.begin() as conn:
+            for key, value in values.items():
+                conn.execute(
+                    _text(
+                        "INSERT INTO app_config (key, value, updated_at, updated_by) "
+                        "VALUES (:key, :value, NOW(), :by) "
+                        "ON CONFLICT (key) DO UPDATE "
+                        "SET value = EXCLUDED.value, "
+                        "    updated_at = EXCLUDED.updated_at, "
+                        "    updated_by = EXCLUDED.updated_by"
+                    ),
+                    {"key": key, "value": value, "by": operator},
+                )
+                conn.execute(
+                    _text(
+                        "INSERT INTO audit_log "
+                        "  (id, entity_type, entity_id, action, operator_id, context_json, created_at) "
+                        "VALUES "
+                        "  (:id, 'app_config', :key, 'config_updated', :by, '{\"source\": \"dashboard\"}'::jsonb, NOW())"
+                    ),
+                    {
+                        "id": str(_uuid.uuid4()),
+                        "key": key,
+                        "by": operator,
+                    },
+                )
+        st.cache_data.clear()
+
+    _DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    def _days_from_str(s: str) -> list:
+        result = []
+        for p in s.split(","):
+            p = p.strip()
+            if p.isdigit() and int(p) < 7:
+                result.append(_DAY_LABELS[int(p)])
+        return result
+
+    def _days_to_str(selected: list) -> str:
+        return ",".join(str(_DAY_LABELS.index(d)) for d in _DAY_LABELS if d in selected)
+
+    cfg = _load_config()
+
+    operator_id = st.text_input(
+        "Your name / operator ID",
+        value="dashboard",
+        help="Recorded in the audit log with every save.",
+    )
+
+    st.divider()
+
+    # ── New Lead calling window ───────────────────────────────────────────────
+    st.subheader("New Lead — Calling Window")
+    st.caption("Active all 7 days by default. Times are in the caller's local timezone.")
+    col1, col2, col3 = st.columns([3, 1, 1])
+
+    nl_days = col1.multiselect(
+        "Active days",
+        options=_DAY_LABELS,
+        default=_days_from_str(_get(cfg, "new_lead_active_days", settings.new_lead_active_days)),
+        key="nl_days",
+    )
+    nl_start = col2.number_input(
+        "Start hour (24-h)", min_value=0, max_value=23,
+        value=int(_get(cfg, "new_lead_active_start_hour", settings.new_lead_active_start_hour)),
+        key="nl_start",
+    )
+    nl_end = col3.number_input(
+        "End hour (24-h)", min_value=1, max_value=24,
+        value=int(_get(cfg, "new_lead_active_end_hour", settings.new_lead_active_end_hour)),
+        key="nl_end",
+    )
+    if nl_start >= nl_end:
+        st.warning("Start hour must be less than end hour.")
+
+    st.divider()
+
+    # ── Cold Lead calling window ──────────────────────────────────────────────
+    st.subheader("Cold Lead — Calling Window")
+    st.caption("Mon–Fri only by default. Times are in the caller's local timezone.")
+    col1, col2, col3 = st.columns([3, 1, 1])
+
+    cl_days = col1.multiselect(
+        "Active days",
+        options=_DAY_LABELS,
+        default=_days_from_str(_get(cfg, "cold_lead_active_days", settings.cold_lead_active_days)),
+        key="cl_days",
+    )
+    cl_start = col2.number_input(
+        "Start hour (24-h)", min_value=0, max_value=23,
+        value=int(_get(cfg, "cold_lead_active_start_hour", settings.cold_lead_active_start_hour)),
+        key="cl_start",
+    )
+    cl_end = col3.number_input(
+        "End hour (24-h)", min_value=1, max_value=24,
+        value=int(_get(cfg, "cold_lead_active_end_hour", settings.cold_lead_active_end_hour)),
+        key="cl_end",
+    )
+    if cl_start >= cl_end:
+        st.warning("Start hour must be less than end hour.")
+
+    st.divider()
+
+    # ── Cold Lead VM retry delays ─────────────────────────────────────────────
+    st.subheader("Cold Lead — Voicemail Retry Delays")
+    st.caption(
+        "Delay before scheduling the next outbound call after each voicemail. "
+        "Tier progression: None → 0 → 1 → 2 → 3 (terminal)."
+    )
+    col1, col2, col3, col4 = st.columns(4)
+
+    cold_t_none = col1.number_input(
+        "Tier None→0 (min)", min_value=1,
+        value=int(_get(cfg, "cold_vm_tier_none_delay_minutes", settings.cold_vm_tier_none_delay_minutes)),
+        help="Minutes after first voicemail before calling again.",
+        key="cold_t_none",
+    )
+    cold_t_0 = col2.number_input(
+        "Tier 0→1 (min)", min_value=1,
+        value=int(_get(cfg, "cold_vm_tier_0_delay_minutes", settings.cold_vm_tier_0_delay_minutes)),
+        key="cold_t_0",
+    )
+    cold_t_1 = col3.number_input(
+        "Tier 1→2 (min)", min_value=1,
+        value=int(_get(cfg, "cold_vm_tier_1_delay_minutes", settings.cold_vm_tier_1_delay_minutes)),
+        key="cold_t_1",
+    )
+    cold_finalize = col4.checkbox(
+        "Finalize at tier 2",
+        value=_get(cfg, "cold_vm_tier_2_finalizes", settings.cold_vm_tier_2_finalizes).lower()
+              in ("true", "1"),
+        help="Stop all outbound attempts after tier 2 (no tier 3 scheduled).",
+        key="cold_finalize",
+    )
+
+    st.divider()
+
+    # ── New Lead VM retry delays ──────────────────────────────────────────────
+    st.subheader("New Lead — Voicemail Retry Delays")
+    st.caption("Same tier model as Cold Lead but with independent timing.")
+    col1, col2, col3, col4 = st.columns(4)
+
+    new_t_none = col1.number_input(
+        "Tier None→0 (min)", min_value=1,
+        value=int(_get(cfg, "new_vm_tier_none_delay_minutes", settings.new_vm_tier_none_delay_minutes or 120)),
+        key="new_t_none",
+    )
+    new_t_0 = col2.number_input(
+        "Tier 0→1 (min)", min_value=1,
+        value=int(_get(cfg, "new_vm_tier_0_delay_minutes", settings.new_vm_tier_0_delay_minutes or 1440)),
+        key="new_t_0",
+    )
+    new_t_1 = col3.number_input(
+        "Tier 1→2 (min)", min_value=1,
+        value=int(_get(cfg, "new_vm_tier_1_delay_minutes", settings.new_vm_tier_1_delay_minutes or 2880)),
+        key="new_t_1",
+    )
+    new_finalize = col4.checkbox(
+        "Finalize at tier 2",
+        value=_get(cfg, "new_vm_tier_2_finalize", settings.new_vm_tier_2_finalize or True).lower()
+              in ("true", "1"),
+        help="Stop all outbound attempts after tier 2 (no tier 3 scheduled).",
+        key="new_finalize",
+    )
+
+    st.divider()
+
+    # ── Messaging delays ──────────────────────────────────────────────────────
+    st.subheader("Messaging — Follow-up Delays")
+    col1, col2 = st.columns(2)
+
+    sms_delay = col1.number_input(
+        "SMS follow-up delay (minutes)", min_value=1,
+        value=int(_get(cfg, "sms_followup_delay_minutes", settings.sms_followup_delay_minutes)),
+        help="How long after a missed call / voicemail before the SMS is sent.",
+        key="sms_delay",
+    )
+    email_delay = col2.number_input(
+        "Email follow-up delay (days)", min_value=1,
+        value=int(_get(cfg, "email_followup_delay_days", settings.email_followup_delay_days)),
+        help="How long after the second missed call before the email is sent.",
+        key="email_delay",
+    )
+
+    st.divider()
+
+    # ── Brand & Messaging identity ────────────────────────────────────────────
+    st.subheader("Brand & Messaging Identity")
+    st.caption(
+        "These values are injected into every AI-generated SMS and email. "
+        "Changes take effect on the next message generation."
+    )
+
+    col1, col2 = st.columns(2)
+
+    brand_name = col1.text_input(
+        "Brand name",
+        value=_get(cfg, "brand_name", "Colaberry"),
+        help="Inserted as {brand_name} in all prompts.",
+        key="brand_name",
+    )
+    sender_name = col2.text_input(
+        "Sender name",
+        value=_get(cfg, "sender_name", "Cora from Colaberry"),
+        help="How Cora signs emails and introduces herself in SMS.",
+        key="sender_name",
+    )
+    reply_to_email = col1.text_input(
+        "Reply-to email",
+        value=_get(cfg, "reply_to_email", "admissions@colaberry.com"),
+        key="reply_to_email",
+    )
+    unsubscribe_text = col2.text_input(
+        "Unsubscribe text",
+        value=_get(cfg, "unsubscribe_text", "Text STOP to stop alerts"),
+        help="Appended to every SMS. Must comply with TCPA.",
+        key="unsubscribe_text",
+    )
+    next_class_start = col1.text_input(
+        "Next class start",
+        value=_get(cfg, "next_class_start", "upcoming"),
+        help='E.g. "May 12" or "Q3 2026". Used in urgency messaging.',
+        key="next_class_start",
+    )
+    live_open_house_link = col2.text_input(
+        "Live Open House RSVP link",
+        value=_get(cfg, "live_open_house_link", ""),
+        key="live_open_house_link",
+    )
+    explainer_video_link = st.text_input(
+        "Explainer / Open House video link",
+        value=_get(cfg, "explainer_open_house_video_link", ""),
+        help="Linked in emails as a low-friction next step.",
+        key="explainer_video_link",
+    )
+
+    st.divider()
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    if st.button("Save settings", type="primary", disabled=not operator_id.strip()):
+        errors = []
+        if not nl_days:
+            errors.append("New Lead: select at least one active day.")
+        if nl_start >= nl_end:
+            errors.append("New Lead: start hour must be less than end hour.")
+        if not cl_days:
+            errors.append("Cold Lead: select at least one active day.")
+        if cl_start >= cl_end:
+            errors.append("Cold Lead: start hour must be less than end hour.")
+        if not brand_name.strip():
+            errors.append("Brand name cannot be empty.")
+        if not sender_name.strip():
+            errors.append("Sender name cannot be empty.")
+
+        if errors:
+            for e in errors:
+                st.error(e)
+        else:
+            _save_all(
+                {
+                    "new_lead_active_days":                _days_to_str(nl_days),
+                    "new_lead_active_start_hour":          str(nl_start),
+                    "new_lead_active_end_hour":            str(nl_end),
+                    "cold_lead_active_days":               _days_to_str(cl_days),
+                    "cold_lead_active_start_hour":         str(cl_start),
+                    "cold_lead_active_end_hour":           str(cl_end),
+                    "cold_vm_tier_none_delay_minutes":     str(cold_t_none),
+                    "cold_vm_tier_0_delay_minutes":        str(cold_t_0),
+                    "cold_vm_tier_1_delay_minutes":        str(cold_t_1),
+                    "cold_vm_tier_2_finalizes":            str(cold_finalize).lower(),
+                    "new_vm_tier_none_delay_minutes":      str(new_t_none),
+                    "new_vm_tier_0_delay_minutes":         str(new_t_0),
+                    "new_vm_tier_1_delay_minutes":         str(new_t_1),
+                    "new_vm_tier_2_finalize":              str(new_finalize).lower(),
+                    "sms_followup_delay_minutes":          str(sms_delay),
+                    "email_followup_delay_days":           str(email_delay),
+                    "brand_name":                          brand_name.strip(),
+                    "sender_name":                         sender_name.strip(),
+                    "reply_to_email":                      reply_to_email.strip(),
+                    "unsubscribe_text":                    unsubscribe_text.strip(),
+                    "next_class_start":                    next_class_start.strip(),
+                    "live_open_house_link":                live_open_house_link.strip(),
+                    "explainer_open_house_video_link":     explainer_video_link.strip(),
+                },
+                operator=operator_id.strip(),
+            )
+            st.success("Settings saved. Changes are now live.")
+
+    st.divider()
+
+    # ── Audit trail ───────────────────────────────────────────────────────────
+    with st.expander("Recent config changes (audit log)", expanded=False):
+        audit = _query(
+            "SELECT created_at, operator_id, entity_id AS key, context_json "
+            "FROM audit_log "
+            "WHERE entity_type = 'app_config' "
+            "ORDER BY created_at DESC "
+            "LIMIT 50"
+        )
+        if audit.empty:
+            st.info("No config changes recorded yet.")
+        else:
+            st.dataframe(audit, use_container_width=True)

@@ -228,21 +228,29 @@ class GHLClient:
             ]
         }
 
-    def build_task_payload(self, title: str, description: str = "") -> dict:
+    def build_task_payload(
+        self,
+        title: str,
+        description: str = "",
+        assigned_to: str = "",
+        due_date: str = "",
+    ) -> dict:
         """
         Build the request body for a GHL task creation.
 
-        Per spec constraints:
-          - dueDate is None (task_due_date_mode=blank)
-          - No assignedTo — GHL-side assignment rules own final assignment
+        assigned_to: GHL user ID string — omitted when blank.
+        due_date: ISO 8601 string — omitted when blank.
         """
         payload: dict[str, Any] = {
             "title": title,
             "status": "incompleted",
-            "dueDate": None,
         }
         if description:
             payload["description"] = description
+        if assigned_to:
+            payload["assignedTo"] = assigned_to
+        if due_date:
+            payload["dueDate"] = due_date
         return payload
 
     def build_note_payload(self, content: str) -> dict:
@@ -267,7 +275,14 @@ class GHLClient:
         logger.info("GHL update_contact_fields | contact_id=%s", contact_id)
         return self._request("PUT", f"/contacts/{contact_id}", json=payload)
 
-    def create_task(self, contact_id: str, title: str, description: str = "") -> dict:
+    def create_task(
+        self,
+        contact_id: str,
+        title: str,
+        description: str = "",
+        assigned_to: str = "",
+        due_date: str = "",
+    ) -> dict:
         """
         Create a GHL task for a contact.
 
@@ -277,7 +292,7 @@ class GHLClient:
         Idempotency: callers must check task_events for an existing 'created'
         record before invoking (enforced by the dedupe service, Phase 3+).
         """
-        payload = self.build_task_payload(title, description)
+        payload = self.build_task_payload(title, description, assigned_to, due_date)
         if not self.settings.ghl_writes_enabled:
             return self._shadow_write("create_task", contact_id, payload)
         self.settings.validate_for_ghl_writes()

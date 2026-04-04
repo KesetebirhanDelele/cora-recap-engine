@@ -296,7 +296,7 @@ class TestScheduleMessagingAfterVoicemail:
         settings.rq_default_queue = "default"
         settings.sms_followup_delay_minutes = 30
         settings.email_followup_delay_days = 1
-        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, settings)
+        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, "New Lead", settings)
         job = session.scalars(
             select(ScheduledJob).where(
                 ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
@@ -315,7 +315,7 @@ class TestScheduleMessagingAfterVoicemail:
         settings.email_followup_delay_days = 1
 
         # attempt 1 → no email
-        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, settings)
+        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, "New Lead", settings)
         email_job = session.scalars(
             select(ScheduledJob).where(
                 ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
@@ -332,7 +332,7 @@ class TestScheduleMessagingAfterVoicemail:
         settings.sms_followup_delay_minutes = 30
         settings.email_followup_delay_days = 1
 
-        _schedule_messaging_after_voicemail(session, lead.contact_id, 2, settings)
+        _schedule_messaging_after_voicemail(session, lead.contact_id, 2, "New Lead", settings)
         email_job = session.scalars(
             select(ScheduledJob).where(
                 ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
@@ -348,7 +348,7 @@ class TestScheduleMessagingAfterVoicemail:
         settings.sms_followup_delay_minutes = 30
         settings.email_followup_delay_days = 1
 
-        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, settings)
+        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, "New Lead", settings)
         job = session.scalars(
             select(ScheduledJob).where(
                 ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
@@ -367,7 +367,7 @@ class TestScheduleMessagingAfterVoicemail:
         # Pre-existing pending SMS
         _make_scheduled_job(session, contact_id=lead.contact_id, job_type="send_sms")
 
-        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, settings)
+        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, "New Lead", settings)
         jobs = session.scalars(
             select(ScheduledJob).where(
                 ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
@@ -387,7 +387,7 @@ class TestScheduleMessagingAfterVoicemail:
             side_effect=RuntimeError("DB down"),
         ):
             # Should not raise
-            _schedule_messaging_after_voicemail(session, "some-contact", 1, settings)
+            _schedule_messaging_after_voicemail(session, "some-contact", 1, "New Lead", settings)
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +553,22 @@ class TestChannelJobs:
 
         _settings_no_shadow = MagicMock()
         _settings_no_shadow.shadow_mode_enabled = False
+        _settings_no_shadow.default_timezone = "America/Chicago"
+        _settings_no_shadow.new_lead_active_days = "0,1,2,3,4,5,6"
+        _settings_no_shadow.new_lead_active_start_hour = 8
+        _settings_no_shadow.new_lead_active_end_hour = 22
+        _settings_no_shadow.cold_lead_active_days = "0,1,2,3,4"
+        _settings_no_shadow.cold_lead_active_start_hour = 8
+        _settings_no_shadow.cold_lead_active_end_hour = 22
+
+        from app.core.ai_message_generator import VmFollowupResult
+        fake_result = VmFollowupResult(
+            sms_text="Hey, tried calling!",
+            email_subject="Missed you",
+            email_html="<p>Hi</p>",
+            email_text="Hi",
+            preview_text="",
+        )
 
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session") as mock_gs,
@@ -562,8 +578,8 @@ class TestChannelJobs:
             patch("app.worker.jobs.channel_jobs.complete_job"),
             patch("app.core.reply_detection.has_recent_reply", return_value=False),
             patch(
-                "app.core.ai_message_generator.generate_sms",
-                return_value="Hey, tried calling!",
+                "app.core.ai_message_generator.generate_vm_followup",
+                return_value=fake_result,
             ),
             patch(
                 "app.core.conversation_context.get_conversation_context",

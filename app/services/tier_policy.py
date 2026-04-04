@@ -65,20 +65,34 @@ class TierTransitionPolicy:
 def get_cold_lead_policy(
     current_tier: Optional[str],
     settings: Settings | None = None,
+    session=None,
 ) -> TierTransitionPolicy:
     """
     Return the Cold Lead tier advancement policy for the given current tier.
 
-    Uses settings.cold_vm_tier_* for delay durations.
+    Reads delay values from app_config DB table first (runtime-editable via
+    dashboard Settings page) before falling back to settings.cold_vm_tier_*.
     Cold Lead delays are fully resolved in config (no stop condition).
     """
     settings = settings or get_settings()
 
+    if session is not None:
+        from app.core.app_config import get_bool, get_int
+        tier_none = get_int("cold_vm_tier_none_delay_minutes", session, settings, settings.cold_vm_tier_none_delay_minutes)
+        tier_0    = get_int("cold_vm_tier_0_delay_minutes",    session, settings, settings.cold_vm_tier_0_delay_minutes)
+        tier_1    = get_int("cold_vm_tier_1_delay_minutes",    session, settings, settings.cold_vm_tier_1_delay_minutes)
+        finalizes = get_bool("cold_vm_tier_2_finalizes",       session, settings, settings.cold_vm_tier_2_finalizes)
+    else:
+        tier_none = settings.cold_vm_tier_none_delay_minutes
+        tier_0    = settings.cold_vm_tier_0_delay_minutes
+        tier_1    = settings.cold_vm_tier_1_delay_minutes
+        finalizes = bool(settings.cold_vm_tier_2_finalizes)
+
     tier_map: dict[Optional[str], tuple[int, str]] = {
-        None: (settings.cold_vm_tier_none_delay_minutes, "0"),
-        "0": (settings.cold_vm_tier_0_delay_minutes, "1"),
-        "1": (settings.cold_vm_tier_1_delay_minutes, "2"),
-        "2": (0, "3"),  # terminal: no delay, no callback
+        None: (tier_none, "0"),
+        "0":  (tier_0, "1"),
+        "1":  (tier_1, "2"),
+        "2":  (0, "3"),  # terminal: no delay, no callback
     }
 
     if current_tier not in tier_map:
@@ -103,22 +117,43 @@ def get_cold_lead_policy(
 def get_new_lead_policy(
     current_tier: Optional[str],
     settings: Settings | None = None,
+    session=None,
 ) -> TierTransitionPolicy:
     """
     Return the New Lead tier advancement policy for the given current tier.
 
-    Stop condition: requires all NEW_VM_TIER_* settings to be resolved.
-    Calls validate_for_new_lead_vm_policy() which raises ConfigError if
-    any delay is unset. Do not proceed without all delays configured.
+    Reads delay values from app_config DB table first (runtime-editable via
+    dashboard Settings page) before falling back to settings.new_vm_tier_*.
+
+    Stop condition: when no DB row exists, falls back to settings and calls
+    validate_for_new_lead_vm_policy() which raises ConfigError if any delay
+    is unset. Do not proceed without all delays configured.
     """
     settings = settings or get_settings()
-    settings.validate_for_new_lead_vm_policy()  # stop condition enforcement
 
+    if session is not None:
+        from app.core.app_config import get_bool, get_int
+        tier_none = get_int("new_vm_tier_none_delay_minutes", session, settings,
+                            settings.new_vm_tier_none_delay_minutes or 0)
+        tier_0    = get_int("new_vm_tier_0_delay_minutes",    session, settings,
+                            settings.new_vm_tier_0_delay_minutes or 0)
+        tier_1    = get_int("new_vm_tier_1_delay_minutes",    session, settings,
+                            settings.new_vm_tier_1_delay_minutes or 0)
+        finalize  = get_bool("new_vm_tier_2_finalize",        session, settings,
+                             settings.new_vm_tier_2_finalize is True)
+    else:
+        settings.validate_for_new_lead_vm_policy()  # stop condition enforcement
+        tier_none = settings.new_vm_tier_none_delay_minutes  # type: ignore[assignment]
+        tier_0    = settings.new_vm_tier_0_delay_minutes     # type: ignore[assignment]
+        tier_1    = settings.new_vm_tier_1_delay_minutes     # type: ignore[assignment]
+        finalize  = settings.new_vm_tier_2_finalize is True
+
+    _ = finalize  # used implicitly — tier 2 always goes to terminal (0 delay, no callback)
     tier_map: dict[Optional[str], tuple[int, str]] = {
-        None: (settings.new_vm_tier_none_delay_minutes, "0"),  # type: ignore[dict-item]
-        "0": (settings.new_vm_tier_0_delay_minutes, "1"),  # type: ignore[dict-item]
-        "1": (settings.new_vm_tier_1_delay_minutes, "2"),  # type: ignore[dict-item]
-        "2": (0, "3"),
+        None: (tier_none, "0"),
+        "0":  (tier_0, "1"),
+        "1":  (tier_1, "2"),
+        "2":  (0, "3"),
     }
 
     if current_tier not in tier_map:
@@ -144,20 +179,23 @@ def get_tier_policy(
     campaign_name: str,
     current_tier: Optional[str],
     settings: Settings | None = None,
+    session=None,
 ) -> TierTransitionPolicy:
     """
     Dispatch to the appropriate campaign policy by campaign_name.
 
     Supported campaigns: 'Cold Lead', 'New Lead'.
+    When session is provided, delay values are read from the app_config DB
+    table (runtime-editable) before falling back to settings/.env.
     Unknown campaigns surface as a ValueError (escalation trigger).
     """
     settings = settings or get_settings()
     name_lower = (campaign_name or "").strip().lower()
 
     if name_lower == "cold lead":
-        return get_cold_lead_policy(current_tier, settings)
+        return get_cold_lead_policy(current_tier, settings, session)
     if name_lower == "new lead":
-        return get_new_lead_policy(current_tier, settings)
+        return get_new_lead_policy(current_tier, settings, session)
 
     raise ValueError(
         f"Unknown campaign type: {campaign_name!r}. "
