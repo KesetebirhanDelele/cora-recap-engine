@@ -2,20 +2,20 @@
 Channel delivery jobs — SMS and email.
 
 send_sms_job:
-  Scheduled 30 minutes after a missed call/voicemail.
+  Scheduled after a missed call/voicemail.
   Generates AI-personalised content (falls back to template).
   Stores result in outbound_messages.
-  Suppressed if the contact has already replied.
 
 send_email_job:
   Scheduled 1 day after the second call attempt.
-  Same AI-generation + fallback + suppression pattern as SMS.
+  Same AI-generation + fallback pattern as SMS.
+
+SMS/email replies are handled entirely within GHL automations — no reply
+signals come back to this system. There is no reply-suppression gate here.
 
 Both jobs:
   1. Check campaign active window in caller's local timezone (live mode only).
      If outside window: cancel current job, reschedule at next window-open time.
-  2. Check has_recent_reply() immediately after claiming —
-     a reply received between scheduling and execution cancels the send.
 
 Payload fields (both jobs):
   contact_id      — GHL contact identifier
@@ -107,17 +107,6 @@ def send_sms_job(job_id: str) -> None:
         mark_running(session, job)
 
         try:
-            from app.core.reply_detection import has_recent_reply
-
-            if has_recent_reply(session, contact_id):
-                logger.info(
-                    "send_sms_job: reply detected — suppressing SMS | "
-                    "contact_id=%s job_id=%s",
-                    contact_id, job_id,
-                )
-                complete_job(session, job)
-                return
-
             # ── Shadow mode: log and skip AI generation + outbound write ──────
             if settings.shadow_mode_enabled:
                 from app.worker.shadow import log_shadow_action
@@ -215,17 +204,6 @@ def send_email_job(job_id: str) -> None:
         mark_running(session, job)
 
         try:
-            from app.core.reply_detection import has_recent_reply
-
-            if has_recent_reply(session, contact_id):
-                logger.info(
-                    "send_email_job: reply detected — suppressing email | "
-                    "contact_id=%s job_id=%s",
-                    contact_id, job_id,
-                )
-                complete_job(session, job)
-                return
-
             # ── Shadow mode: log and skip AI generation + outbound write ──────
             if settings.shadow_mode_enabled:
                 from app.worker.shadow import log_shadow_action

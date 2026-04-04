@@ -11,8 +11,8 @@ Canonical tier model (from spec, shared across all campaigns):
 
 Cold Lead delays (from settings, pre-configured):
   None → '0': 120 minutes (2 hours)
-  '0'  → '1': 2880 minutes (2 days)
-  '1'  → '2': 2880 minutes (2 days)
+  '0'  → '1': 2880 minutes (48 hours)
+  '1'  → '2': 2880 minutes (48 hours)
   '2'  → '3': terminal, no Synthflow callback
 
 New Lead delays (from settings, currently UNRESOLVED):

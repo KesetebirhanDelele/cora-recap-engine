@@ -125,12 +125,7 @@ One row per send attempt. Written by send_sms_job / send_email_job (NOT written 
 - created_at
 
 ## inbound_messages
-Written when an inbound SMS or email reply is received; triggers reply detection gate.
-- id
-- contact_id
-- channel
-- body
-- created_at
+Table exists in the schema but is no longer written to by any active code path. SMS/email replies are handled inside GHL automations and do not reach this system. The table is retained for schema compatibility; no application code reads or writes it for reply-suppression purposes.
 
 ## shadow_actions
 Written when shadow mode intercepts an outbound action. Not written when shadow mode is off.

@@ -222,7 +222,6 @@ class TestSmsShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
             patch("app.core.ai_message_generator.generate_sms", ai_mock),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
@@ -239,7 +238,6 @@ class TestSmsShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
             send_sms_job(job.id)
@@ -248,22 +246,6 @@ class TestSmsShadowOn:
         assert len(rows) == 1
         assert rows[0].action_type == "sms"
 
-    def test_sms_suppressed_by_reply_even_in_shadow_mode(self, session):
-        """Reply detection runs before shadow branch — shadow log must NOT appear when reply detected."""
-        contact_id = f"c-{uuid.uuid4().hex[:6]}"
-        job = _make_job(session, "send_sms", contact_id)
-
-        with (
-            patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
-            patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=True),
-        ):
-            from app.worker.jobs.channel_jobs import send_sms_job
-            send_sms_job(job.id)
-
-        rows = _shadow_rows(session, contact_id)
-        assert len(rows) == 0, "shadow action must not be logged when reply already received"
-
     def test_no_duplicate_sms_shadow_on_second_claim(self, session):
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_sms", contact_id)
@@ -271,7 +253,6 @@ class TestSmsShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
             send_sms_job(job.id)
@@ -294,7 +275,6 @@ class TestEmailShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
             patch("app.core.ai_message_generator.generate_email", ai_mock),
         ):
             from app.worker.jobs.channel_jobs import send_email_job
@@ -311,7 +291,6 @@ class TestEmailShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
         ):
             from app.worker.jobs.channel_jobs import send_email_job
             send_email_job(job.id)
@@ -320,21 +299,6 @@ class TestEmailShadowOn:
         assert len(rows) == 1
         assert rows[0].action_type == "email"
 
-    def test_email_suppressed_by_reply_even_in_shadow_mode(self, session):
-        contact_id = f"c-{uuid.uuid4().hex[:6]}"
-        job = _make_job(session, "send_email", contact_id)
-
-        with (
-            patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
-            patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=True),
-        ):
-            from app.worker.jobs.channel_jobs import send_email_job
-            send_email_job(job.id)
-
-        rows = _shadow_rows(session, contact_id)
-        assert len(rows) == 0
-
     def test_no_duplicate_email_shadow_on_second_claim(self, session):
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_email", contact_id)
@@ -342,7 +306,6 @@ class TestEmailShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
         ):
             from app.worker.jobs.channel_jobs import send_email_job
             send_email_job(job.id)
@@ -368,7 +331,6 @@ class TestSmsShadowOff:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=False)),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
             patch("app.core.conversation_context.get_conversation_context", return_value=fake_context),
             patch("app.core.ai_message_generator.generate_sms", fake_generate),
         ):

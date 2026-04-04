@@ -2,13 +2,15 @@
 Conversation context builder.
 
 Assembles a structured context object for AI message generation.
-Includes recent call transcripts, lead state, outbound message history,
-and inbound replies — everything needed to generate a personalised
-follow-up SMS or email without hallucinating program details.
+Includes recent call transcripts, lead state, and outbound message history —
+everything needed to generate a personalised follow-up SMS or email without
+hallucinating program details.
+
+SMS/email replies are handled inside GHL; this system does not receive inbound
+reply webhooks and does not track them in the context.
 
 Transcript limit: 5 most recent call events (newest first).
 Message history limit: last 10 outbound messages.
-Reply history limit: last 10 inbound replies.
 """
 from __future__ import annotations
 
@@ -23,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 _MAX_TRANSCRIPTS = 5
 _MAX_OUTBOUND = 10
-_MAX_INBOUND = 10
 
 
 @dataclass
@@ -37,7 +38,6 @@ class ConversationContext:
     attempt_number: int = 1                 # 1-based voicemail tier attempt
     transcripts: list[str] = field(default_factory=list)        # newest first
     outbound_messages: list[dict] = field(default_factory=list) # channel/body/subject
-    inbound_replies: list[dict] = field(default_factory=list)   # channel/body
 
 
 def get_conversation_context(
@@ -63,7 +63,6 @@ def get_conversation_context(
 
     try:
         from app.models.call_event import CallEvent
-        from app.models.inbound_message import InboundMessage
         from app.models.lead_state import LeadState
         from app.models.outbound_message import OutboundMessage
 
@@ -114,18 +113,6 @@ def get_conversation_context(
         ctx.outbound_messages = [
             {"channel": m.channel, "body": m.body, "subject": m.subject}
             for m in outbound
-        ]
-
-        # ── Inbound replies ───────────────────────────────────────────────────
-        inbound = session.scalars(
-            select(InboundMessage)
-            .where(InboundMessage.contact_id == contact_id)
-            .order_by(InboundMessage.received_at.desc())
-            .limit(_MAX_INBOUND)
-        ).all()
-        ctx.inbound_replies = [
-            {"channel": m.channel, "body": m.body}
-            for m in inbound
         ]
 
     except Exception as exc:

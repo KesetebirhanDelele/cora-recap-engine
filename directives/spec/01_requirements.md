@@ -10,7 +10,7 @@
 - Reject events with no resolvable identity and create an exception.
 
 ### Authoritative state and idempotency
-- Use Postgres as the authoritative store for campaign state, call events, audit records, exceptions, outbound/inbound messages, shadow actions, and scheduled-job metadata.
+- Use Postgres as the authoritative store for campaign state, call events, audit records, exceptions, outbound messages, shadow actions, and scheduled-job metadata.
 - Use Redis + RQ for job execution, retries, and delayed processing while treating Postgres as canonical state.
 - Treat GHL as authoritative for contacts, tasks, notes, and custom-field writes.
 - Prevent duplicate irreversible actions by checking dedupe keys based on `(call_id, action_type)`.
@@ -56,11 +56,13 @@
 ### Unified voicemail tier engine
 - Support a canonical voicemail tier state model of `None -> 0 -> 1 -> 2 -> 3` for all outbound campaigns.
 - Store `campaign_name` and `campaign_value` independently so behavior is policy-driven by campaign type.
-- Cold Lead policy applies delays of 2 hours for None→0, 2 days for 0→1, 2 days for 1→2, and finalization without Synthflow callback for 2→3.
-- New Lead policy uses the same tier numbering/state model while allowing different delay durations, actions, and finalization writes via configuration.
+- Cold Lead policy applies delays of 2 hours for None→0, 48 hours for 0→1, 48 hours for 1→2, and finalization without Synthflow callback for 2→3.
+- New Lead policy applies delays of 2 hours for None→0, 24 hours for 0→1, 48 hours for 1→2, and finalization without Synthflow callback for 2→3.
 - Tier 3 is the terminal state for all campaigns.
 - Finalization sets `AI Campaign = No` in GHL when defined by campaign policy.
-- Voicemail content generation populates CRM fields used by GHL automations rather than sending SMS directly from the app.
+- After each voicemail tier, an SMS is always sent. An email is sent only on attempt 2, at the same time as the SMS. No email is sent on attempt 3 or 4.
+- SMS and email are sent by this system (GHL fields are updated after each send). Reply handling for those messages is owned entirely by GHL automations — no inbound SMS/email reply signals are received or processed by this system.
+- Opt-out intents detected on voice calls (`do_not_call`, `not_interested`, `wrong_number`) write `AI Campaign = No` to GHL in addition to updating local lead state, stopping GHL automations for that contact.
 
 ### Webhook payload normalisation
 - Accept Synthflow `call_id` under any of three observed field names: `call_id`, `Call_id`, `callId`; resolve to internal `call_id` at webhook entry.

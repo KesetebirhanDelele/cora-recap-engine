@@ -258,6 +258,27 @@ Prompt family: `ghl_call_analysis` / version `v1` — `app/prompts/families/ghl_
 
 ## Job contexts and lifecycle
 
+### Path 4 — Voice call opt-out (`_write_ghl_campaign_off`)
+
+Triggered inline by: `_handle_do_not_call`, `_handle_not_interested`, `_handle_wrong_number` in `app/core/intent_actions.py`.
+No separate job — runs synchronously inside the intent handler.
+
+**Flow:**
+1. Intent handler updates `lead_state` (sets `do_not_call`, `invalid`, or `status=closed`)
+2. `_write_ghl_campaign_off(contact_id, settings, reason)` is called immediately after
+3. **GHL contact field write** (shadow-gated): `AI Campaign = No`
+4. Non-fatal — GHL write failure is logged at WARNING but does not affect the lead_state update
+
+| Intent | `lead_state` change | GHL write |
+|---|---|---|
+| `do_not_call` | `do_not_call=True, status=closed` | `AI Campaign=No` |
+| `not_interested` | `status=closed` | `AI Campaign=No` |
+| `wrong_number` | `invalid=True, status=closed` | `AI Campaign=No` |
+
+Note: `enrolled` uses the same GHL write (`AI Campaign=No`) via its own inline GHL call in `_handle_enrolled`.
+
+---
+
 ### `send_student_summary` — `app/worker/jobs/crm_jobs.py`
 
 Triggered after: consent detection on completed call.
@@ -357,3 +378,5 @@ Note: `MARK_AS_LEAD` and `AI_CAMPAIGN` writes in Path 3 are already implemented 
 8. Given an SMS or email successfully sent, when `_schedule_ghl_vm_update()` runs, then a `update_ghl_after_vm_message` job is enqueued with the message body.
 9. Given a GHL read (`get_contact`) called during shadow-mode write path, then the read executes normally and the result is used to resolve field IDs even when writes are shadow-gated.
 10. Given a voicemail tier reaching terminal, when `_finalize_campaign()` runs, then `Mark as Lead=Yes` and `AI Campaign=No` are written (shadow-gated) to the GHL contact.
+11. Given a lead says "stop calling" or "not interested" during a voice call, when intent detection fires `do_not_call` or `not_interested`, then `AI Campaign=No` is written to GHL (shadow-gated) and `lead_state.status=closed`.
+12. Given an email is scheduled on voicemail attempt 2, it fires at the same time as the SMS (+2 min after the voicemail). No email is scheduled on attempts 1, 3, or 4.

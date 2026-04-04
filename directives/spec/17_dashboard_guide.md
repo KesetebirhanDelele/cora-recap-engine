@@ -94,7 +94,7 @@ Use these indicators to confirm you are reading production state before taking a
 - `ai_campaign_value` — voicemail tier (None → 0 → 1 → 2 → 3). `3` = terminal; no further automated callbacks.
 - `status` — `active` (normal), `nurture` (waiting for re-engagement window), `closed`, `human_transfer` (pending human follow-up), `do_not_call`
 - `next_action_at` — when the nurture scheduler will re-engage this lead (only relevant when `status = nurture`)
-- `last_replied_at` — last inbound reply timestamp; non-null suppresses all SMS/email messaging
+- `last_replied_at` — not actively used; SMS/email reply handling is owned by GHL automations
 
 **How to interpret**:
 - Many leads stuck at `ai_campaign_value = None` → first call was a voicemail but no follow-up scheduled. Check Exceptions section.
@@ -231,7 +231,7 @@ Each event type has a distinct appearance:
 
 **Reading the timeline**:
 - A gap between a call event and the next outbound message indicates the delay window (controlled by `SMS_FOLLOWUP_DELAY_MINUTES` and VM tier delays).
-- A call event with no subsequent SMS/email may mean: (a) shadow mode suppressed the message, (b) the lead replied and reply-detection suppressed it, or (c) the send job failed.
+- A call event with no subsequent SMS/email may mean: (a) shadow mode suppressed the message, or (b) the send job failed (check Exceptions).
 - Campaign switches appear as their own row between the events that triggered them.
 
 ---
@@ -261,8 +261,8 @@ These are read-only in the dashboard. Values are configured in `.env` and loaded
 2. Check Next action — is a `send_sms` job pending?
 3. If no pending job: check Timeline for `send_sms` completed event — did it run already?
 4. If shadow mode is ON: check Shadow Actions — the SMS was intercepted there, not sent
-5. If `last_replied_at` is set in Lead State: reply detection suppressed the SMS (correct behavior)
-6. If Exceptions section shows `send_sms_failed`: retry the job
+5. If Exceptions section shows `send_sms_failed`: retry the job
+6. Note: SMS/email reply handling is owned by GHL automations — replies do not reach this system and do not suppress sends
 
 ### "Why is there no AI summary / lead classification in the timeline?"
 

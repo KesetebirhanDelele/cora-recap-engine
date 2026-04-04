@@ -81,13 +81,16 @@ Voicemail-sequence guard (enforced in `ai_jobs.py`): downgrade switches (New Lea
 
 Applied in `ai_jobs.py` after `handle_intent()`.
 
-## Reply detection and message suppression
+## SMS/email reply handling
 
-`app/core/reply_detection.py` — `has_recent_reply(session, contact_id)` checks two signals:
-1. `inbound_messages` table has any row for the contact.
-2. `lead_state.last_replied_at` is not null.
+SMS and email replies are handled entirely within GHL automations. This system does not receive inbound SMS/email reply webhooks, does not maintain an `inbound_messages` table for this purpose, and has no reply-suppression gate in `send_sms_job` or `send_email_job`. The `POST /v1/messages/inbound` endpoint has been removed.
 
-Both `send_sms_job` and `send_email_job` call this gate immediately after claiming. If a reply is detected, the job completes silently (no message sent). Fail-open: DB errors return `False` so messaging is never suppressed due to a detection failure.
+Opt-out signals are handled at the **voice call** level only — if a lead says "stop calling", "unsubscribe", "not interested", etc. during a call, intent detection fires and:
+- `do_not_call` → `lead_state.do_not_call = True`, `status = closed`, `AI Campaign = No` written to GHL
+- `not_interested` → `status = closed`, `AI Campaign = No` written to GHL
+- `wrong_number` → `lead_state.invalid = True`, `status = closed`, `AI Campaign = No` written to GHL
+
+All three write `AI Campaign = No` via `_write_ghl_campaign_off()` in `app/core/intent_actions.py`, which stops GHL automations for the contact. This is the same pattern used by `enrolled` and `_finalize_campaign`.
 
 ## lead_state normalised_phone guarantee
 

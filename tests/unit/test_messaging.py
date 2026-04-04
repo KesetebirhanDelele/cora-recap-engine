@@ -2,13 +2,14 @@
 Unit tests for the messaging system.
 
 Covers:
-  - reply_detection.has_recent_reply()
   - ai_message_generator.generate_sms/email (AI success + fallback)
   - conversation_context.get_conversation_context()
   - _schedule_messaging_after_voicemail() in voicemail_jobs
-  - ingest_inbound_message API endpoint
-  - channel_jobs: suppression on reply, outbound_message created
+  - channel_jobs: outbound_message created
   - No duplicate SMS/email scheduling
+
+Note: SMS/email replies are handled inside GHL — this system does not receive
+inbound reply webhooks and there is no reply-suppression gate in channel_jobs.
 """
 from __future__ import annotations
 
@@ -17,12 +18,10 @@ from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.models.base import Base
-from app.models.inbound_message import InboundMessage
 from app.models.lead_state import LeadState
 from app.models.outbound_message import OutboundMessage
 from app.models.scheduled_job import ScheduledJob
@@ -89,40 +88,6 @@ def _make_scheduled_job(session, *, contact_id, job_type="send_sms",
     session.add(job)
     session.flush()
     return job
-
-
-# ---------------------------------------------------------------------------
-# reply_detection.has_recent_reply
-# ---------------------------------------------------------------------------
-
-class TestHasRecentReply:
-    def test_returns_false_when_no_data(self, session):
-        from app.core.reply_detection import has_recent_reply
-        assert has_recent_reply(session, str(uuid.uuid4())) is False
-
-    def test_returns_false_for_empty_contact_id(self, session):
-        from app.core.reply_detection import has_recent_reply
-        assert has_recent_reply(session, "") is False
-
-    def test_detects_inbound_message(self, session):
-        from app.core.reply_detection import has_recent_reply
-        cid = str(uuid.uuid4())
-        session.add(InboundMessage(
-            id=str(uuid.uuid4()), contact_id=cid, channel="sms",
-            body="Hi back", received_at=_now(),
-        ))
-        session.flush()
-        assert has_recent_reply(session, cid) is True
-
-    def test_detects_last_replied_at_on_lead_state(self, session):
-        from app.core.reply_detection import has_recent_reply
-        lead = _make_lead(session, last_replied_at=_now())
-        assert has_recent_reply(session, lead.contact_id) is True
-
-    def test_no_reply_lead_exists_no_inbound(self, session):
-        from app.core.reply_detection import has_recent_reply
-        lead = _make_lead(session)  # no last_replied_at
-        assert has_recent_reply(session, lead.contact_id) is False
 
 
 # ---------------------------------------------------------------------------
@@ -272,17 +237,6 @@ class TestConversationContext:
         ctx = get_conversation_context(session, lead.contact_id)
         assert any(m["body"] == "Test SMS" for m in ctx.outbound_messages)
 
-    def test_loads_inbound_replies(self, session):
-        from app.core.conversation_context import get_conversation_context
-        lead = _make_lead(session)
-        session.add(InboundMessage(
-            id=str(uuid.uuid4()), contact_id=lead.contact_id,
-            channel="sms", body="Reply here", received_at=_now(),
-        ))
-        session.flush()
-        ctx = get_conversation_context(session, lead.contact_id)
-        assert any(r["body"] == "Reply here" for r in ctx.inbound_replies)
-
 
 # ---------------------------------------------------------------------------
 # _schedule_messaging_after_voicemail (via voicemail_jobs)
@@ -341,22 +295,6 @@ class TestScheduleMessagingAfterVoicemail:
         ).first()
         assert email_job is not None
 
-    def test_skips_messaging_when_reply_detected(self, session):
-        from app.worker.jobs.voicemail_jobs import _schedule_messaging_after_voicemail
-        lead = _make_lead(session, last_replied_at=_now())
-        settings = MagicMock()
-        settings.sms_followup_delay_minutes = 30
-        settings.email_followup_delay_days = 1
-
-        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, "New Lead", settings)
-        job = session.scalars(
-            select(ScheduledJob).where(
-                ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
-                ScheduledJob.job_type == "send_sms",
-            )
-        ).first()
-        assert job is None
-
     def test_no_duplicate_sms_if_pending_exists(self, session):
         from app.worker.jobs.voicemail_jobs import _schedule_messaging_after_voicemail
         lead = _make_lead(session)
@@ -381,117 +319,14 @@ class TestScheduleMessagingAfterVoicemail:
         """Messaging errors must not raise — voicemail tier job must complete."""
         from app.worker.jobs.voicemail_jobs import _schedule_messaging_after_voicemail
         settings = MagicMock()
-        # Patch reply_detection at its source module (local import inside the function)
-        with patch(
-            "app.core.reply_detection.has_recent_reply",
-            side_effect=RuntimeError("DB down"),
-        ):
-            # Should not raise
-            _schedule_messaging_after_voicemail(session, "some-contact", 1, "New Lead", settings)
+        settings.sms_followup_delay_minutes = 30
+        settings.email_followup_delay_days = 1
+        # Should not raise even on bad contact_id with no lead_state
+        _schedule_messaging_after_voicemail(session, "non-existent-contact", 1, "New Lead", settings)
 
 
 # ---------------------------------------------------------------------------
-# Inbound messages API endpoint
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def test_client(engine):
-    """FastAPI test client with SQLite-backed DB."""
-    from unittest.mock import patch
-
-    from app.main import create_app
-
-    with patch("app.db.get_sync_session") as mock_get_session:
-        # Wire the endpoint to use our test session
-        app = create_app()
-        client = TestClient(app, raise_server_exceptions=True)
-        yield client, engine
-
-
-class TestInboundMessageEndpoint:
-    def test_ingest_creates_inbound_message_row(self, session):
-        """Test the ingestion logic directly (bypassing HTTP layer)."""
-        from datetime import timedelta
-
-        from sqlalchemy import update
-
-        cid = str(uuid.uuid4())
-        _make_lead(session, contact_id=cid)
-        # Pre-create a pending job that should be cancelled
-        job = _make_scheduled_job(session, contact_id=cid, job_type="send_sms")
-
-        now = _now()
-        msg = InboundMessage(
-            id=str(uuid.uuid4()), contact_id=cid,
-            channel="sms", body="Thanks, I'll call back", received_at=now,
-        )
-        session.add(msg)
-
-        # Update lead_state.last_replied_at
-        from app.models.lead_state import LeadState
-        session.execute(
-            update(LeadState).where(LeadState.contact_id == cid)
-            .values(last_replied_at=now)
-        )
-
-        # Cancel pending jobs
-        from sqlalchemy import update as sa_update
-        session.execute(
-            sa_update(ScheduledJob)
-            .where(
-                ScheduledJob.payload_json["contact_id"].as_string() == cid,
-                ScheduledJob.status.in_(["pending", "claimed", "running"]),
-            )
-            .values(status="cancelled")
-        )
-        session.flush()
-
-        # Verify
-        from app.core.reply_detection import has_recent_reply
-        assert has_recent_reply(session, cid) is True
-
-        session.refresh(job)
-        assert job.status == "cancelled"
-
-    def test_reply_detected_after_ingest(self, session):
-        """After an inbound message row is written, has_recent_reply returns True."""
-        from app.core.reply_detection import has_recent_reply
-        cid = str(uuid.uuid4())
-        session.add(InboundMessage(
-            id=str(uuid.uuid4()), contact_id=cid,
-            channel="email", body="Got it", received_at=_now(),
-        ))
-        session.flush()
-        assert has_recent_reply(session, cid) is True
-
-    def test_jobs_cancelled_on_reply(self, session):
-        """Pending jobs must be cancelled when a reply is recorded."""
-        from sqlalchemy import update
-
-        cid = str(uuid.uuid4())
-        _make_lead(session, contact_id=cid)
-        job1 = _make_scheduled_job(session, contact_id=cid, job_type="send_sms")
-        job2 = _make_scheduled_job(session, contact_id=cid, job_type="send_email")
-
-        # Simulate the cancellation step from ingest_inbound_message
-        session.execute(
-            update(ScheduledJob)
-            .where(
-                ScheduledJob.payload_json["contact_id"].as_string() == cid,
-                ScheduledJob.status.in_(["pending", "claimed", "running"]),
-            )
-            .values(status="cancelled")
-        )
-        session.flush()
-
-        session.refresh(job1)
-        session.refresh(job2)
-        assert job1.status == "cancelled"
-        assert job2.status == "cancelled"
-
-
-# ---------------------------------------------------------------------------
-# channel_jobs: outbound_message created + reply suppression
+# channel_jobs: outbound_message created
 # ---------------------------------------------------------------------------
 
 class TestChannelJobs:
@@ -513,38 +348,8 @@ class TestChannelJobs:
         session.flush()
         return job
 
-    def test_sms_suppressed_when_reply_exists(self, session):
-        """send_sms_job should complete without creating OutboundMessage if reply exists."""
-        from app.core.reply_detection import has_recent_reply
-        from app.worker.jobs.channel_jobs import send_sms_job
-
-        cid = str(uuid.uuid4())
-        _make_lead(session, contact_id=cid, last_replied_at=_now())
-        job = self._make_claimed_sms_job(session, cid)
-
-        with (
-            patch("app.worker.jobs.channel_jobs.get_sync_session") as mock_gs,
-            patch("app.worker.jobs.channel_jobs.claim_job") as mock_claim,
-            patch("app.worker.jobs.channel_jobs.mark_running"),
-            patch("app.worker.jobs.channel_jobs.complete_job") as mock_complete,
-        ):
-            mock_gs.return_value.__enter__ = lambda s: session
-            mock_gs.return_value.__exit__ = MagicMock(return_value=False)
-            mock_claim.return_value = job
-
-            with patch("app.core.reply_detection.has_recent_reply", return_value=True):
-                send_sms_job(job.id)
-
-            mock_complete.assert_called_once()
-
-        # No outbound_message row created
-        outbound = session.scalars(
-            select(OutboundMessage).where(OutboundMessage.contact_id == cid)
-        ).all()
-        assert outbound == []
-
     def test_sms_creates_outbound_message_when_no_reply(self, session):
-        """send_sms_job should create OutboundMessage when no reply exists."""
+        """send_sms_job should create OutboundMessage on the happy path."""
         from app.worker.jobs.channel_jobs import send_sms_job
 
         cid = str(uuid.uuid4())
@@ -576,7 +381,6 @@ class TestChannelJobs:
             patch("app.worker.jobs.channel_jobs.claim_job") as mock_claim,
             patch("app.worker.jobs.channel_jobs.mark_running"),
             patch("app.worker.jobs.channel_jobs.complete_job"),
-            patch("app.core.reply_detection.has_recent_reply", return_value=False),
             patch(
                 "app.core.ai_message_generator.generate_vm_followup",
                 return_value=fake_result,

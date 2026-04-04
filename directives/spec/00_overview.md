@@ -23,10 +23,12 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 ### 2. Unified voicemail recovery path
 1. A voicemail or voicemail-hangup outcome is detected.
 2. The system routes by campaign type and canonical tier state using `None -> 0 -> 1 -> 2 -> 3 (terminal)`.
-3. The system uses one shared tier engine, but applies campaign-specific policy for delays, actions, and finalization writes.
-4. Cold Lead policy uses: None→0 = 2 hours, 0→1 = 2 days, 1→2 = 2 days, 2→3 = finalize with no Synthflow callback.
-5. New Lead policy may use different timing/actions while preserving the same tier numbering model.
-6. After each voicemail-triggered SMS or email, **GHL Path 2** runs: `update_ghl_after_vm_message` writes `Mark as Lead=Yes`, the brief message identifier (Support Ticket #2), the full message body (`Message` field), `AI Campaign=Yes`, and the latest lead classification (Support Ticket #4) to the GHL contact.
+3. The system uses one shared tier engine with campaign-specific delay policy:
+   - **New Lead**: None→0 = 2 h, 0→1 = 24 h, 1→2 = 48 h, 2→3 = finalize
+   - **Cold Lead**: None→0 = 2 h, 0→1 = 48 h, 1→2 = 48 h, 2→3 = finalize
+4. After each voicemail, an **SMS is always sent** (+2 min). An **email is sent only on attempt 2**, at the same time as the SMS. No email on attempt 3 or 4.
+5. Reply handling for those messages is owned by GHL automations — this system sends and records the message, then writes GHL fields, but does not receive or process reply webhooks.
+6. After each SMS or email, **GHL Path 2** runs: `update_ghl_after_vm_message` writes `Mark as Lead=Yes`, brief identifier (Support Ticket #2), full message body (`Message` field), `AI Campaign=Yes`, and the latest lead classification (Support Ticket #4) to the GHL contact.
 7. Tier 3 triggers **GHL Path 3** — finalization: `_finalize_campaign` writes `Mark as Lead=Yes` and `AI Campaign=No`, marking the end of automated follow-up in GHL.
 
 ### 3. Live-call intent routing
@@ -84,4 +86,6 @@ Cora Outbound Recap Engine is a Python-based API + worker platform that replaces
 - The AI knowledge base for SMS/email generation is a CSV file at `app/prompts/knowledge_base/video_transcripts.csv` with columns: `video name`, `transcript`, `summary`, `platform`, `category`, `URL`. The loader is `@lru_cache`-backed and immutable at runtime.
 - GHL reads (contact lookup) are always active regardless of write-mode settings. Only writes are shadow-gated.
 - `classification_results` stores rows from two prompt families for the same call: `lead_stage_classifier` (from `run_call_analysis`) and `ghl_call_analysis` (from `create_crm_task`). Both coexist; the timeline joins specifically on `prompt_family='ghl_call_analysis'` for rich call-summary data.
+- SMS/email replies are handled inside GHL automations. This system does not receive or process inbound SMS/email reply webhooks. Opt-out signals are detected on voice call transcripts only (`do_not_call`, `not_interested`, `wrong_number` intents) and trigger `AI Campaign=No` writes to GHL.
+- Email is sent only on voicemail attempt 2, at the same time as the SMS. No email is sent on attempts 1, 3, or 4.
 

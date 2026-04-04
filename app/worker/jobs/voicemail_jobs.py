@@ -411,9 +411,7 @@ def _schedule_messaging_after_voicemail(
     Schedule SMS (and optionally email) follow-up jobs after a missed call.
 
     SMS: always scheduled at now + sms_followup_delay_minutes (idempotent).
-    Email: scheduled on attempt_number == 2 and attempt_number == 4 (final).
-      attempt 2 → 1 day delay
-      attempt 4 → sent at same time as SMS (this is the final outreach)
+    Email: scheduled only on attempt_number == 2, at the same delay as SMS.
 
     campaign_name is forwarded in the job payload so channel_jobs can select
     the correct tier-specific prompt.
@@ -429,15 +427,7 @@ def _schedule_messaging_after_voicemail(
 
         from sqlalchemy import select
 
-        from app.core.reply_detection import has_recent_reply
         from app.models.scheduled_job import ScheduledJob
-
-        if has_recent_reply(session, contact_id):
-            logger.info(
-                "_schedule_messaging: reply detected, skipping | contact_id=%s",
-                contact_id,
-            )
-            return
 
         now = datetime.now(tz=timezone.utc)
 
@@ -469,8 +459,8 @@ def _schedule_messaging_after_voicemail(
                 sms_delay, contact_id, attempt_number,
             )
 
-        # ── Email: attempt 2 (1 day delay) and attempt 4 / final (same as SMS) ─
-        if attempt_number in (2, 4):
+        # ── Email: attempt 2 only, at the same time as SMS ──────────────────────
+        if attempt_number == 2:
             has_pending_email = session.scalars(
                 select(ScheduledJob).where(
                     ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
@@ -480,22 +470,13 @@ def _schedule_messaging_after_voicemail(
             ).first() is not None
 
             if not has_pending_email:
-                if attempt_number == 4:
-                    # Final attempt — send email at the same time as the SMS
-                    email_delay_secs = getattr(settings, "sms_followup_delay_minutes", 30) * 60
-                    email_run_at = now + timedelta(seconds=email_delay_secs)
-                    delay_label = f"+{email_delay_secs // 60}min (final)"
-                else:
-                    email_delay = getattr(settings, "email_followup_delay_days", 1)
-                    email_run_at = now + timedelta(days=email_delay)
-                    delay_label = f"+{email_delay}d"
-
+                sms_delay = getattr(settings, "sms_followup_delay_minutes", 30)
                 schedule_job(
                     session=session,
                     job_type="send_email",
                     entity_type="lead",
                     entity_id=contact_id,
-                    run_at=email_run_at,
+                    run_at=now + timedelta(minutes=sms_delay),
                     payload={
                         "contact_id": contact_id,
                         "attempt_number": attempt_number,
@@ -503,8 +484,8 @@ def _schedule_messaging_after_voicemail(
                     },
                 )
                 logger.info(
-                    "_schedule_messaging: email scheduled %s | contact_id=%s attempt=%d",
-                    delay_label, contact_id, attempt_number,
+                    "_schedule_messaging: email scheduled +%dmin | contact_id=%s attempt=%d",
+                    sms_delay, contact_id, attempt_number,
                 )
 
     except Exception as exc:

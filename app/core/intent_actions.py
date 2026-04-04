@@ -213,27 +213,30 @@ def _handle_re_engaged(session, contact_id, phone, entities, settings) -> None:
 
 
 def _handle_not_interested(session, contact_id, phone, entities, settings) -> None:
-    """Close the lead — stop all future outreach."""
+    """Close the lead — stop all future outreach. Writes AI Campaign=No to GHL."""
     _update_lead_state(session, contact_id, status="closed")
     logger.info(
         "handle_intent: lead closed (not_interested) | contact_id=%s", contact_id
     )
+    _write_ghl_campaign_off(contact_id, settings, "not_interested")
 
 
 def _handle_do_not_call(session, contact_id, phone, entities, settings) -> None:
-    """Suppress all future calls by setting do_not_call = True."""
+    """Suppress all future calls by setting do_not_call = True. Writes AI Campaign=No to GHL."""
     _update_lead_state(session, contact_id, do_not_call=True, status="closed")
     logger.info(
         "handle_intent: do_not_call flag set | contact_id=%s", contact_id
     )
+    _write_ghl_campaign_off(contact_id, settings, "do_not_call")
 
 
 def _handle_wrong_number(session, contact_id, phone, entities, settings) -> None:
-    """Mark lead as invalid — no further outreach."""
+    """Mark lead as invalid — no further outreach. Writes AI Campaign=No to GHL."""
     _update_lead_state(session, contact_id, invalid=True, status="closed")
     logger.info(
         "handle_intent: wrong_number — lead marked invalid | contact_id=%s", contact_id
     )
+    _write_ghl_campaign_off(contact_id, settings, "wrong_number")
 
 
 def _handle_human_transfer_request(session, contact_id, phone, entities, settings) -> None:
@@ -430,6 +433,33 @@ def _ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _write_ghl_campaign_off(contact_id: str, settings: Any, reason: str) -> None:
+    """
+    Write AI Campaign=No to GHL (shadow-gated) to stop GHL automations.
+
+    Called when a lead opts out (do_not_call), says not_interested, or is wrong_number.
+    Non-fatal — GHL write failure must not affect the lead_state update that already ran.
+    """
+    try:
+        from app.adapters.ghl import GHLClient
+        ghl = GHLClient(settings=settings)
+        ai_campaign_field = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
+        ghl.update_contact_fields(
+            contact_id=contact_id,
+            field_updates={ai_campaign_field: "No"},
+        )
+        logger.info(
+            "_write_ghl_campaign_off: AI Campaign=No written | contact_id=%s reason=%s",
+            contact_id, reason,
+        )
+    except Exception as exc:
+        logger.warning(
+            "_write_ghl_campaign_off: GHL write failed (non-fatal) | "
+            "contact_id=%s reason=%s: %s",
+            contact_id, reason, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
