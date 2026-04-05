@@ -53,7 +53,9 @@
       "Bash(python -m pytest tests/unit/test_messaging.py tests/unit/test_shadow_mode.py -x -q)",
       "Bash(python -m pytest tests/unit/test_messaging.py -v)",
       "Bash(psql postgresql://postgres:Target123@localhost:5433/cora -c ':*)",
-      "Bash(git tag -a v1.0.0 -m 'Release v1.0.0 — production-ready outbound recap engine:*)"
+      "Bash(git tag -a v1.0.0 -m 'Release v1.0.0 — production-ready outbound recap engine:*)",
+      "Bash(git push:*)",
+      "Bash(gh release create v1.0.0 --title 'v1.0.0 — Production-Ready Outbound Recap Engine' --notes ':*)"
     ]
   }
 }
