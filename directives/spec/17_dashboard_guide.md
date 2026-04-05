@@ -216,11 +216,17 @@ Each event type has a distinct appearance:
 - Full transcript is shown in an expander
 - If `lead_classification` is blank, AI call analysis either did not run or is not yet persisted (check if `create_crm_task` job completed)
 
-**SMS/Email event** (📱/📧):
+**SMS/Email event** (📱/📧 or 💬 🔮 *shadow*):
 - Shows channel, date/time, and message content
 - For email: subject is shown above the body; full HTML body is rendered with `unsafe_allow_html=True`
 - For SMS: plain text body is shown
-- Messages appear here only when NOT in shadow mode (i.e., actually sent). If shadow mode is on, check Shadow Actions instead.
+- Messages from live mode have no badge. Messages generated in shadow mode display a 🔮 *shadow* badge and a note inside the expander — they were generated but not sent to the lead.
+- `outbound_messages` rows exist for both live (`status='pending'/'sent'/'failed'`) and shadow (`status='shadow'`) sends. No longer necessary to check Shadow Actions to see message content.
+
+**GHL Update (Shadow) event** (📋):
+- Appears only in shadow mode when `update_ghl_after_vm_message` runs.
+- Shows the exact GHL contact fields that would be written: Mark as Lead, Support Ticket #2, Message, AI Campaign, Support Ticket #4.
+- One row per SMS/email send that triggers a GHL Path 2 update.
 
 **Campaign switch event** (🔄):
 - Shows from → to campaign name and the reason (intent that triggered the switch)
@@ -290,6 +296,7 @@ These are read-only in the dashboard. Values are configured in `.env` and loaded
 ## Notes for operators
 
 - The dashboard is **read-only** except for Exceptions actions (retry, resolve, ignore, cancel, force-finalize). All such actions are audit-logged with your operator ID.
-- Shadow mode does not affect dashboard reads. You can see shadow actions even when the system is in full shadow mode.
+- Shadow mode does not affect dashboard reads. You can see shadow actions and shadow outbound_messages even when the system is in full shadow mode.
+- In shadow mode, SMS/email content IS generated and visible directly in the Lead Journey timeline (🔮 *shadow* badge). GHL field writes appear as 📋 GHL Update (Shadow) events immediately following each message event. No need to cross-reference the Shadow Actions section for message content inspection.
 - All queries run against Postgres directly — no cache layer. Refresh the browser to get current state.
 - The dashboard does not auto-refresh. Use the browser refresh button or Streamlit's `st.rerun()` (available in some sections after taking an action).

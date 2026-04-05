@@ -16,8 +16,9 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from app.core.ai_message_generator import VmFollowupResult
 from app.models.base import Base
-from app.models.outbound_message import OutboundMessage  # noqa: F401 — ensures table is created
+from app.models.outbound_message import OutboundMessage
 from app.models.scheduled_job import ScheduledJob
 from app.models.shadow_action import ShadowAction
 
@@ -92,6 +93,22 @@ def _shadow_rows(session, contact_id: str) -> list[ShadowAction]:
     return list(session.execute(
         select(ShadowAction).where(ShadowAction.contact_id == contact_id)
     ).scalars().all())
+
+
+def _outbound_rows(session, contact_id: str) -> list[OutboundMessage]:
+    return list(session.execute(
+        select(OutboundMessage).where(OutboundMessage.contact_id == contact_id)
+    ).scalars().all())
+
+
+def _fake_vm_result() -> VmFollowupResult:
+    return VmFollowupResult(
+        sms_text="Hi, this is a test SMS from Cora!",
+        email_subject="Test Email Subject",
+        email_html="<p>Test email body</p>",
+        email_text="Test email body",
+        preview_text="",
+    )
 
 
 def _settings(shadow_on: bool):
@@ -211,33 +228,57 @@ class TestOutboundCallShadowOff:
 
 # ---------------------------------------------------------------------------
 # send_sms_job — shadow ON
+# Shadow mode now generates AI content and writes outbound_messages(status=shadow).
 # ---------------------------------------------------------------------------
 
 class TestSmsShadowOn:
-    def test_job_completes_without_ai_call(self, session):
+    def _patches(self, session):
+        """Common patch stack for SMS shadow-on tests."""
+        return [
+            patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
+            patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", return_value=_fake_vm_result()),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
+        ]
+
+    def test_job_completes_and_generates_content(self, session):
+        """Shadow mode must generate AI content and write outbound_message(status='shadow')."""
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_sms", contact_id)
 
-        ai_mock = MagicMock()
+        ai_mock = MagicMock(return_value=_fake_vm_result())
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.ai_message_generator.generate_sms", ai_mock),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", ai_mock),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
             send_sms_job(job.id)
 
         session.refresh(job)
         assert job.status == "completed"
-        ai_mock.assert_not_called()
+        ai_mock.assert_called_once()
+
+        outbound = _outbound_rows(session, contact_id)
+        assert len(outbound) == 1
+        assert outbound[0].channel == "sms"
+        assert outbound[0].status == "shadow"
+        assert outbound[0].body == _fake_vm_result().sms_text
 
     def test_shadow_action_row_written_for_sms(self, session):
+        """Shadow action row is written with message_body in payload."""
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_sms", contact_id)
 
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", return_value=_fake_vm_result()),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
             send_sms_job(job.id)
@@ -245,6 +286,7 @@ class TestSmsShadowOn:
         rows = _shadow_rows(session, contact_id)
         assert len(rows) == 1
         assert rows[0].action_type == "sms"
+        assert rows[0].payload.get("message_body") == _fake_vm_result().sms_text
 
     def test_no_duplicate_sms_shadow_on_second_claim(self, session):
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
@@ -253,6 +295,9 @@ class TestSmsShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", return_value=_fake_vm_result()),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
             send_sms_job(job.id)
@@ -267,30 +312,43 @@ class TestSmsShadowOn:
 # ---------------------------------------------------------------------------
 
 class TestEmailShadowOn:
-    def test_job_completes_without_ai_call(self, session):
+    def test_job_completes_and_generates_content(self, session):
+        """Shadow mode must generate AI content and write outbound_message(status='shadow')."""
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_email", contact_id)
 
-        ai_mock = MagicMock()
+        ai_mock = MagicMock(return_value=_fake_vm_result())
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
-            patch("app.core.ai_message_generator.generate_email", ai_mock),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", ai_mock),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_email_job
             send_email_job(job.id)
 
         session.refresh(job)
         assert job.status == "completed"
-        ai_mock.assert_not_called()
+        ai_mock.assert_called_once()
+
+        outbound = _outbound_rows(session, contact_id)
+        assert len(outbound) == 1
+        assert outbound[0].channel == "email"
+        assert outbound[0].status == "shadow"
+        assert outbound[0].subject == _fake_vm_result().email_subject
 
     def test_shadow_action_row_written_for_email(self, session):
+        """Shadow action row is written with email_subject and message_body in payload."""
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_email", contact_id)
 
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", return_value=_fake_vm_result()),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_email_job
             send_email_job(job.id)
@@ -298,6 +356,7 @@ class TestEmailShadowOn:
         rows = _shadow_rows(session, contact_id)
         assert len(rows) == 1
         assert rows[0].action_type == "email"
+        assert rows[0].payload.get("email_subject") == _fake_vm_result().email_subject
 
     def test_no_duplicate_email_shadow_on_second_claim(self, session):
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
@@ -306,6 +365,9 @@ class TestEmailShadowOn:
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=True)),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", return_value=_fake_vm_result()),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_email_job
             send_email_job(job.id)
@@ -324,20 +386,20 @@ class TestSmsShadowOff:
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "send_sms", contact_id)
 
-        fake_generate = MagicMock(return_value="Hi there!")
-        fake_context = MagicMock()
+        ai_mock = MagicMock(return_value=_fake_vm_result())
 
-        # Lazy imports in channel_jobs — patch at the module definition sites
         with (
             patch("app.worker.jobs.channel_jobs.get_sync_session", return_value=_ctx(session)),
             patch("app.worker.jobs.channel_jobs.get_settings", return_value=_settings(shadow_on=False)),
-            patch("app.core.conversation_context.get_conversation_context", return_value=fake_context),
-            patch("app.core.ai_message_generator.generate_sms", fake_generate),
+            patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True),
+            patch("app.core.ai_message_generator.generate_vm_followup", ai_mock),
+            patch("app.core.conversation_context.get_conversation_context", return_value=MagicMock()),
         ):
             from app.worker.jobs.channel_jobs import send_sms_job
             send_sms_job(job.id)
 
         session.refresh(job)
         assert job.status == "completed"
+        ai_mock.assert_called_once()
         rows = _shadow_rows(session, contact_id)
         assert len(rows) == 0

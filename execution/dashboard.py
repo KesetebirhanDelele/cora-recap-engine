@@ -1019,7 +1019,8 @@ elif section == "Lead Journey":
             END                                                         AS detail,
             ce.recording_url,
             cr.output_json->>'lead_classification'                      AS lead_classification,
-            cr.output_json->>'call_detailed_summary'                    AS call_detailed_summary
+            cr.output_json->>'call_detailed_summary'                    AS call_detailed_summary,
+            NULL                                                        AS msg_status
         FROM call_events ce
         LEFT JOIN LATERAL (
             SELECT output_json
@@ -1046,7 +1047,8 @@ elif section == "Lead Journey":
             COALESCE(om.subject || E'\\n\\n', '') || LEFT(om.body, 300) AS detail,
             NULL                                                        AS recording_url,
             NULL                                                        AS lead_classification,
-            NULL                                                        AS call_detailed_summary
+            NULL                                                        AS call_detailed_summary,
+            om.status                                                   AS msg_status
         FROM outbound_messages om
         WHERE om.contact_id = :cid
            OR om.contact_id = :phone
@@ -1063,10 +1065,29 @@ elif section == "Lead Journey":
             al.context_json->>'to'                                      AS detail,
             NULL                                                        AS recording_url,
             NULL                                                        AS lead_classification,
-            NULL                                                        AS call_detailed_summary
+            NULL                                                        AS call_detailed_summary,
+            NULL                                                        AS msg_status
         FROM audit_log al
         WHERE al.entity_id = :cid
           AND al.action = 'campaign_switch'
+
+        UNION ALL
+
+        SELECT
+            sa.created_at                                               AS ts,
+            'ghl_update'                                                AS event_type,
+            NULL                                                        AS call_status,
+            NULL                                                        AS duration_seconds,
+            sa.payload->>'channel'                                      AS intent,
+            '—'                                                         AS campaign,
+            sa.payload::text                                            AS detail,
+            NULL                                                        AS recording_url,
+            NULL                                                        AS lead_classification,
+            NULL                                                        AS call_detailed_summary,
+            NULL                                                        AS msg_status
+        FROM shadow_actions sa
+        WHERE sa.action_type = 'ghl_contact_update'
+          AND (sa.contact_id = :cid OR sa.contact_id = :phone)
 
         ORDER BY ts DESC
         """,
@@ -1115,15 +1136,36 @@ elif section == "Lead Journey":
             st.divider()
             continue
 
+        if etype == "ghl_update":
+            import json as _json
+            channel_label = row["intent"] or ""
+            try:
+                ghl_payload = _json.loads(row["detail"] or "{}")
+            except Exception:
+                ghl_payload = {}
+            fields = ghl_payload.get("fields", {})
+            ch_label = "SMS" if channel_label == "sms" else ("Email" if channel_label == "email" else channel_label)
+            header_text = f"📋 GHL Update (Shadow) &nbsp; {ch_label} &nbsp; <small>{ts}</small>"
+            with st.expander(header_text, expanded=False):
+                st.caption("Fields that would be written to GHL contact")
+                for label, value in fields.items():
+                    display_val = str(value)[:300] if value else "—"
+                    st.markdown(f"**{label}:** {display_val}")
+            continue
+
         if etype == "message":
+            is_shadow = (row.get("msg_status") == "shadow")
             channel_icon = "💬 SMS" if row["call_status"] == "sms" else "📧 Email"
+            shadow_tag = " &nbsp; 🔮 *shadow*" if is_shadow else ""
             body = row["detail"] or "(empty)"
             # First line is the subject (if email), rest is body
             lines = body.split("\n\n", 1)
             subject_line = lines[0] if row["call_status"] == "email" and len(lines) > 1 else ""
             body_text = lines[1] if subject_line else body
-            header_text = f"{channel_icon} &nbsp; {subject_line or ''} &nbsp; <small>{ts}</small>"
+            header_text = f"{channel_icon}{shadow_tag} &nbsp; {subject_line or ''} &nbsp; <small>{ts}</small>"
             with st.expander(header_text, expanded=False):
+                if is_shadow:
+                    st.info("Shadow mode — content generated but not sent to lead.")
                 if subject_line:
                     st.markdown(f"**Subject:** {subject_line}")
                 if row["call_status"] == "email":

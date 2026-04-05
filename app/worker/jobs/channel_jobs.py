@@ -42,11 +42,9 @@ def _check_active_window(session, job, contact_id: str, campaign_name: str, sett
 
     Returns True if the job should proceed.
     Returns False (and handles cancel + reschedule) if the job was deferred.
-    Only active in live mode — shadow mode always returns True.
+    Enforced in both live and shadow mode — shadow mode simulates the same
+    window constraints so scheduling behaviour matches production exactly.
     """
-    if settings.shadow_mode_enabled:
-        return True
-
     from app.core.campaign_schedule import (
         get_contact_timezone,
         is_campaign_active,
@@ -107,22 +105,6 @@ def send_sms_job(job_id: str) -> None:
         mark_running(session, job)
 
         try:
-            # ── Shadow mode: log and skip AI generation + outbound write ──────
-            if settings.shadow_mode_enabled:
-                from app.worker.shadow import log_shadow_action
-                log_shadow_action(
-                    session,
-                    contact_id=contact_id,
-                    action_type="sms",
-                    payload={
-                        "contact_id": contact_id,
-                        "attempt_number": payload.get("attempt_number"),
-                        "campaign_name": campaign_name,
-                    },
-                )
-                complete_job(session, job)
-                return
-
             from app.core.ai_message_generator import generate_vm_followup
             from app.core.conversation_context import get_conversation_context
             from app.models.outbound_message import OutboundMessage
@@ -132,6 +114,46 @@ def send_sms_job(job_id: str) -> None:
             result = generate_vm_followup(context, settings, session)
 
             now = datetime.now(tz=timezone.utc)
+
+            # ── Shadow mode: write content to outbound_messages (status='shadow')
+            #    and log full payload to shadow_actions — real send skipped.
+            if settings.shadow_mode_enabled:
+                from app.worker.shadow import log_shadow_action
+                outbound = OutboundMessage(
+                    id=str(uuid.uuid4()),
+                    contact_id=contact_id,
+                    channel="sms",
+                    body=result.sms_text,
+                    status="shadow",
+                    created_at=now,
+                )
+                session.add(outbound)
+                session.flush()
+                log_shadow_action(
+                    session,
+                    contact_id=contact_id,
+                    action_type="sms",
+                    payload={
+                        "contact_id": contact_id,
+                        "attempt_number": attempt_number,
+                        "campaign_name": campaign_name,
+                        "message_body": result.sms_text,
+                    },
+                )
+                _schedule_ghl_vm_update(
+                    session=session,
+                    contact_id=contact_id,
+                    channel="sms",
+                    message_body=result.sms_text,
+                    message_subject="",
+                )
+                logger.info(
+                    "send_sms_job: SMS generated (shadow) | contact_id=%s length=%d attempt=%d job_id=%s",
+                    contact_id, len(result.sms_text), attempt_number, job_id,
+                )
+                complete_job(session, job)
+                return
+
             outbound = OutboundMessage(
                 id=str(uuid.uuid4()),
                 contact_id=contact_id,
@@ -204,22 +226,6 @@ def send_email_job(job_id: str) -> None:
         mark_running(session, job)
 
         try:
-            # ── Shadow mode: log and skip AI generation + outbound write ──────
-            if settings.shadow_mode_enabled:
-                from app.worker.shadow import log_shadow_action
-                log_shadow_action(
-                    session,
-                    contact_id=contact_id,
-                    action_type="email",
-                    payload={
-                        "contact_id": contact_id,
-                        "attempt_number": payload.get("attempt_number"),
-                        "campaign_name": campaign_name,
-                    },
-                )
-                complete_job(session, job)
-                return
-
             from app.core.ai_message_generator import generate_vm_followup
             from app.core.conversation_context import get_conversation_context
             from app.models.outbound_message import OutboundMessage
@@ -229,6 +235,48 @@ def send_email_job(job_id: str) -> None:
             result = generate_vm_followup(context, settings, session)
 
             now = datetime.now(tz=timezone.utc)
+
+            # ── Shadow mode: write content to outbound_messages (status='shadow')
+            #    and log full payload to shadow_actions — real send skipped.
+            if settings.shadow_mode_enabled:
+                from app.worker.shadow import log_shadow_action
+                outbound = OutboundMessage(
+                    id=str(uuid.uuid4()),
+                    contact_id=contact_id,
+                    channel="email",
+                    subject=result.email_subject,
+                    body=result.email_html,
+                    status="shadow",
+                    created_at=now,
+                )
+                session.add(outbound)
+                session.flush()
+                log_shadow_action(
+                    session,
+                    contact_id=contact_id,
+                    action_type="email",
+                    payload={
+                        "contact_id": contact_id,
+                        "attempt_number": attempt_number,
+                        "campaign_name": campaign_name,
+                        "email_subject": result.email_subject,
+                        "message_body": result.email_html,
+                    },
+                )
+                _schedule_ghl_vm_update(
+                    session=session,
+                    contact_id=contact_id,
+                    channel="email",
+                    message_body=result.email_html,
+                    message_subject=result.email_subject,
+                )
+                logger.info(
+                    "send_email_job: email generated (shadow) | contact_id=%s subject=%r attempt=%d job_id=%s",
+                    contact_id, result.email_subject, attempt_number, job_id,
+                )
+                complete_job(session, job)
+                return
+
             outbound = OutboundMessage(
                 id=str(uuid.uuid4()),
                 contact_id=contact_id,

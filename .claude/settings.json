@@ -50,7 +50,9 @@
       "Bash(python -m pytest tests/unit/ -x -q)",
       "Bash(docker exec:*)",
       "Bash(grep -n \"lead_classification\\\\|lead_stage\\\\|classification\" c:/Users/keset/cora-recap-engine/app/prompts/families/*.py)",
-      "Bash(python -m pytest tests/unit/test_messaging.py tests/unit/test_shadow_mode.py -x -q)"
+      "Bash(python -m pytest tests/unit/test_messaging.py tests/unit/test_shadow_mode.py -x -q)",
+      "Bash(python -m pytest tests/unit/test_messaging.py -v)",
+      "Bash(psql postgresql://postgres:Target123@localhost:5433/cora -c ':*)"
     ]
   }
 }

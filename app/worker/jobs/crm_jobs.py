@@ -329,10 +329,36 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     field_updates[settings.ghl_field_support_ticket_4] = classification
 
             if field_updates:
-                ghl.update_contact_fields(
+                write_result = ghl.update_contact_fields(
                     contact_id=contact_id or "unknown",
                     field_updates=field_updates,
                 )
+                # Shadow mode: log what would have been written to GHL so
+                # operators can inspect the exact fields via Lead Journey.
+                if write_result.get("shadow"):
+                    from app.worker.shadow import log_shadow_action
+                    # Build human-readable field map (label → value)
+                    label_map: dict[str, str] = {}
+                    if settings.ghl_field_mark_as_lead and settings.ghl_field_mark_as_lead in field_updates:
+                        label_map["Mark as Lead"] = field_updates[settings.ghl_field_mark_as_lead]
+                    if settings.ghl_field_support_ticket_2 and settings.ghl_field_support_ticket_2 in field_updates:
+                        label_map["Support Ticket #2"] = field_updates[settings.ghl_field_support_ticket_2]
+                    if settings.ghl_field_message and settings.ghl_field_message in field_updates:
+                        label_map["Message"] = field_updates[settings.ghl_field_message]
+                    if settings.ghl_field_ai_campaign and settings.ghl_field_ai_campaign in field_updates:
+                        label_map["AI Campaign"] = field_updates[settings.ghl_field_ai_campaign]
+                    if settings.ghl_field_support_ticket_4 and settings.ghl_field_support_ticket_4 in field_updates:
+                        label_map["Support Ticket #4"] = field_updates[settings.ghl_field_support_ticket_4]
+                    log_shadow_action(
+                        session,
+                        contact_id=contact_id or "unknown",
+                        action_type="ghl_contact_update",
+                        payload={
+                            "operation": "update_ghl_after_vm_message",
+                            "channel": channel,
+                            "fields": label_map,
+                        },
+                    )
 
             logger.info(
                 "update_ghl_after_vm_message: done | contact_id=%s fields=%s",

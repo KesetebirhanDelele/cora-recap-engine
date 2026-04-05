@@ -123,14 +123,17 @@ def normalize_synthflow_payload(body: dict[str, Any]) -> dict[str, Any]:
     # Inference rules (case-insensitive, checked in priority order):
     #   "coldlead" or "cold lead" in Agent → "Cold Lead"
     #   "newlead"  or "new lead"  in Agent → "New Lead"
+    #   "inbound"                 in Agent → "Inbound"
     #
-    # If neither keyword matches, the payload campaign_name is preserved as-is;
+    # If no keyword matches, the payload campaign_name is preserved as-is;
     # if that is also absent, we default to "New Lead" as a last resort.
     agent_raw = (payload.get("Agent") or payload.get("agent") or "").lower()
     if "coldlead" in agent_raw or "cold lead" in agent_raw:
         inferred_campaign = "Cold Lead"
     elif "newlead" in agent_raw or "new lead" in agent_raw:
         inferred_campaign = "New Lead"
+    elif "inbound" in agent_raw:
+        inferred_campaign = "Inbound"
     else:
         inferred_campaign = None
 
