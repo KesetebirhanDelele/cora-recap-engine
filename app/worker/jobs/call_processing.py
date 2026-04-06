@@ -59,6 +59,17 @@ _COMPLETED_STATUSES = frozenset({"completed"})
 # Statuses that are transient — may recover with a retry
 _PENDING_STATUSES = frozenset({"queue", "in-progress"})
 
+# Call statuses that represent a terminal failure — no audio, no transcript.
+# These are expected Synthflow outcomes that need no downstream AI processing
+# and should not raise an operator exception.
+_FAILED_STATUSES = frozenset({
+    "failed",
+    "no-answer",
+    "busy",
+    "cancelled",
+    "error",
+})
+
 
 def normalize_synthflow_outcome(payload: dict[str, Any]) -> str:
     """
@@ -290,6 +301,16 @@ def process_call_event(job_id: str) -> None:
                     campaign_name=payload.get("campaign_name"),
                     lead_name=payload.get("lead_name", "") or payload.get("name", ""),
                 )
+            elif call_status in _FAILED_STATUSES:
+                # Terminal failure from Synthflow (no audio / no connection).
+                # Call event row is already written for audit. No AI processing
+                # is needed and no operator exception is warranted — this is a
+                # normal telephony outcome (busy, no-answer, line error, etc.).
+                logger.info(
+                    "process_call_event: terminal failure status %r — "
+                    "completing without downstream processing | call_id=%s job_id=%s",
+                    call_status, call_id, job_id,
+                )
             elif call_status in _PENDING_STATUSES:
                 logger.warning(
                     "process_call_event: call still in progress | call_id=%s status=%s",
@@ -304,9 +325,9 @@ def process_call_event(job_id: str) -> None:
                     entity_id=call_id,
                 )
             else:
-                # Unknown status — log, write the call_event row (already done), then
-                # route to call-through as the safest default so the call is not silently
-                # dropped. An exception record is created for operator visibility.
+                # Genuinely unrecognised status — route to call-through as the
+                # safest default so the call is not silently dropped, and surface
+                # an exception for operator visibility.
                 logger.warning(
                     "process_call_event: unrecognised status %r, defaulting to "
                     "call-through path | call_id=%s job_id=%s",

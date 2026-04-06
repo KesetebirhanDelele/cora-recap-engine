@@ -1,14 +1,16 @@
-import { fetchMetrics } from "@/lib/api";
+import PageShell from "@/components/PageShell";
 import ExceptionQueue from "@/components/ExceptionQueue";
 
 export const revalidate = 0;
 
-export default async function ExceptionsPage() {
-  const metrics = await fetchMetrics();
+export default function ExceptionsPage() {
   return (
-    <main style={{ padding: "1.5rem" }}>
-      <h1>Exception Queue</h1>
-      <ExceptionQueue queue={metrics.queue} />
-    </main>
+    <PageShell
+      title="Exception Queue"
+      subtitle="Open exception records — click any row to expand context and details."
+      fullWidth
+    >
+      <ExceptionQueue />
+    </PageShell>
   );
 }

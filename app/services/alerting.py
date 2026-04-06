@@ -239,7 +239,7 @@ def _evaluate_ghl_auth_failure(
 
     row = session.execute(text("""
         SELECT COUNT(*) FROM exceptions
-        WHERE exception_type = 'ghl_auth_failed' AND status = 'open'
+        WHERE type = 'ghl_auth_failed' AND status = 'open'
     """)).fetchone()
     count = int(row[0]) if row else 0
 

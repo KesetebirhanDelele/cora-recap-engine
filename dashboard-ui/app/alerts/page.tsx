@@ -1,22 +1,15 @@
-import { fetchAlerts } from "@/lib/api";
-import AlertBanner from "@/components/AlertBanner";
-import type { AlertStatus } from "@/types";
+import PageShell from "@/components/PageShell";
+import AlertsClient from "@/components/AlertsClient";
 
 export const revalidate = 0;
 
-export default async function AlertsPage({
-  searchParams,
-}: {
-  searchParams?: Promise<{ status?: string }>;
-}) {
-  const { status } = (await searchParams) ?? {};
-  const statusParam = (status ?? "active") as AlertStatus;
-  const { alerts } = await fetchAlerts(statusParam);
-
+export default function AlertsPage() {
   return (
-    <main style={{ padding: "1.5rem" }}>
-      <h1>Alerts</h1>
-      <AlertBanner alerts={alerts} />
-    </main>
+    <PageShell
+      title="Alerts"
+      subtitle="Active threshold alerts — queue lag, error spikes, and worker status."
+    >
+      <AlertsClient />
+    </PageShell>
   );
 }

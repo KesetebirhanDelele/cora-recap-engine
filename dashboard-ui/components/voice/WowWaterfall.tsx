@@ -1,0 +1,125 @@
+"use client";
+
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, Cell, ReferenceLine, ResponsiveContainer, LabelList,
+} from "recharts";
+import type { TooltipProps } from "recharts";
+
+interface Props {
+  wowChanges: Record<string, number | null>;
+  height?: number | string;
+}
+
+const METRIC_LABELS: { key: string; label: string }[] = [
+  { key: "unique_contacts",    label: "Unique\nContacts" },
+  { key: "booking_rate",       label: "Booking\nRate" },
+  { key: "total_calls",        label: "Calls" },
+  { key: "completion_rate",    label: "Completion\nRate" },
+  { key: "avg_call_duration_sec", label: "Call\nDuration" },
+  { key: "pickup_rate",        label: "Pickup\nRate" },
+  { key: "voicemail_rate",     label: "Voicemail\nRate" },
+  { key: "failed_rate",        label: "Failed\nRate" },
+];
+
+function CustomTooltip({ active, payload, label }: TooltipProps<number, string>) {
+  if (!active || !payload?.length) return null;
+  const val = payload[0]?.value as number;
+  const isUp = val >= 0;
+  return (
+    <div
+      style={{
+        background: "#ffffff",
+        border: "1px solid #e2e8f0",
+        borderRadius: 6,
+        padding: "0.5rem 0.75rem",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+        fontSize: "0.8rem",
+      }}
+    >
+      <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 4 }}>{label}</div>
+      <div style={{ color: isUp ? "#16a34a" : "#dc2626", fontWeight: 600 }}>
+        {isUp ? "▲" : "▼"} {Math.abs(val).toFixed(1)}% WoW
+      </div>
+    </div>
+  );
+}
+
+function LabelFormatter({ x, y, width, value }: { x?: number; y?: number; width?: number; value?: number }) {
+  if (value === null || value === undefined || !x || !y || !width) return null;
+  const isUp = value >= 0;
+  const labelY = isUp ? (y ?? 0) - 6 : (y ?? 0) + 16;
+  return (
+    <text
+      x={(x ?? 0) + (width ?? 0) / 2}
+      y={labelY}
+      fill={isUp ? "#16a34a" : "#dc2626"}
+      fontSize={10}
+      fontWeight={700}
+      textAnchor="middle"
+    >
+      {isUp ? "▲" : "▼"}{Math.abs(value).toFixed(1)}%
+    </text>
+  );
+}
+
+export default function WowWaterfall({ wowChanges, height = "100%" }: Props) {
+  const data = METRIC_LABELS.map(({ key, label }) => ({
+    metric: label,
+    wow: wowChanges[key] ?? 0,
+    isNull: wowChanges[key] === null,
+  }));
+
+  const allNull = data.every((d) => d.isNull);
+  if (allNull) {
+    return (
+      <div style={{ color: "#94a3b8", padding: "2rem", textAlign: "center", fontSize: "0.875rem" }}>
+        No prior period data for WoW comparison
+      </div>
+    );
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data} margin={{ top: 18, right: 12, left: 4, bottom: 28 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+        <XAxis
+          dataKey="metric"
+          stroke="#e2e8f0"
+          tick={{ fill: "#475569", fontSize: 10 }}
+          interval={0}
+          label={{
+            value: "Metric",
+            position: "insideBottom",
+            offset: -24,
+            style: { fill: "#94a3b8", fontSize: 11, fontWeight: 600 },
+          }}
+        />
+        <YAxis
+          stroke="#e2e8f0"
+          tick={{ fill: "#64748b", fontSize: 11 }}
+          tickFormatter={(v) => `${v}%`}
+          label={{
+            value: "WoW Change (%)",
+            angle: -90,
+            position: "insideLeft",
+            offset: 12,
+            style: { fill: "#94a3b8", fontSize: 11, fontWeight: 600 },
+          }}
+        />
+        <Tooltip content={<CustomTooltip />} cursor={{ fill: "#f8fafc" }} />
+        <ReferenceLine y={0} stroke="#94a3b8" strokeWidth={1.5} />
+        <Bar dataKey="wow" radius={[3, 3, 0, 0]}>
+          <LabelList content={<LabelFormatter />} dataKey="wow" />
+          {data.map((entry, index) => (
+            <Cell
+              key={`cell-${index}`}
+              fill={entry.isNull ? "#e2e8f0" : entry.wow >= 0 ? "#16a34a" : "#dc2626"}
+              fillOpacity={entry.isNull ? 0.5 : 0.85}
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}

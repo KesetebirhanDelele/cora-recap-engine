@@ -1,4 +1,5 @@
 import { fetchLeadTrace } from "@/lib/api";
+import PageShell from "@/components/PageShell";
 import PipelineTrace from "@/components/PipelineTrace";
 
 export const revalidate = 0;
@@ -24,17 +25,30 @@ export default async function LeadTracePage({
     error = err.status === 404 ? "Lead not found" : String(e);
   }
 
+  const labelType = id.startsWith("+") || /^\d+$/.test(id) ? "Phone" : "Contact ID";
+
   return (
-    <main style={{ padding: "1.5rem" }}>
-      <h1>Lead Pipeline Trace</h1>
-      <p style={{ color: "#94a3b8" }}>
-        {id.startsWith("+") || /^\d+$/.test(id) ? "Phone" : "Contact ID"}: {id}
-      </p>
+    <PageShell
+      title="Lead Pipeline Trace"
+      subtitle={`${labelType}: ${id}`}
+    >
       {error ? (
-        <p style={{ color: "#f87171" }}>{error}</p>
+        <div
+          style={{
+            background: "#fef2f2",
+            border: "1px solid #fecaca",
+            borderLeft: "3px solid #ef4444",
+            borderRadius: 8,
+            padding: "1rem 1.25rem",
+            color: "#dc2626",
+            fontSize: "0.875rem",
+          }}
+        >
+          {error}
+        </div>
       ) : (
         <PipelineTrace trace={trace!} />
       )}
-    </main>
+    </PageShell>
   );
 }

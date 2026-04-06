@@ -6,68 +6,130 @@ interface Props {
   queue: MetricsResponse["queue"];
 }
 
+function SectionHeader({ label, count }: { label: string; count: number }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: "0.625rem", marginBottom: "0.875rem" }}>
+      <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        {label}
+      </span>
+      <span style={{
+        background: count > 0 ? "#fef2f2" : "#f1f5f9",
+        color: count > 0 ? "#dc2626" : "#94a3b8",
+        border: `1px solid ${count > 0 ? "#fecaca" : "#e2e8f0"}`,
+        borderRadius: 99,
+        padding: "0 0.5rem",
+        fontSize: "0.7rem",
+        fontWeight: 700,
+        lineHeight: "1.5rem",
+      }}>
+        {count}
+      </span>
+    </div>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div style={{
+      background: "#ffffff",
+      border: "1px solid #e2e8f0",
+      borderRadius: 8,
+      padding: "1.5rem",
+      textAlign: "center",
+      color: "#94a3b8",
+      fontSize: "0.8rem",
+    }}>
+      {message}
+    </div>
+  );
+}
+
+const thStyle: React.CSSProperties = {
+  padding: "0.5rem 0.75rem",
+  fontSize: "0.7rem",
+  fontWeight: 700,
+  color: "#64748b",
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  textAlign: "left",
+  borderBottom: "1px solid #e2e8f0",
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: "0.625rem 0.75rem",
+  fontSize: "0.8rem",
+  color: "#374151",
+  borderBottom: "1px solid #f1f5f9",
+};
+
 export default function QueueTable({ queue }: Props) {
   return (
-    <div>
-      <h2 style={{ marginBottom: "1rem" }}>Stuck Jobs ({queue.stuck_jobs.length})</h2>
-      {queue.stuck_jobs.length === 0 ? (
-        <p style={{ color: "#475569" }}>No stuck jobs.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
-          <thead>
-            <tr style={{ color: "#94a3b8", textAlign: "left", borderBottom: "1px solid #334155" }}>
-              <th style={{ padding: "0.5rem" }}>Job Type</th>
-              <th style={{ padding: "0.5rem" }}>Contact</th>
-              <th style={{ padding: "0.5rem" }}>Run At</th>
-              <th style={{ padding: "0.5rem" }}>Lag</th>
-            </tr>
-          </thead>
-          <tbody>
-            {queue.stuck_jobs.map((j) => (
-              <tr key={j.job_id} style={{ borderBottom: "1px solid #1e293b" }}>
-                <td style={{ padding: "0.5rem" }}>{j.job_type}</td>
-                <td style={{ padding: "0.5rem" }}>
-                  {j.contact_id ? (
-                    <a href={`/lead/${j.contact_id}`} style={{ color: "#3b82f6" }}>
-                      {j.contact_id}
-                    </a>
-                  ) : "—"}
-                </td>
-                <td style={{ padding: "0.5rem", color: "#94a3b8" }}>
-                  {new Date(j.run_at).toLocaleString()}
-                </td>
-                <td style={{ padding: "0.5rem", color: "#f97316" }}>{j.lag_seconds}s</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+    <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
+      <div>
+        <SectionHeader label="Stuck Jobs" count={queue.stuck_jobs.length} />
+        {queue.stuck_jobs.length === 0 ? (
+          <EmptyState message="No stuck jobs — queue is healthy." />
+        ) : (
+          <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
+              <thead style={{ background: "#f8fafc" }}>
+                <tr>
+                  <th style={thStyle}>Job Type</th>
+                  <th style={thStyle}>Contact</th>
+                  <th style={thStyle}>Run At</th>
+                  <th style={thStyle}>Lag</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.stuck_jobs.map((j) => (
+                  <tr key={j.job_id}>
+                    <td style={tdStyle}>{j.job_type}</td>
+                    <td style={tdStyle}>
+                      {j.contact_id ? (
+                        <a href={`/lead/${j.contact_id}`} style={{ color: "#2563eb", textDecoration: "none", fontWeight: 500 }}>
+                          {j.contact_id}
+                        </a>
+                      ) : "—"}
+                    </td>
+                    <td style={{ ...tdStyle, color: "#64748b" }}>
+                      {new Date(j.run_at).toLocaleString()}
+                    </td>
+                    <td style={{ ...tdStyle, color: "#ea580c", fontWeight: 700 }}>{j.lag_seconds}s</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
-      <h2 style={{ marginTop: "2rem", marginBottom: "1rem" }}>
-        Expired Leases ({queue.expired_leases.length})
-      </h2>
-      {queue.expired_leases.length === 0 ? (
-        <p style={{ color: "#475569" }}>No expired leases.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
-          <thead>
-            <tr style={{ color: "#94a3b8", textAlign: "left", borderBottom: "1px solid #334155" }}>
-              <th style={{ padding: "0.5rem" }}>Job Type</th>
-              <th style={{ padding: "0.5rem" }}>Worker</th>
-              <th style={{ padding: "0.5rem" }}>Expired Ago</th>
-            </tr>
-          </thead>
-          <tbody>
-            {queue.expired_leases.map((l) => (
-              <tr key={l.job_id} style={{ borderBottom: "1px solid #1e293b" }}>
-                <td style={{ padding: "0.5rem" }}>{l.job_type}</td>
-                <td style={{ padding: "0.5rem", color: "#94a3b8" }}>{l.worker_id}</td>
-                <td style={{ padding: "0.5rem", color: "#ef4444" }}>{l.age_seconds}s</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <div>
+        <SectionHeader label="Expired Leases" count={queue.expired_leases.length} />
+        {queue.expired_leases.length === 0 ? (
+          <EmptyState message="No expired leases." />
+        ) : (
+          <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
+              <thead style={{ background: "#f8fafc" }}>
+                <tr>
+                  <th style={thStyle}>Job Type</th>
+                  <th style={thStyle}>Worker</th>
+                  <th style={thStyle}>Expired Ago</th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.expired_leases.map((l) => (
+                  <tr key={l.job_id}>
+                    <td style={tdStyle}>{l.job_type}</td>
+                    <td style={{ ...tdStyle, color: "#64748b" }}>{l.worker_id}</td>
+                    <td style={{ ...tdStyle, color: "#dc2626", fontWeight: 700 }}>{l.age_seconds}s</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
