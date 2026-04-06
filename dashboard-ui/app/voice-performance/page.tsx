@@ -43,7 +43,7 @@ const CARD: React.CSSProperties = {
 };
 
 const SECTION_LABEL: React.CSSProperties = {
-  fontSize: "0.68rem",
+  fontSize: "0.85rem",
   fontWeight: 700,
   color: "#b45309",
   textTransform: "uppercase",
@@ -97,10 +97,7 @@ export default function VoicePerformancePage() {
   const kpis             = data?.kpis               ?? EMPTY_KPIS;
   const wowChanges       = data?.wow_changes         ?? {};
   const timeSeries       = data?.time_series         ?? [];
-  const campaignBreakdown = (data?.campaign_breakdown ?? []).filter((d) => {
-    const n = d.campaign.toLowerCase();
-    return n.includes("cold") || n.includes("new") || n.includes("inbound");
-  });
+  const campaignBreakdown = data?.campaign_breakdown ?? [];
 
   return (
     /*
@@ -133,21 +130,21 @@ export default function VoicePerformancePage() {
       >
         <Link
           href="/"
-          style={{ color: "#64748b", textDecoration: "none", fontSize: "0.75rem" }}
+          style={{ color: "#64748b", textDecoration: "none", fontSize: "0.9rem" }}
         >
           ← Dashboard
         </Link>
         <span style={{ color: "#e2e8f0" }}>|</span>
-        <span style={{ fontSize: "0.8rem", fontWeight: 600, color: "#1e293b" }}>
+        <span style={{ fontSize: "1rem", fontWeight: 600, color: "#1e293b" }}>
           Voice Call Performance Review
         </span>
         {loading && (
-          <span style={{ marginLeft: "auto", fontSize: "0.7rem", color: "#94a3b8" }}>
+          <span style={{ marginLeft: "auto", fontSize: "0.875rem", color: "#94a3b8" }}>
             Refreshing…
           </span>
         )}
         {error && (
-          <span style={{ marginLeft: "auto", fontSize: "0.7rem", color: "#ef4444" }}>
+          <span style={{ marginLeft: "auto", fontSize: "0.875rem", color: "#ef4444" }}>
             ⚠ {error}
           </span>
         )}
@@ -213,7 +210,7 @@ export default function VoicePerformancePage() {
             <div>
               <div
                 style={{
-                  fontSize: "1rem",
+                  fontSize: "1.2rem",
                   fontWeight: 700,
                   color: "#b45309",
                   letterSpacing: "-0.01em",
@@ -223,7 +220,7 @@ export default function VoicePerformancePage() {
                 Cora Voice AI Agent Performance Overview
               </div>
               {data && (
-                <div style={{ fontSize: "0.68rem", color: "#94a3b8", marginTop: 2 }}>
+                <div style={{ fontSize: "0.85rem", color: "#94a3b8", marginTop: 2 }}>
                   {data.period.from.slice(0, 10)} → {data.period.to.slice(0, 10)}
                   {" · "}{data.kpis.total_calls.toLocaleString()} calls
                 </div>
@@ -251,7 +248,7 @@ export default function VoicePerformancePage() {
           >
             <div style={SECTION_LABEL}>
               <span>📈</span> Trends Over Time
-              <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.62rem" }}>
+              <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
                 — stacked calls by campaign + rate lines
               </span>
             </div>
@@ -305,7 +302,7 @@ export default function VoicePerformancePage() {
             >
               <div style={SECTION_LABEL}>
                 <span>🎯</span> Are we wasting calls?
-                <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.62rem" }}>
+                <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
                   — pickup vs booking %, bubble = calls
                 </span>
               </div>

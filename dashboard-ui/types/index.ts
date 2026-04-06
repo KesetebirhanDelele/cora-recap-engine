@@ -231,6 +231,19 @@ export interface VoiceKpis {
   booking_rate: number | null;
 }
 
+export interface CampaignWeekStats {
+  total_calls: number;
+  unique_contacts: number;
+  booked_appts: number;
+  calls_per_day: number;
+  completion_rate: number | null;
+  pickup_rate: number | null;
+  voicemail_rate: number | null;
+  failed_rate: number | null;
+  booking_rate: number | null;
+  avg_call_duration_sec: number;
+}
+
 export interface VoiceTimeSeriesPoint {
   date: string;
   cold: number;
@@ -245,6 +258,9 @@ export interface VoiceTimeSeriesPoint {
   unique_contacts: number;
   calls_per_day: number;
   avg_call_duration_sec: number;
+  cold_stats?: CampaignWeekStats;
+  inbound_stats?: CampaignWeekStats;
+  new_lead_stats?: CampaignWeekStats;
 }
 
 export interface VoiceCampaignBreakdown {

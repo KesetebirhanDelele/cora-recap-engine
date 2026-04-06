@@ -12,17 +12,21 @@ interface Props {
   height?: number | string;
 }
 
-const CAMPAIGN_COLORS: Record<string, string> = {
-  "Cold Lead": "#2563eb",
-  "Inbound":   "#f59e0b",
-  "New Lead":  "#16a34a",
-};
+// The three canonical campaigns — fixed colors, fixed order, no others rendered.
+const CAMPAIGNS: { label: string; color: string }[] = [
+  { label: "Cold Lead", color: "#2563eb" },
+  { label: "New Lead",  color: "#16a34a" },
+  { label: "Inbound",   color: "#0891b2" },
+];
 
-function campaignColor(name: string): string {
-  for (const [key, color] of Object.entries(CAMPAIGN_COLORS)) {
-    if (name.toLowerCase().includes(key.toLowerCase().split(" ")[0])) return color;
-  }
-  return "#64748b";
+// Strict normalization: startsWith on trimmed lowercase prevents partial
+// matches from producing spurious extra series.
+function normalizeCampaign(name: string): string | null {
+  const n = name.trim().toLowerCase();
+  if (n === "cold lead" || n.startsWith("cold")) return "Cold Lead";
+  if (n === "new lead"  || n.startsWith("new"))  return "New Lead";
+  if (n === "inbound"   || n.startsWith("inbound")) return "Inbound";
+  return null;
 }
 
 function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
@@ -37,11 +41,11 @@ function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
         borderRadius: 8,
         padding: "0.6rem 0.875rem",
         boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-        fontSize: "0.8rem",
-        minWidth: 190,
+        fontSize: "0.95rem",
+        minWidth: 200,
       }}
     >
-      <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 6, fontSize: "0.85rem" }}>
+      <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 6, fontSize: "1rem" }}>
         {d.campaign}
       </div>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
@@ -72,12 +76,32 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
     );
   }
 
-  // Group data by campaign type for separate Scatter series (needed for legend)
-  const grouped: Record<string, VoiceCampaignBreakdown[]> = {};
+  // Normalize incoming data to canonical campaign names and merge duplicates.
+  // Only the three known campaigns appear; anything else is dropped.
+  const merged: Record<string, VoiceCampaignBreakdown> = {};
   for (const d of data) {
-    grouped[d.campaign] = grouped[d.campaign] ?? [];
-    grouped[d.campaign].push(d);
+    const label = normalizeCampaign(d.campaign);
+    if (!label) continue;
+    if (!merged[label]) {
+      merged[label] = { ...d, campaign: label };
+    } else {
+      // Merge by summing calls, then recompute rates
+      const prev = merged[label];
+      const totalCalls = prev.total_calls + d.total_calls;
+      merged[label] = {
+        campaign: label,
+        total_calls: totalCalls,
+        pickup_rate:    totalCalls ? (prev.pickup_rate    * prev.total_calls + d.pickup_rate    * d.total_calls) / totalCalls : 0,
+        booking_rate:   totalCalls ? (prev.booking_rate   * prev.total_calls + d.booking_rate   * d.total_calls) / totalCalls : 0,
+        avg_calls_per_day: totalCalls ? (prev.avg_calls_per_day * prev.total_calls + d.avg_calls_per_day * d.total_calls) / totalCalls : 0,
+      };
+    }
   }
+
+  // Render in fixed order: Cold Lead, New Lead, Inbound — at most one bubble each
+  const series = CAMPAIGNS
+    .filter((c) => merged[c.label] !== undefined)
+    .map((c) => ({ label: c.label, color: c.color, point: merged[c.label] }));
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -88,14 +112,14 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
           dataKey="pickup_rate"
           name="Pickup Rate"
           stroke="#e2e8f0"
-          tick={{ fill: "#64748b", fontSize: 11 }}
+          tick={{ fill: "#64748b", fontSize: 13 }}
           tickFormatter={(v) => `${v}%`}
           domain={[0, "auto"]}
           label={{
             value: "Pickup Rate (%)",
             position: "insideBottom",
             offset: -20,
-            style: { fill: "#94a3b8", fontSize: 11, fontWeight: 600 },
+            style: { fill: "#94a3b8", fontSize: 13, fontWeight: 600 },
           }}
         />
         <YAxis
@@ -103,7 +127,7 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
           dataKey="booking_rate"
           name="Booked Appt %"
           stroke="#e2e8f0"
-          tick={{ fill: "#64748b", fontSize: 11 }}
+          tick={{ fill: "#64748b", fontSize: 13 }}
           tickFormatter={(v) => `${v}%`}
           domain={[0, "auto"]}
           label={{
@@ -111,7 +135,7 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
             angle: -90,
             position: "insideLeft",
             offset: 12,
-            style: { fill: "#94a3b8", fontSize: 11, fontWeight: 600 },
+            style: { fill: "#94a3b8", fontSize: 13, fontWeight: 600 },
           }}
         />
         {/* ZAxis controls bubble size based on total_calls */}
@@ -119,16 +143,16 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
         <Tooltip content={<CustomTooltip />} cursor={{ strokeDasharray: "3 3" }} />
         <Legend
           verticalAlign="top"
-          height={22}
-          wrapperStyle={{ fontSize: "0.68rem" }}
+          height={26}
+          wrapperStyle={{ fontSize: "0.85rem" }}
         />
-        {Object.entries(grouped).map(([campaign, points]) => (
+        {series.map(({ label, color, point }) => (
           <Scatter
-            key={campaign}
-            name={campaign}
-            data={points}
-            fill={campaignColor(campaign)}
-            fillOpacity={0.75}
+            key={label}
+            name={label}
+            data={[point]}
+            fill={color}
+            fillOpacity={0.8}
           />
         ))}
       </ScatterChart>

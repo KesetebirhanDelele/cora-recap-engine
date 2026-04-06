@@ -446,19 +446,29 @@ def get_voice_performance(
         d = float(r[8]) if r[8] else 0.0
 
         if wk not in weeks:
+            def _empty_camp() -> dict[str, Any]:
+                return {"t": 0, "c": 0, "v": 0, "f": 0, "b": 0, "u": 0, "dur_sum": 0.0}
             weeks[wk] = {
                 "cold": 0, "inbound": 0, "new_lead": 0,
                 "total": 0, "completed": 0, "voicemail": 0, "failed": 0,
                 "booked": 0, "unique": 0,
                 "dur_sum": 0.0, "dur_count": 0,
+                "cold_s":    _empty_camp(),
+                "inbound_s": _empty_camp(),
+                "new_lead_s":_empty_camp(),
             }
         w = weeks[wk]
+
+        camp_key: str | None = None
         if "cold" in camp:
             w["cold"] += t
+            camp_key = "cold_s"
         elif "inbound" in camp:
             w["inbound"] += t
+            camp_key = "inbound_s"
         elif "new" in camp:
             w["new_lead"] += t
+            camp_key = "new_lead_s"
 
         w["total"] += t
         w["unique"] += u
@@ -468,6 +478,33 @@ def get_voice_performance(
         w["booked"] += b
         w["dur_sum"] += d * t
         w["dur_count"] += t
+
+        if camp_key:
+            cs = w[camp_key]
+            cs["t"] += t
+            cs["c"] += c
+            cs["v"] += v
+            cs["f"] += f
+            cs["b"] += b
+            cs["u"] += u
+            cs["dur_sum"] += d * t
+
+    def _camp_stats(cs: dict[str, Any]) -> dict[str, Any]:
+        """Compute derived rates from a per-campaign accumulator."""
+        ct = cs["t"]
+        cu = cs["u"]
+        return {
+            "total_calls":         ct,
+            "unique_contacts":     cu,
+            "booked_appts":        cs["b"],
+            "calls_per_day":       round(ct / 7, 1),
+            "completion_rate":     round(cs["c"] / ct * 100, 1) if ct else None,
+            "pickup_rate":         round(cs["c"] / ct * 100, 1) if ct else None,
+            "voicemail_rate":      round(cs["v"] / ct * 100, 1) if ct else None,
+            "failed_rate":         round(cs["f"] / ct * 100, 1) if ct else None,
+            "booking_rate":        round(cs["b"] / cu * 100, 1) if cu else None,
+            "avg_call_duration_sec": round(cs["dur_sum"] / ct, 1) if ct else 0.0,
+        }
 
     time_series = []
     for wk_date in sorted(weeks):
@@ -488,6 +525,10 @@ def get_voice_performance(
             "unique_contacts": u,
             "calls_per_day": round(t / 7, 1),
             "avg_call_duration_sec": round(w["dur_sum"] / w["dur_count"], 1) if w["dur_count"] else 0.0,
+            # Per-campaign breakdowns — consumed by tooltip when hovering a bar segment
+            "cold_stats":    _camp_stats(w["cold_s"]),
+            "inbound_stats": _camp_stats(w["inbound_s"]),
+            "new_lead_stats":_camp_stats(w["new_lead_s"]),
         })
 
     # ── Campaign breakdown for scatter ────────────────────────────────────────
