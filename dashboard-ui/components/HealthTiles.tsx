@@ -196,7 +196,7 @@ export default function HealthTiles({ health }: Props) {
       {/* Primary row */}
       <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.5rem" }}>
         <PrimaryTile label="Queue Lag"        value={`${lag.toFixed(0)}s`}             icon="⏱" critical={lag > 300} warn={lag > 60} />
-        <PrimaryTile label="Open Exceptions"  value={health.open_exception_count}      icon="⚠️" critical={health.open_exception_count >= 10} warn={health.open_exception_count > 0} href="/exceptions" />
+        <PrimaryTile label="Exceptions"  value={health.open_exception_count} sublabel={`Today: ${health.today_exception_count ?? 0}`} icon="⚠️" critical={health.open_exception_count >= 10} warn={health.open_exception_count > 0} href="/exceptions" />
         <PrimaryTile label="Jobs In-Flight"   value={health.active_workers}            icon="⚡" sublabel="0 = idle, not offline" critical={health.active_workers === 0 && lag > 60} />
       </div>
 

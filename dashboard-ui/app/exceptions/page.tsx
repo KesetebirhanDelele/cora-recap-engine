@@ -1,16 +1,16 @@
 import PageShell from "@/components/PageShell";
-import ExceptionQueue from "@/components/ExceptionQueue";
+import ExceptionsMonitor from "@/components/ExceptionQueue";
 
 export const revalidate = 0;
 
 export default function ExceptionsPage() {
   return (
     <PageShell
-      title="Exception Queue"
-      subtitle="Open exception records — click any row to expand context and details."
+      title="Exceptions Monitor"
+      subtitle="Real-time operational issues requiring attention — resolve, ignore, or investigate each exception."
       fullWidth
     >
-      <ExceptionQueue />
+      <ExceptionsMonitor />
     </PageShell>
   );
 }

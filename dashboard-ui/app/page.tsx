@@ -22,7 +22,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
     category: "operations",
     items: [
       { href: "/activity",    title: "Live Activity", icon: "⚡", description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
-      { href: "/exceptions",  title: "Exceptions",    icon: "⚠️", description: "Open exceptions needing action.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
+      { href: "/exceptions",  title: "Exceptions Monitor", icon: "⚠️", description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
       { href: "/queue",       title: "Queue Health",  icon: "⚙️", description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
       { href: "/alerts",      title: "Alerts",        icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
     ],
@@ -40,7 +40,8 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
     label: "System",
     category: "system",
     items: [
-      { href: "/crm-health", title: "CRM Health", icon: "🔗", description: "GHL task & VM update rates.", category: "system" },
+      { href: "/crm-health",        title: "CRM Health",       icon: "🔗", description: "GHL task & VM update rates.",       category: "system" },
+      { href: "/system-anomalies",  title: "System Anomalies", icon: "📊", description: "Spikes & unusual patterns.",         category: "system" },
     ],
   },
 ];
@@ -195,7 +196,7 @@ export default async function HomePage() {
           height: 200,
           padding: "0 1.5rem 0.875rem",
           display: "grid",
-          gridTemplateColumns: "4fr 3fr 1fr",
+          gridTemplateColumns: "4fr 3fr 2fr",
           gap: "0.75rem",
           overflow: "hidden",
         }}

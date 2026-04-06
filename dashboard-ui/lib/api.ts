@@ -15,7 +15,9 @@ import type {
   BulkIgnoreRequest,
   CancelRequest,
   EventsResponse,
+  ExceptionAnomaliesResponse,
   ExceptionsResponse,
+  ExceptionTrendResponse,
   FinalizeRequest,
   HealthResponse,
   IgnoreRequest,
@@ -115,16 +117,34 @@ export async function fetchExceptions(options?: {
   status?: "open" | "resolved" | "ignored";
   severity?: string;
   type?: string;
+  from_date?: string;
+  to_date?: string;
   limit?: number;
   offset?: number;
 }): Promise<ExceptionsResponse> {
   const params: Record<string, string> = {};
-  if (options?.status)   params.status   = options.status;
-  if (options?.severity) params.severity = options.severity;
-  if (options?.type)     params.type     = options.type;
-  if (options?.limit)    params.limit    = String(options.limit);
-  if (options?.offset)   params.offset   = String(options.offset);
+  if (options?.status)     params.status     = options.status;
+  if (options?.severity)   params.severity   = options.severity;
+  if (options?.type)       params.type       = options.type;
+  if (options?.from_date)  params.from_date  = options.from_date;
+  if (options?.to_date)    params.to_date    = options.to_date;
+  if (options?.limit)      params.limit      = String(options.limit);
+  if (options?.offset)     params.offset     = String(options.offset);
   return get<ExceptionsResponse>("/dashboard/exceptions", params);
+}
+
+export async function fetchExceptionTrend(options?: {
+  from_date?: string;
+  to_date?: string;
+}): Promise<ExceptionTrendResponse> {
+  const params: Record<string, string> = {};
+  if (options?.from_date) params.from_date = options.from_date;
+  if (options?.to_date)   params.to_date   = options.to_date;
+  return get<ExceptionTrendResponse>("/dashboard/exceptions/trend", params);
+}
+
+export async function fetchExceptionAnomalies(): Promise<ExceptionAnomaliesResponse> {
+  return get<ExceptionAnomaliesResponse>("/dashboard/exceptions/anomalies");
 }
 
 export async function fetchAiTimeSeries(options?: {

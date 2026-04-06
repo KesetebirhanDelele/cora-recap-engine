@@ -72,7 +72,9 @@
       "Bash(git -C /c/Users/keset/cora-recap-engine status --short)",
       "Bash(git -C /c/Users/keset/cora-recap-engine status --short dashboard-ui/)",
       "Bash(git -C /c/Users/keset/cora-recap-engine ls-files dashboard-ui/node_modules)",
-      "Bash(python -m pytest tests/unit/test_dashboard_v2.py -q --tb=short)"
+      "Bash(python -m pytest tests/unit/test_dashboard_v2.py -q --tb=short)",
+      "Bash(find /c/Users/keset/cora-recap-engine/dashboard-ui/app -name \"page.tsx\" -exec wc -l {} +)",
+      "Bash(grep -l \"recharts\" c:/Users/keset/cora-recap-engine/dashboard-ui/app/**/*.tsx)"
     ]
   }
 }

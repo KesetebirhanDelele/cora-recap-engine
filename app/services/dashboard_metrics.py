@@ -65,6 +65,21 @@ def get_health(session: Session) -> dict[str, Any]:
     )).fetchone()
     open_exception_count = int(exc_row[0]) if exc_row else 0
 
+    # Today's exception count (created since UTC midnight)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_exc_row = session.execute(text("""
+        SELECT COUNT(*) FROM exceptions WHERE created_at >= :today_start
+    """), {"today_start": today_start}).fetchone()
+    today_exception_count = int(today_exc_row[0]) if today_exc_row else 0
+
+    # Resolved in last 24h
+    window_24h = now - timedelta(hours=24)
+    resolved_row = session.execute(text("""
+        SELECT COUNT(*) FROM exceptions
+        WHERE status = 'resolved' AND updated_at >= :window
+    """), {"window": window_24h}).fetchone()
+    resolved_last_24h = int(resolved_row[0]) if resolved_row else 0
+
     # Stuck jobs
     stuck_row = session.execute(text("""
         SELECT COUNT(*) FROM scheduled_jobs
@@ -103,6 +118,8 @@ def get_health(session: Session) -> dict[str, Any]:
         "queue_lag_seconds": round(queue_lag, 1),
         "active_workers": active_workers,
         "open_exception_count": open_exception_count,
+        "today_exception_count": today_exception_count,
+        "resolved_last_24h": resolved_last_24h,
         "stuck_job_count": stuck_job_count,
         "expired_lease_count": expired_lease_count,
         "jobs_completed_last_5m": jobs_completed_5m,
@@ -580,4 +597,180 @@ def get_ai_timeseries(
     return {
         "period": {"from": from_dt.isoformat(), "to": to_dt.isoformat()},
         "time_series": time_series,
+    }
+
+
+# ── Exception Trend ───────────────────────────────────────────────────────────
+
+def get_exception_trend(
+    session: Session,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> dict[str, Any]:
+    """
+    Daily exception counts grouped by type.
+    Returns a list of {date, type, count} points for the Exceptions Monitor trend chart.
+    Default window: last 30 days.
+    """
+    now = datetime.now(tz=timezone.utc)
+    to_dt = to_date or now
+    from_dt = from_date or (now - timedelta(days=30))
+
+    rows = session.execute(text("""
+        SELECT
+            date_trunc('day', created_at)::date AS day,
+            type,
+            COUNT(*) AS cnt
+        FROM exceptions
+        WHERE created_at BETWEEN :from_dt AND :to_dt
+        GROUP BY date_trunc('day', created_at)::date, type
+        ORDER BY day ASC, cnt DESC
+    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+
+    points = [
+        {
+            "date": str(r[0]),
+            "type": r[1],
+            "count": int(r[2]),
+        }
+        for r in rows
+    ]
+
+    return {
+        "period": {"from": from_dt.isoformat(), "to": to_dt.isoformat()},
+        "points": points,
+    }
+
+
+# ── Exception Anomalies ───────────────────────────────────────────────────────
+
+def get_exception_anomalies(session: Session) -> dict[str, Any]:
+    """
+    Detect patterns, spikes, and abnormal behavior in exception data.
+
+    Returns:
+      spikes       — types where last-24h count > 2x the prior-7-day daily average
+      recurring    — top exception types by frequency (last 30 days)
+      clusters     — contacts/entities with the most repeated failures (last 7 days)
+      trend        — daily total exception count for the last 14 days (anomaly frequency)
+    """
+    now = datetime.now(tz=timezone.utc)
+    window_24h = now - timedelta(hours=24)
+    window_7d = now - timedelta(days=7)
+    window_30d = now - timedelta(days=30)
+    window_14d = now - timedelta(days=14)
+
+    # ── Spike detection: last 24h vs prior 7-day average ─────────────────────
+    recent_rows = session.execute(text("""
+        SELECT type, COUNT(*) AS cnt
+        FROM exceptions
+        WHERE created_at >= :since
+        GROUP BY type
+    """), {"since": window_24h}).fetchall()
+    recent_counts = {r[0]: int(r[1]) for r in recent_rows}
+
+    baseline_rows = session.execute(text("""
+        SELECT type, COUNT(*) AS cnt
+        FROM exceptions
+        WHERE created_at BETWEEN :from_dt AND :to_dt
+        GROUP BY type
+    """), {"from_dt": window_7d - timedelta(days=7), "to_dt": window_7d}).fetchall()
+    # Daily average over prior 7-day window
+    baseline_daily = {r[0]: int(r[1]) / 7.0 for r in baseline_rows}
+
+    spikes = []
+    for exc_type, recent_cnt in sorted(recent_counts.items(), key=lambda x: -x[1]):
+        baseline = baseline_daily.get(exc_type, 0)
+        if baseline == 0:
+            # No prior history — flag if > 3 occurrences in 24h
+            if recent_cnt >= 3:
+                spikes.append({
+                    "type": exc_type,
+                    "recent_24h": recent_cnt,
+                    "baseline_daily_avg": 0.0,
+                    "spike_factor": None,
+                    "is_new_type": True,
+                })
+        elif recent_cnt > 2 * baseline:
+            spikes.append({
+                "type": exc_type,
+                "recent_24h": recent_cnt,
+                "baseline_daily_avg": round(baseline, 2),
+                "spike_factor": round(recent_cnt / baseline, 1),
+                "is_new_type": False,
+            })
+
+    # ── Recurring issues: top types by total count (last 30 days) ────────────
+    recurring_rows = session.execute(text("""
+        SELECT type, severity, COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE status = 'open') AS open_cnt,
+               COUNT(*) FILTER (WHERE status = 'resolved') AS resolved_cnt,
+               MIN(created_at) AS first_seen,
+               MAX(created_at) AS last_seen
+        FROM exceptions
+        WHERE created_at >= :since
+        GROUP BY type, severity
+        ORDER BY total DESC
+        LIMIT 20
+    """), {"since": window_30d}).fetchall()
+
+    recurring = [
+        {
+            "type": r[0],
+            "severity": r[1],
+            "total": int(r[2]),
+            "open": int(r[3]),
+            "resolved": int(r[4]),
+            "first_seen": r[5].isoformat() if r[5] and hasattr(r[5], "isoformat") else str(r[5]),
+            "last_seen": r[6].isoformat() if r[6] and hasattr(r[6], "isoformat") else str(r[6]),
+        }
+        for r in recurring_rows
+    ]
+
+    # ── Failure clusters: contacts with most repeated failures (last 7 days) ──
+    cluster_rows = session.execute(text("""
+        SELECT entity_id, entity_type,
+               COUNT(*) AS failure_count,
+               array_agg(DISTINCT type ORDER BY type) AS exception_types,
+               MAX(created_at) AS last_failure
+        FROM exceptions
+        WHERE created_at >= :since
+          AND entity_id IS NOT NULL
+        GROUP BY entity_id, entity_type
+        HAVING COUNT(*) >= 2
+        ORDER BY failure_count DESC
+        LIMIT 15
+    """), {"since": window_7d}).fetchall()
+
+    clusters = [
+        {
+            "entity_id": r[0],
+            "entity_type": r[1],
+            "failure_count": int(r[2]),
+            "exception_types": list(r[3]) if r[3] else [],
+            "last_failure": r[4].isoformat() if r[4] and hasattr(r[4], "isoformat") else str(r[4]),
+        }
+        for r in cluster_rows
+    ]
+
+    # ── Anomaly trend: daily total exception count (last 14 days) ────────────
+    trend_rows = session.execute(text("""
+        SELECT date_trunc('day', created_at)::date AS day, COUNT(*) AS cnt
+        FROM exceptions
+        WHERE created_at >= :since
+        GROUP BY date_trunc('day', created_at)::date
+        ORDER BY day ASC
+    """), {"since": window_14d}).fetchall()
+
+    anomaly_trend = [
+        {"date": str(r[0]), "count": int(r[1])}
+        for r in trend_rows
+    ]
+
+    return {
+        "spikes": spikes,
+        "recurring": recurring,
+        "clusters": clusters,
+        "anomaly_trend": anomaly_trend,
+        "computed_at": now.isoformat(),
     }

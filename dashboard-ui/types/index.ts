@@ -10,6 +10,8 @@ export interface HealthResponse {
   queue_lag_seconds: number;
   active_workers: number;
   open_exception_count: number;
+  today_exception_count: number;
+  resolved_last_24h: number;
   stuck_job_count: number;
   expired_lease_count: number;
   jobs_completed_last_5m: number;
@@ -163,6 +165,55 @@ export interface ExceptionsResponse {
   total: number;
   status_filter: string;
   groups: ExceptionGroup[];
+}
+
+// ── Exception Trend ───────────────────────────────────────────────────────────
+
+export interface ExceptionTrendPoint {
+  date: string;
+  type: string;
+  count: number;
+}
+
+export interface ExceptionTrendResponse {
+  period: { from: string; to: string };
+  points: ExceptionTrendPoint[];
+}
+
+// ── Exception Anomalies ───────────────────────────────────────────────────────
+
+export interface ExceptionSpike {
+  type: string;
+  recent_24h: number;
+  baseline_daily_avg: number;
+  spike_factor: number | null;
+  is_new_type: boolean;
+}
+
+export interface ExceptionRecurring {
+  type: string;
+  severity: string;
+  total: number;
+  open: number;
+  resolved: number;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface ExceptionCluster {
+  entity_id: string;
+  entity_type: string | null;
+  failure_count: number;
+  exception_types: string[];
+  last_failure: string;
+}
+
+export interface ExceptionAnomaliesResponse {
+  spikes: ExceptionSpike[];
+  recurring: ExceptionRecurring[];
+  clusters: ExceptionCluster[];
+  anomaly_trend: { date: string; count: number }[];
+  computed_at: string;
 }
 
 // ── Voice Performance ─────────────────────────────────────────────────────────

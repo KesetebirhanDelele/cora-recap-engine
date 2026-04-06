@@ -169,11 +169,33 @@ def get_voice_performance(
     return _get_vp(session, from_date=from_date, to_date=to_date)
 
 
+@router.get("/exceptions/trend")
+def get_exception_trend(
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Daily exception counts grouped by type — feeds trend chart on Exceptions Monitor."""
+    from app.services.dashboard_metrics import get_exception_trend as _get_trend
+    return _get_trend(session, from_date=from_date, to_date=to_date)
+
+
+@router.get("/exceptions/anomalies")
+def get_exception_anomalies(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Spike detection, recurring issues, failure clusters — feeds System Anomalies page."""
+    from app.services.dashboard_metrics import get_exception_anomalies as _get_anomalies
+    return _get_anomalies(session)
+
+
 @router.get("/exceptions")
 def list_exceptions_v2(
     exc_status: str = Query(default="open", alias="status"),
     severity: str | None = Query(default=None),
     exc_type: str | None = Query(default=None, alias="type"),
+    from_date: datetime | None = Query(default=None, description="ISO date filter — created_at >="),
+    to_date: datetime | None = Query(default=None, description="ISO date filter — created_at <="),
     limit: int = Query(default=200, le=500),
     offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_db),
@@ -209,6 +231,12 @@ def list_exceptions_v2(
     if exc_type:
         clauses.append("type = :exc_type")
         params["exc_type"] = exc_type
+    if from_date:
+        clauses.append("created_at >= :from_date")
+        params["from_date"] = from_date
+    if to_date:
+        clauses.append("created_at <= :to_date")
+        params["to_date"] = to_date
 
     where = " AND ".join(clauses)
 
