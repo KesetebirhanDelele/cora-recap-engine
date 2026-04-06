@@ -1,6 +1,5 @@
 import { fetchHealth } from "@/lib/api";
-import HealthTiles from "@/components/HealthTiles";
-import AlertBanner from "@/components/AlertBanner";
+import SystemStatusBar from "@/components/SystemStatusBar";
 import NavigationCard, { type NavCategory } from "@/components/NavigationCard";
 import type { HealthResponse } from "@/types";
 
@@ -71,10 +70,6 @@ export default async function HomePage() {
     healthError = String(e);
   }
 
-  const recordedAt = health?.recorded_at
-    ? new Date(health.recorded_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-    : null;
-
   return (
     <div
       style={{
@@ -119,74 +114,11 @@ export default async function HomePage() {
           </p>
         </div>
 
-        {/* Right side: shadow pill + timestamp */}
-        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-          {recordedAt && (
-            <span style={{ fontSize: "0.8rem", color: "#64748b" }}>
-              Updated {recordedAt}
-            </span>
-          )}
-          {health?.shadow_mode_enabled && (
-            <span
-              style={{
-                fontSize: "0.75rem",
-                fontWeight: 700,
-                textTransform: "uppercase" as const,
-                letterSpacing: "0.08em",
-                color: "#d97706",
-                background: "#fffbeb",
-                border: "1px solid #fde68a",
-                borderRadius: 6,
-                padding: "3px 10px",
-              }}
-            >
-              ◉ Shadow Mode
-            </span>
-          )}
-          {!health?.shadow_mode_enabled && health && (
-            <span
-              style={{
-                fontSize: "0.75rem",
-                fontWeight: 700,
-                textTransform: "uppercase" as const,
-                letterSpacing: "0.08em",
-                color: "#16a34a",
-                background: "#f0fdf4",
-                border: "1px solid #bbf7d0",
-                borderRadius: 6,
-                padding: "3px 10px",
-              }}
-            >
-              ◉ Live
-            </span>
-          )}
-        </div>
       </header>
 
-      {/* ── Alert strip (zero height when empty) ────────────────────────── */}
-      <div style={{ flexShrink: 0, padding: "0 1.5rem" }}>
-        <AlertBanner />
-      </div>
-
-      {/* ── System Health ────────────────────────────────────────────────── */}
-      <div
-        style={{
-          flexShrink: 0,
-          margin: "0.625rem 1.5rem",
-          background: "#ffffff",
-          border: "1px solid #e2e8f0",
-          borderRadius: 12,
-          padding: "0.875rem 1.125rem",
-          boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
-        }}
-      >
-        {healthError ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#dc2626", fontSize: "0.8rem" }}>
-            <span>⚠</span> Health data unavailable — {healthError}
-          </div>
-        ) : (
-          <HealthTiles health={health!} />
-        )}
+      {/* ── Status bar (Option A: status strip + Option B: alert rows) ─────── */}
+      <div style={{ flexShrink: 0, padding: "0.5rem 1.5rem 0" }}>
+        <SystemStatusBar health={health} healthError={healthError} />
       </div>
 
       {/* ── Navigation groups ────────────────────────────────────────────── */}
