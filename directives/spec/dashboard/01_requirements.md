@@ -48,10 +48,24 @@
 - Funnel numbers must be derived from `call_events`, `classification_results`, and `lead_state` only.
 
 ### G. AI performance tracking
-- Show per-prompt-family metrics: call count, success rate, average latency (derived from `classification_results.created_at` minus parent `call_events.created_at`), blank transcript rate.
-- Show intent distribution: count per detected_intent value from `call_events.detected_intent`.
+- Show blank transcript rate: `call_events` where `transcript IS NULL OR transcript = ''` / total calls in range.
+- Show unknown intent rate: `call_events` where `detected_intent = 'low_confidence_audio'` / total calls with intent.
+- Show intent distribution: count per `detected_intent` value from `call_events.detected_intent`.
 - Show consent decision distribution from `summary_results.summary_consent`.
-- Show fallback rate: rows in `classification_results` where `output_json` contains fallback indicators.
+- Show intent → outcome mapping: each intent with its count, share of total calls, and booking rate (only `enrolled` = 100%; all others = 0%).
+- Show weekly AI quality trends: blank transcript rate and unknown intent rate per calendar week, via `GET /dashboard/ai-timeseries`.
+- **Must NOT show** business KPIs (pickup rate, total calls, enrollment counts) — those belong to Voice Performance and Conversion Funnel pages.
+
+### J. Conversion funnel analysis
+- Compute and display a 4-step call lifecycle funnel:
+  1. Total Calls — `call_events` count in range
+  2. Picked Up — calls with `status = 'completed'`
+  3. Engaged — calls where `detected_intent` is one of: `enrolled`, `re_engaged`, `callback_request`, `callback_with_time`, `interested_not_now`, `partial_engagement`, `human_transfer_request`, `failed_booking`, `call_later_no_time`, `request_sms`, `request_email`
+  4. Booked — calls where `detected_intent = 'enrolled'`
+- Show absolute count, % of total, step conversion rate, and drop-off % per funnel step.
+- Highlight the stage with the largest drop-off.
+- Show weekly trend line chart of pickup rate and booking rate over time (from `GET /dashboard/voice-performance` time series).
+- Accept date range filter; defaults to last 7 days.
 
 ### H. CRM sync health
 - Show GHL write success rate per write path (Path 1 / Path 2 / Path 3) derived from `task_events` and `scheduled_jobs`.
@@ -59,15 +73,12 @@
 - Show failure classification from `exceptions` where type in (`crm_task_failed`, `ghl_vm_message_update_failed`, `student_summary_delivery_failed`).
 - Shadow mode: show GHL shadow write count from `shadow_actions WHERE action_type = 'ghl_contact_update'`.
 
-### I. Business KPIs
-- Pickup rate: `call_events` with `status = 'completed'` / total calls in range.
-- Voicemail rate: `call_events` with voicemail status / total calls in range.
-- Callback completion rate: leads that had a voicemail at tier > 0 and subsequently had a completed call.
-- Campaign exit rate: leads that reached `ai_campaign_value = '3'` (terminal) / leads that entered.
-- Do-not-call rate: `lead_state.do_not_call = true` count / total leads.
-- All KPIs must support date range and campaign filter.
+### I. Business KPIs (surfaced via Voice Performance page)
+- Pickup rate, voicemail rate, failed rate, enrollment count — shown on Voice Performance page (`GET /dashboard/metrics`).
+- All KPIs support date range and campaign filter.
+- Standalone `/kpis` page **removed** (2026-04-06) — KPI data is now distributed: conversion metrics on Conversion Funnel page, AI metrics on AI Performance page, outcome trends on Voice Performance page.
 
-### J. Lead journey (enhanced)
+### K. Lead journey (enhanced)
 - Reuse existing Postgres query logic from the Streamlit Lead Journey.
 - Improve visualization with per-step duration bars, intent signal badges, and AI output expansion.
 - Show shadow-generated messages with clear shadow badge.

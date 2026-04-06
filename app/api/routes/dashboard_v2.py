@@ -147,6 +147,131 @@ def get_lead_trace(
     return result
 
 
+@router.get("/ai-timeseries")
+def get_ai_timeseries(
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Weekly AI behavior time series — intent distribution, blank rate, unknown intent rate."""
+    from app.services.dashboard_metrics import get_ai_timeseries as _get_ats
+    return _get_ats(session, from_date=from_date, to_date=to_date)
+
+
+@router.get("/voice-performance")
+def get_voice_performance(
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Voice call performance analytics — KPIs, time series, WoW, scatter data."""
+    from app.services.dashboard_metrics import get_voice_performance as _get_vp
+    return _get_vp(session, from_date=from_date, to_date=to_date)
+
+
+@router.get("/exceptions")
+def list_exceptions_v2(
+    exc_status: str = Query(default="open", alias="status"),
+    severity: str | None = Query(default=None),
+    exc_type: str | None = Query(default=None, alias="type"),
+    limit: int = Query(default=200, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    List exception records from the exceptions table.
+
+    This is the authoritative source for open_exception_count shown on the
+    health tiles. Supports filtering by status (open | resolved | ignored),
+    severity (critical | warning), and type (exact match).
+
+    Returns up to `limit` records plus a `groups` summary: per-type counts
+    used by the UI to render grouped/deduplicated views without a second round-trip.
+    """
+    from sqlalchemy import text
+
+    valid_statuses = {"open", "resolved", "ignored"}
+    if exc_status not in valid_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"status must be one of: {', '.join(valid_statuses)}",
+        )
+
+    clauses: list[str] = ["status = :exc_status"]
+    params: dict[str, Any] = {
+        "exc_status": exc_status,
+        "limit": limit,
+        "offset": offset,
+    }
+    if severity:
+        clauses.append("severity = :severity")
+        params["severity"] = severity
+    if exc_type:
+        clauses.append("type = :exc_type")
+        params["exc_type"] = exc_type
+
+    where = " AND ".join(clauses)
+
+    rows = session.execute(text(f"""
+        SELECT id, call_event_id, entity_type, entity_id,
+               type, severity, status,
+               resolution_reason, resolved_by,
+               context_json, version,
+               created_at, updated_at
+        FROM exceptions
+        WHERE {where}
+        ORDER BY created_at DESC
+        LIMIT :limit OFFSET :offset
+    """), params).fetchall()
+
+    count_params = {k: v for k, v in params.items() if k not in ("limit", "offset")}
+    total_row = session.execute(text(f"""
+        SELECT COUNT(*) FROM exceptions WHERE {where}
+    """), count_params).fetchone()
+    total = int(total_row[0]) if total_row else 0
+
+    # Per-type group counts (always unfiltered by exc_type so the sidebar totals reflect reality)
+    group_clauses: list[str] = ["status = :exc_status"]
+    group_params: dict[str, Any] = {"exc_status": exc_status}
+    if severity:
+        group_clauses.append("severity = :severity")
+        group_params["severity"] = severity
+    group_where = " AND ".join(group_clauses)
+
+    group_rows = session.execute(text(f"""
+        SELECT type, severity, COUNT(*) as cnt
+        FROM exceptions
+        WHERE {group_where}
+        GROUP BY type, severity
+        ORDER BY cnt DESC
+    """), group_params).fetchall()
+
+    groups = [
+        {"type": r[0], "severity": r[1], "count": int(r[2])}
+        for r in group_rows
+    ]
+
+    exceptions = [
+        {
+            "id": r[0],
+            "call_event_id": r[1],
+            "entity_type": r[2],
+            "entity_id": r[3],
+            "type": r[4],
+            "severity": r[5],
+            "status": r[6],
+            "resolution_reason": r[7],
+            "resolved_by": r[8],
+            "context_json": r[9] or {},
+            "version": r[10],
+            "created_at": r[11].isoformat() if r[11] and hasattr(r[11], "isoformat") else r[11],
+            "updated_at": r[12].isoformat() if r[12] and hasattr(r[12], "isoformat") else r[12],
+        }
+        for r in rows
+    ]
+    return {"exceptions": exceptions, "total": total, "status_filter": exc_status, "groups": groups}
+
+
 @router.get("/alerts")
 def get_alerts(
     alert_status: str = Query(default="active", alias="status"),
@@ -215,6 +340,11 @@ class ResolveRequest(BaseModel):
 
 class IgnoreRequest(BaseModel):
     exception_id: str
+
+
+class BulkIgnoreRequest(BaseModel):
+    type: str
+    note: str = "bulk ignored by operator"
 
 
 # ── Write endpoints (auth required) ──────────────────────────────────────────
@@ -404,7 +534,12 @@ def action_ignore(
     operator_id = auth["operator_id"]
     now = datetime.now(tz=timezone.utc)
 
-    ignored = ignore_exception(session, exception_id=body.exception_id)
+    ignored = ignore_exception(
+        session,
+        exception_id=body.exception_id,
+        resolved_by=operator_id,
+        reason="operator ignored",
+    )
 
     if not ignored:
         raise HTTPException(
@@ -426,6 +561,47 @@ def action_ignore(
     session.commit()
 
     return {"status": "ok", "audit_log_id": audit.id}
+
+
+@router.post("/actions/bulk-ignore")
+def action_bulk_ignore(
+    body: BulkIgnoreRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Bulk-ignore all open exceptions of a given type. Used to clear noise from the queue."""
+    from sqlalchemy import text
+    import uuid
+    from app.models.audit import AuditLog
+
+    operator_id = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+
+    result = session.execute(text("""
+        UPDATE exceptions
+        SET status = 'ignored',
+            resolved_by = :operator_id,
+            resolution_reason = :reason,
+            version = version + 1,
+            updated_at = :now
+        WHERE type = :exc_type AND status = 'open'
+    """), {"operator_id": operator_id, "reason": body.note, "now": now, "exc_type": body.type})
+    ignored_count = result.rowcount
+
+    audit = AuditLog(
+        id=str(uuid.uuid4()),
+        entity_type="exception",
+        entity_id=body.type,
+        action="bulk_ignore",
+        operator_id=operator_id,
+        context_json={"type": body.type, "count": ignored_count, "note": body.note},
+        created_at=now,
+    )
+    session.add(audit)
+    session.flush()
+    session.commit()
+
+    return {"status": "ok", "ignored_count": ignored_count, "audit_log_id": audit.id}
 
 
 # ── WebSocket — real-time event feed ─────────────────────────────────────────

@@ -372,6 +372,117 @@ Suppress an exception from the open list.
 
 ---
 
+## GET /dashboard/ai-timeseries
+
+Returns weekly AI behavior time series for trend charts on the AI Performance page.
+
+**Auth**: Optional
+
+**Query params**:
+- `from_date` (optional): ISO date, default `now() - 28 days`
+- `to_date` (optional): ISO date, default `now()`
+
+**Response 200**
+```json
+{
+  "period": {"from": "2026-03-09T00:00:00Z", "to": "2026-04-06T00:00:00Z"},
+  "time_series": [
+    {
+      "date": "2026-03-09",
+      "total_calls": 42,
+      "blank_transcript_rate": 7.1,
+      "unknown_intent_rate": 11.9,
+      "intent_distribution": {
+        "enrolled": 5,
+        "not_interested": 8,
+        "callback_request": 12,
+        "low_confidence_audio": 5
+      }
+    }
+  ]
+}
+```
+
+**Fields**:
+- `blank_transcript_rate`: percentage (0–100) of calls with null/empty transcript in that week.
+- `unknown_intent_rate`: percentage of calls classified as `low_confidence_audio` or with no detected intent.
+- `intent_distribution`: per-week count of each detected intent for stacked/area trend charts.
+
+---
+
+## GET /dashboard/exceptions
+
+List exception records with grouping support.
+
+**Auth**: Optional
+
+**Query params**:
+- `status` (optional): `open` | `resolved` | `ignored`. Default: `open`.
+- `severity` (optional): `critical` | `warning`.
+- `type` (optional): exact exception type match.
+- `limit` (optional): integer, max 500. Default: 200.
+- `offset` (optional): integer. Default: 0.
+
+**Response 200**
+```json
+{
+  "exceptions": [
+    {
+      "id": "uuid",
+      "call_event_id": "call-uuid",
+      "entity_type": "call",
+      "entity_id": "call-uuid",
+      "type": "unknown_call_status",
+      "severity": "warning",
+      "status": "open",
+      "resolution_reason": null,
+      "resolved_by": null,
+      "context_json": {"call_status": "unknown_value"},
+      "version": 1,
+      "created_at": "2026-04-05T14:00:00Z",
+      "updated_at": "2026-04-05T14:00:00Z"
+    }
+  ],
+  "total": 134,
+  "status_filter": "open",
+  "groups": [
+    {"type": "unknown_call_status", "severity": "warning", "count": 134},
+    {"type": "crm_task_failed",     "severity": "critical", "count": 3}
+  ]
+}
+```
+
+**`groups` field**: per-type aggregates over all records matching `status` (and `severity` if provided), regardless of `type` filter or pagination. Used by the UI to render grouped views without a second round-trip.
+
+---
+
+## POST /dashboard/actions/bulk-ignore
+
+Bulk-ignore all open exceptions of a given type. Used to clear noise from the exception queue.
+
+**Auth**: Required
+
+**Request body**
+```json
+{
+  "type": "unknown_call_status",
+  "note": "Cleared stale entries from queue"
+}
+```
+
+**Response 200**
+```json
+{
+  "status": "ok",
+  "ignored_count": 134,
+  "audit_log_id": "audit-uuid"
+}
+```
+
+**Behavior**: `UPDATE exceptions SET status='ignored' WHERE type=:type AND status='open'`. Single audit log entry referencing the type.
+
+---
+
 ## WebSocket ws://host:8001/dashboard/ws/events
 
 **Protocol**: JSON messages, one event per message.

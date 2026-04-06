@@ -131,6 +131,103 @@ export interface AlertsResponse {
   alerts: Alert[];
 }
 
+// ── Exceptions ────────────────────────────────────────────────────────────────
+
+export type ExceptionStatus = "open" | "resolved" | "ignored";
+export type ExceptionSeverity = "critical" | "warning";
+
+export interface ExceptionRecord {
+  id: string;
+  call_event_id: string | null;
+  entity_type: string | null;
+  entity_id: string | null;
+  type: string;
+  severity: ExceptionSeverity;
+  status: ExceptionStatus;
+  resolution_reason: string | null;
+  resolved_by: string | null;
+  context_json: Record<string, unknown>;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExceptionGroup {
+  type: string;
+  severity: ExceptionSeverity;
+  count: number;
+}
+
+export interface ExceptionsResponse {
+  exceptions: ExceptionRecord[];
+  total: number;
+  status_filter: string;
+  groups: ExceptionGroup[];
+}
+
+// ── Voice Performance ─────────────────────────────────────────────────────────
+
+export interface VoiceKpis {
+  unique_contacts: number;
+  booked_appts: number;
+  calls_per_day: number;
+  completion_rate: number | null;
+  avg_call_duration_sec: number;
+  pickup_rate: number | null;
+  voicemail_rate: number | null;
+  failed_rate: number | null;
+  total_calls: number;
+  booking_rate: number | null;
+}
+
+export interface VoiceTimeSeriesPoint {
+  date: string;
+  cold: number;
+  inbound: number;
+  new_lead: number;
+  completion_rate: number;
+  pickup_rate: number;
+  voicemail_rate: number;
+  failed_rate: number;
+  booked_appts: number;
+  booking_rate: number;
+  unique_contacts: number;
+  calls_per_day: number;
+  avg_call_duration_sec: number;
+}
+
+export interface VoiceCampaignBreakdown {
+  campaign: string;
+  total_calls: number;
+  pickup_rate: number;
+  booking_rate: number;
+  avg_calls_per_day: number;
+}
+
+export interface VoicePerformanceResponse {
+  period: { from: string; to: string };
+  kpis: VoiceKpis;
+  kpis_prev: VoiceKpis;
+  wow_changes: Record<string, number | null>;
+  time_series: VoiceTimeSeriesPoint[];
+  campaign_breakdown: VoiceCampaignBreakdown[];
+}
+
+// ── AI Timeseries ─────────────────────────────────────────────────────────────
+
+export interface AiTimeSeriesPoint {
+  date: string;
+  total_calls: number;
+  blank_transcript_rate: number | null;
+  unknown_intent_rate: number | null;
+  intent_distribution: Record<string, number>;
+}
+
+export interface AiTimeSeriesResponse {
+  period: { from: string; to: string };
+  time_series: AiTimeSeriesPoint[];
+}
+
 // ── Operator action requests ──────────────────────────────────────────────────
 
 export interface RetryRequest {
@@ -155,6 +252,11 @@ export interface ResolveRequest {
 
 export interface IgnoreRequest {
   exception_id: string;
+}
+
+export interface BulkIgnoreRequest {
+  type: string;
+  note?: string;
 }
 
 // ── Operator action responses ─────────────────────────────────────────────────
