@@ -71,6 +71,23 @@ def create_exception(
         "exception created | id=%s type=%s severity=%s entity=%s/%s",
         exc_record.id, type, severity, entity_type, entity_id,
     )
+
+    # Publish dashboard event (non-fatal)
+    try:
+        from app.services.event_publisher import publish_event
+        contact_id = context.get("contact_id") if context else None
+        publish_event(
+            session=session,
+            event_type="exception_created",
+            entity_type=entity_type or "exception",
+            entity_id=exc_record.id,
+            contact_id=contact_id,
+            message=f"Exception created: {type} ({severity})",
+            payload={"exception_type": type, "severity": severity},
+        )
+    except Exception as _pub_exc:
+        logger.debug("create_exception: event publish skipped: %s", _pub_exc)
+
     return exc_record
 
 

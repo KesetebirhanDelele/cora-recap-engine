@@ -52,6 +52,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "run_nurture_scheduler": "rq_default_queue",
     "send_sms":              "rq_default_queue",
     "send_email":            "rq_default_queue",
+    "collect_metrics":       "rq_default_queue",
 }
 
 
@@ -132,6 +133,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.channel_jobs import send_email_job, send_sms_job
     from app.worker.jobs.crm_jobs import create_crm_task, send_student_summary
     from app.worker.jobs.lifecycle_jobs import update_lead_state
+    from app.worker.jobs.metrics_jobs import collect_metrics_job
     from app.worker.jobs.nurture_scheduler import run_nurture_scheduler
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
@@ -152,6 +154,8 @@ def get_job_registry() -> dict[str, object]:
         # Channel delivery stubs
         "send_sms": send_sms_job,
         "send_email": send_email_job,
+        # Dashboard metrics collection
+        "collect_metrics": collect_metrics_job,
     }
 
 
@@ -174,6 +178,14 @@ def run() -> None:
         logger.info("Nurture scheduler ensured on startup")
     except Exception as exc:
         logger.warning("Could not ensure nurture scheduler on startup: %s", exc)
+
+    # Ensure the metrics collection job is scheduled on startup.
+    try:
+        from app.worker.jobs.metrics_jobs import start_metrics_scheduler
+        start_metrics_scheduler()
+        logger.info("Metrics scheduler ensured on startup")
+    except Exception as exc:
+        logger.warning("Could not ensure metrics scheduler on startup: %s", exc)
 
     try:
         import redis

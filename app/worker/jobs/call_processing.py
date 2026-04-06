@@ -257,6 +257,25 @@ def process_call_event(job_id: str) -> None:
             # 3. Persist CallEvent row (idempotent)
             call_event = _create_call_event(session, call_id, payload, call_status)
 
+            # Publish dashboard event (non-fatal)
+            try:
+                from app.services.event_publisher import publish_event
+                publish_event(
+                    session=session,
+                    event_type="call_processed",
+                    entity_type="call",
+                    entity_id=call_id,
+                    contact_id=contact_id,
+                    message=f"Call received: status={call_status}",
+                    payload={
+                        "call_status": call_status,
+                        "campaign_name": payload.get("campaign_name"),
+                        "duration_seconds": payload.get("duration_seconds") or payload.get("duration"),
+                    },
+                )
+            except Exception as _pub_exc:
+                logger.debug("process_call_event: event publish skipped: %s", _pub_exc)
+
             # 4. Log any in-agent action failures
             _log_executed_actions(call_id, payload)
 

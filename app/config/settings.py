@@ -216,6 +216,35 @@ class Settings(BaseSettings):
     healthcheck_enabled: bool = True
     alert_webhook_url: Optional[str] = None
 
+    # ── Dashboard v2 ──────────────────────────────────────────────────────────
+    dashboard_read_auth_required: bool = False
+    dashboard_api_url: str = "http://localhost:8001"
+    frontend_url: str = "http://localhost:3000"
+    ws_url: str = "ws://localhost:8001/ws"
+    allow_origins: str = "http://localhost:3000"
+    x_operator_id: str = "local@test.com"
+
+    # Email alerting (Gmail SMTP)
+    smtp_enabled: bool = False
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_use_tls: bool = True
+    smtp_username: Optional[str] = None
+    smtp_password: Optional[str] = None
+    alert_email_from: Optional[str] = None
+    alert_email_to: Optional[str] = None  # comma-separated
+
+    # Alert thresholds
+    alert_queue_lag_threshold_seconds: int = 300
+    alert_error_rate_threshold: float = 0.20
+    alert_exception_spike_threshold: int = 10
+    alert_dedup_window_seconds: int = 3600
+
+    # Metrics collector
+    metrics_collection_interval_seconds: int = 60
+    event_stream_retention_days: int = 7
+    system_metrics_retention_days: int = 30
+
     # ─────────────────────────────────────────────────────────────────────────
     # Field validators
     # ─────────────────────────────────────────────────────────────────────────

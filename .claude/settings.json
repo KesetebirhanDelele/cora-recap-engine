@@ -55,7 +55,24 @@
       "Bash(psql postgresql://postgres:Target123@localhost:5433/cora -c ':*)",
       "Bash(git tag -a v1.0.0 -m 'Release v1.0.0 — production-ready outbound recap engine:*)",
       "Bash(git push:*)",
-      "Bash(gh release create v1.0.0 --title 'v1.0.0 — Production-Ready Outbound Recap Engine' --notes ':*)"
+      "Bash(gh release create v1.0.0 --title 'v1.0.0 — Production-Ready Outbound Recap Engine' --notes ':*)",
+      "Bash(python -m pytest tests/unit/test_dashboard_v2.py -v --tb=short)",
+      "Bash(python -m pytest tests/unit/test_dashboard_v2.py::TestEventsEndpoint::test_returns_events_list -v --tb=long)",
+      "Bash(python -m pytest tests/unit/ -v --tb=short -q)",
+      "Bash(python -m pytest tests/unit/ -q --tb=line)",
+      "Bash(python -m pytest tests/unit/ --tb=line -q)",
+      "Bash(python -m pytest tests/unit/ --tb=line -q --timeout=60)",
+      "Bash(python -m pytest tests/unit/test_dashboard_v2.py tests/unit/test_messaging.py tests/unit/test_shadow_mode.py -q --tb=line)",
+      "Bash(python -m pytest tests/unit/ -q --tb=line --ignore=tests/unit/test_dashboard_v2.py --ignore=tests/unit/test_messaging.py --ignore=tests/unit/test_shadow_mode.py)",
+      "Bash(python -m pytest tests/unit/ -q --tb=no)",
+      "Bash(python -m pytest tests/unit/test_shadow_mode.py tests/unit/test_messaging.py tests/unit/test_campaign_schedule.py -q --tb=no)",
+      "Bash(python -m pytest tests/unit/test_shadow_mode.py tests/unit/test_messaging.py tests/unit/test_dashboard_v2.py -q --tb=short)",
+      "Bash(python -m pytest tests/unit/ --tb=no -q)",
+      "Bash(python -m pytest tests/unit/ -q --tb=no --no-header)",
+      "Bash(git -C /c/Users/keset/cora-recap-engine status --short)",
+      "Bash(git -C /c/Users/keset/cora-recap-engine status --short dashboard-ui/)",
+      "Bash(git -C /c/Users/keset/cora-recap-engine ls-files dashboard-ui/node_modules)",
+      "Bash(python -m pytest tests/unit/test_dashboard_v2.py -q --tb=short)"
     ]
   }
 }

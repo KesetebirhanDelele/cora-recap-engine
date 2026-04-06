@@ -129,3 +129,24 @@ def get_sync_session() -> Generator[Session, None, None]:
         except Exception:
             session.rollback()
             raise
+
+
+def get_db() -> Generator[Session, None, None]:
+    """
+    Plain generator dependency for FastAPI Depends().
+
+    Use this in route signatures:  session: Session = Depends(get_db)
+
+    get_sync_session() (contextmanager) is for worker jobs that use
+    `with get_sync_session() as session:`. FastAPI requires a plain
+    generator — @contextmanager wraps the generator in a
+    _GeneratorContextManager object which is NOT iterable by FastAPI.
+    """
+    engine = get_sync_engine()
+    with Session(engine) as session:
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise

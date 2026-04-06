@@ -470,3 +470,19 @@ docker exec -it cora-recap-engine-redis-1 redis-cli
 127.0.0.1:6379> flushall
 OK
 127.0.0.1:6379> 
+
+## Starting new dashboard
+# 1. Apply migration (one-time, requires Postgres running)
+alembic upgrade head
+
+# 2. Start the dashboard API on port 8001
+uvicorn app.api.dashboard_main:app --port 8001 --reload
+
+# 3. In a new terminal — install frontend deps (one-time)
+cd dashboard-ui
+npm install
+
+# 4. Start the Next.js frontend on port 3000
+npm run dev
+
+Then open http://localhost:3000 in your browser.

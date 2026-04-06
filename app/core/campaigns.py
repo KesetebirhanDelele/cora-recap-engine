@@ -230,6 +230,21 @@ def apply_campaign_switch(
     ))
     session.flush()
 
+    # Publish dashboard event (non-fatal)
+    try:
+        from app.services.event_publisher import publish_event
+        publish_event(
+            session=session,
+            event_type="campaign_switched",
+            entity_type="lead",
+            entity_id=lead.contact_id,
+            contact_id=lead.contact_id,
+            message=f"Campaign switch: {old_campaign!r} → {new_campaign_name!r}",
+            payload={"from": old_campaign, "to": new_campaign_name, "reason": reason},
+        )
+    except Exception as _pub_exc:
+        logger.debug("apply_campaign_switch: event publish skipped: %s", _pub_exc)
+
 
 # ---------------------------------------------------------------------------
 # Private helpers

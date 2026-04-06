@@ -127,6 +127,22 @@ def complete_job(session: Session, job: ScheduledJob) -> None:
     session.flush()
     logger.info("complete_job | job_id=%s job_type=%s", job.id, job.job_type)
 
+    # Publish dashboard event (non-fatal)
+    try:
+        from app.services.event_publisher import publish_event
+        contact_id = (job.payload_json or {}).get("contact_id") if job.payload_json else None
+        publish_event(
+            session=session,
+            event_type="job_completed",
+            entity_type="scheduled_job",
+            entity_id=job.id,
+            contact_id=contact_id,
+            message=f"{job.job_type} completed",
+            payload={"job_type": job.job_type},
+        )
+    except Exception as _pub_exc:
+        logger.debug("complete_job: event publish skipped: %s", _pub_exc)
+
 
 def fail_job(session: Session, job: ScheduledJob, reason: str = "") -> None:
     """
@@ -150,6 +166,22 @@ def fail_job(session: Session, job: ScheduledJob, reason: str = "") -> None:
         "fail_job | job_id=%s job_type=%s reason=%r",
         job.id, job.job_type, reason,
     )
+
+    # Publish dashboard event (non-fatal)
+    try:
+        from app.services.event_publisher import publish_event
+        contact_id = (job.payload_json or {}).get("contact_id") if job.payload_json else None
+        publish_event(
+            session=session,
+            event_type="job_failed",
+            entity_type="scheduled_job",
+            entity_id=job.id,
+            contact_id=contact_id,
+            message=f"{job.job_type} failed: {reason[:120] if reason else ''}",
+            payload={"job_type": job.job_type, "reason": reason[:500] if reason else ""},
+        )
+    except Exception as _pub_exc:
+        logger.debug("fail_job: event publish skipped: %s", _pub_exc)
 
 
 def cancel_job(session: Session, job_id: str) -> bool:
