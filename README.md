@@ -471,18 +471,88 @@ docker exec -it cora-recap-engine-redis-1 redis-cli
 OK
 127.0.0.1:6379> 
 
-## Starting new dashboard
+## Dashboard v2
+
+The v2 dashboard is a production-grade monitoring and analytics console. It replaces the legacy Streamlit dashboard for all real-time operational use.
+
+- **Backend API** — FastAPI on port 8001 (`app/api/dashboard_main.py`), separate from the main pipeline API on port 8000
+- **Frontend** — Next.js 14 app on port 3000 (`dashboard-ui/`)
+- **Event delivery** — Redis Pub/Sub channel `dashboard:events` bridged to a WebSocket; cursor-based polling fallback via `GET /dashboard/events`
+- **Auth** — read endpoints optionally gated by `DASHBOARD_READ_AUTH_REQUIRED`; all write/action endpoints require `Authorization: Bearer {SECRET_KEY}`
+
+### Starting the dashboard
+
+```bash
 # 1. Apply migration (one-time, requires Postgres running)
 alembic upgrade head
 
 # 2. Start the dashboard API on port 8001
 uvicorn app.api.dashboard_main:app --port 8001 --reload
 
-# 3. In a new terminal — install frontend deps (one-time)
+# 3. Install frontend deps (one-time)
 cd dashboard-ui
 npm install
 
 # 4. Start the Next.js frontend on port 3000
 npm run dev
+```
 
-Then open http://localhost:3000 in your browser.
+Open http://localhost:3000 in your browser.
+
+### Dashboard pages
+
+| Route | Purpose |
+|---|---|
+| `/` | Home — status strip, live alert rows, navigation cards with live badge counts |
+| `/activity` | Real-time event stream (WebSocket) of all worker job events |
+| `/exceptions` | Exceptions Monitor — open issue queue with Resolve / Ignore / Bulk-Ignore actions, trend chart, date/type/severity filters |
+| `/system-anomalies` | Spike detection, recurring issues table, failure clusters, 14-day frequency trend |
+| `/queue` | Stuck jobs and expired worker leases |
+| `/alerts` | Threshold alerts (queue lag, error rate, exception spike, worker offline, GHL auth failure) |
+| `/voice-performance` | Single-screen voice analytics: KPI sidebar, stacked trends chart, WoW waterfall, efficiency scatter |
+| `/ai-performance` | AI quality metrics, intent distribution, consent distribution, intent→outcome table, error trends |
+| `/conversion-funnel` | Funnel visual (Total Calls → Picked Up → Engaged → Booked), step table, drop-off highlight, trend lines |
+| `/crm-health` | GHL task and VM update success rates, shadow write count |
+| `/lead/[id]` | Per-contact pipeline trace — full job history, shadow flags, failure reasons |
+
+### Dashboard API endpoints (port 8001)
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/dashboard/health` | System health snapshot (queue lag, workers, exceptions, mode flags) |
+| `GET` | `/dashboard/metrics` | Aggregate KPIs, AI distribution, queue state, CRM rates |
+| `GET` | `/dashboard/events` | Cursor-based event stream (polling fallback) |
+| `WS` | `/dashboard/ws/events` | WebSocket real-time event stream |
+| `GET` | `/dashboard/lead/{id}/trace` | Per-contact job timeline |
+| `GET` | `/dashboard/alerts` | Alert records (filter by status) |
+| `GET` | `/dashboard/exceptions` | Exception records (filter by status, severity, type, date) |
+| `GET` | `/dashboard/exceptions/trend` | Daily exception counts by type (for trend chart) |
+| `GET` | `/dashboard/exceptions/anomalies` | Spike detection, recurring issues, failure clusters |
+| `GET` | `/dashboard/voice-performance` | Voice KPIs, WoW changes, weekly time series, campaign breakdown |
+| `GET` | `/dashboard/ai-timeseries` | Weekly AI quality trend (blank transcript rate, unknown intent %) |
+| `POST` | `/dashboard/actions/retry` | Re-enqueue a failed job |
+| `POST` | `/dashboard/actions/cancel` | Cancel all pending jobs for a contact |
+| `POST` | `/dashboard/actions/finalize` | Force-advance a contact to terminal state |
+| `POST` | `/dashboard/actions/resolve` | Resolve a specific exception |
+| `POST` | `/dashboard/actions/ignore` | Ignore a specific exception |
+| `POST` | `/dashboard/actions/bulk-ignore` | Ignore all open exceptions of a given type |
+
+### Environment variables for dashboard
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://localhost:8001` | Dashboard API base URL (set in `dashboard-ui/.env.local`) |
+| `NEXT_PUBLIC_DASHBOARD_TOKEN` | — | Bearer token for write actions (dev only; prod uses `localStorage`) |
+| `DASHBOARD_READ_AUTH_REQUIRED` | `false` | Require auth token on read endpoints |
+| `ALLOW_ORIGINS` | `http://localhost:3000` | CORS origin for the Next.js frontend |
+| `ALERT_QUEUE_LAG_THRESHOLD_SECONDS` | `300` | Queue lag threshold for `queue_lag_exceeded` alert |
+| `ALERT_ERROR_RATE_THRESHOLD` | `0.2` | Error rate threshold for `error_rate_spike` alert |
+| `ALERT_EXCEPTION_COUNT_THRESHOLD` | `10` | Open exception count threshold for `exception_spike` alert |
+
+### Dashboard background workers
+
+The metrics collector (`collect_metrics_job`) runs every 60 seconds as a self-rescheduling RQ job. It is started automatically by the worker on startup via `start_metrics_scheduler()`. Each run inserts one row into `system_metrics` and evaluates all alert thresholds.
+
+### Feature documentation
+
+See [`docs/dashboard-feature-usecases.md`](docs/dashboard-feature-usecases.md) for a detailed description of every page, every section within each page, and the specific business question each feature answers.
