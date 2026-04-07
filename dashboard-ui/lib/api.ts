@@ -12,7 +12,9 @@ import type {
   ActionResponse,
   AiTimeSeriesResponse,
   AlertsResponse,
+  AppConfigResponse,
   BulkIgnoreRequest,
+  CampaignOverviewResponse,
   CancelRequest,
   EventsResponse,
   ExceptionAnomaliesResponse,
@@ -21,10 +23,13 @@ import type {
   FinalizeRequest,
   HealthResponse,
   IgnoreRequest,
+  LeadDetailResponse,
   LeadTraceResponse,
   MetricsResponse,
   ResolveRequest,
   RetryRequest,
+  SaveSettingsRequest,
+  SaveSettingsResponse,
   VoicePerformanceResponse,
 } from "@/types";
 
@@ -165,6 +170,28 @@ export async function fetchVoicePerformance(options?: {
   if (options?.from_date) params.from_date = options.from_date;
   if (options?.to_date) params.to_date = options.to_date;
   return get<VoicePerformanceResponse>("/dashboard/voice-performance", params);
+}
+
+export async function fetchCampaignOverview(options?: {
+  from_date?: string;
+  to_date?: string;
+}): Promise<CampaignOverviewResponse> {
+  const params: Record<string, string> = {};
+  if (options?.from_date) params.from_date = options.from_date;
+  if (options?.to_date) params.to_date = options.to_date;
+  return get<CampaignOverviewResponse>("/dashboard/campaign-overview", params);
+}
+
+export async function fetchLeadDetail(contactId: string): Promise<LeadDetailResponse> {
+  return get<LeadDetailResponse>(`/dashboard/lead/${encodeURIComponent(contactId)}/detail`);
+}
+
+export async function fetchSettings(): Promise<AppConfigResponse> {
+  return get<AppConfigResponse>("/dashboard/settings");
+}
+
+export async function saveSettings(body: SaveSettingsRequest): Promise<SaveSettingsResponse> {
+  return post<SaveSettingsResponse>("/dashboard/settings", body);
 }
 
 // ── Operator actions ──────────────────────────────────────────────────────────

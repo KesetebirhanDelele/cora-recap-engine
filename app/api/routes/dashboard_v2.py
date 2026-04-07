@@ -634,6 +634,363 @@ def action_bulk_ignore(
 
 # ── WebSocket — real-time event feed ─────────────────────────────────────────
 
+@router.get("/campaign-overview")
+def get_campaign_overview(
+    from_date: str | None = Query(default=None, description="ISO date YYYY-MM-DD (local)"),
+    to_date: str | None = Query(default=None, description="ISO date YYYY-MM-DD (local)"),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Upcoming scheduled contact actions within a date window.
+
+    Returns all leads with their next scheduled action (call / SMS / email) and
+    last call timestamp. Terminal leads (DNC, invalid, enrolled, closed) are
+    always included. Active leads are filtered to those whose effective_at falls
+    within [from_date, to_date).
+
+    Default window: today → today + 7 days.
+    """
+    from datetime import date, timedelta
+    from sqlalchemy import text
+
+    today = date.today()
+    try:
+        d_from = date.fromisoformat(from_date) if from_date else today
+        d_to = date.fromisoformat(to_date) if to_date else today + timedelta(days=7)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="from_date and to_date must be ISO dates (YYYY-MM-DD)",
+        )
+
+    rows = session.execute(text("""
+        SELECT
+            ls.contact_id,
+            COALESCE(ls.normalized_phone, ls.contact_id)  AS contact,
+            ls.campaign_name,
+            ls.status,
+            ls.do_not_call,
+            ls.invalid,
+            ls.next_action_at,
+            sj.job_type,
+            sj.run_at                                      AS job_run_at,
+            ce.last_call_at,
+            CASE
+                WHEN sj.run_at IS NOT NULL AND ls.next_action_at IS NOT NULL
+                    THEN LEAST(sj.run_at, ls.next_action_at)
+                ELSE COALESCE(sj.run_at, ls.next_action_at)
+            END                                            AS effective_at
+        FROM lead_state ls
+        LEFT JOIN LATERAL (
+            SELECT job_type, run_at
+            FROM scheduled_jobs
+            WHERE entity_id = ls.contact_id
+              AND status    = 'pending'
+            ORDER BY run_at ASC
+            LIMIT 1
+        ) sj ON true
+        LEFT JOIN LATERAL (
+            SELECT MAX(created_at) AS last_call_at
+            FROM call_events
+            WHERE contact_id = ls.contact_id
+        ) ce ON true
+        ORDER BY ce.last_call_at DESC NULLS LAST
+    """)).fetchall()
+
+    _JOB_LABEL = {
+        "launch_outbound_call": "Call",
+        "send_sms": "SMS",
+        "send_email": "Email",
+    }
+
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+    def _to_utc(ts):
+        if ts is None:
+            return None
+        if hasattr(ts, "tzinfo") and ts.tzinfo is None:
+            return ts.replace(tzinfo=_tz.utc)
+        return ts
+
+    def _fmt_delay(ts) -> str:
+        now = _dt.now(_tz.utc)
+        secs = (ts - now).total_seconds()
+        if secs <= 0:
+            return "Now"
+        if secs < 3600:
+            return f"{int(secs // 60)}m"
+        if secs < 86400:
+            h, m = int(secs // 3600), int((secs % 3600) // 60)
+            return f"{h}h {m}m" if m else f"{h}h"
+        d, h = int(secs // 86400), int((secs % 86400) // 3600)
+        return f"{d}d {h}h" if h else f"{d}d"
+
+    window_start = _dt.combine(d_from, _dt.min.time()).replace(tzinfo=_tz.utc)
+    window_end = _dt.combine(d_to + _td(days=1), _dt.min.time()).replace(tzinfo=_tz.utc)
+
+    result = []
+    for r in rows:
+        (contact_id, contact, campaign_name, st, do_not_call, invalid,
+         next_action_at, job_type, job_run_at, last_call_at, effective_at) = r
+
+        dnc = bool(do_not_call)
+        inv = bool(invalid)
+        status_val = (st or "").lower()
+        is_terminal = dnc or inv or status_val in ("enrolled", "closed")
+
+        effective = _to_utc(effective_at)
+        has_recent_call = last_call_at is not None
+
+        if not is_terminal:
+            if effective is None:
+                if not has_recent_call:
+                    continue
+            elif not (window_start <= effective < window_end):
+                continue
+
+        # Next action label
+        if is_terminal:
+            next_action = None
+        else:
+            job_run_utc = _to_utc(job_run_at)
+            naa = _to_utc(next_action_at)
+            if job_run_utc and (naa is None or job_run_utc <= naa):
+                label = _JOB_LABEL.get(job_type, job_type or "Scheduled")
+                next_action = f"{label} in {_fmt_delay(job_run_utc)}"
+            elif naa:
+                next_action = f"Follow-up in {_fmt_delay(naa)}"
+            else:
+                next_action = "Unscheduled"
+
+        # Status label
+        if dnc:
+            final_status = "Do Not Call"
+        elif inv:
+            final_status = "Invalid"
+        elif status_val == "enrolled":
+            final_status = "Enrolled"
+        elif status_val == "closed":
+            final_status = "Closed"
+        else:
+            final_status = None
+
+        lc_utc = _to_utc(last_call_at)
+        result.append({
+            "contact_id": contact_id,
+            "contact": contact,
+            "campaign_name": campaign_name or "—",
+            "last_call_at": lc_utc.isoformat() if lc_utc else None,
+            "next_action": next_action,
+            "status": final_status,
+        })
+
+    return {
+        "from_date": d_from.isoformat(),
+        "to_date": d_to.isoformat(),
+        "rows": result,
+        "total": len(result),
+    }
+
+
+@router.get("/lead/{contact_id}/detail")
+def get_lead_detail(
+    contact_id: str,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Full 6-table drill-down for a single contact.
+
+    Returns: lead_state, call_events (50 most recent), shadow_actions,
+    scheduled_jobs (50 most recent), outbound_messages, exceptions.
+    Returns 404 if the contact is not found in lead_state.
+    """
+    from sqlalchemy import text
+
+    lead_row = session.execute(text("""
+        SELECT contact_id, campaign_name, ai_campaign_value, status,
+               do_not_call, next_action_at, version, updated_at
+        FROM lead_state
+        WHERE contact_id = :cid
+    """), {"cid": contact_id}).fetchone()
+
+    if lead_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No lead found for contact_id={contact_id}",
+        )
+
+    def _iso(ts):
+        if ts is None:
+            return None
+        return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+
+    lead_state = {
+        "contact_id": lead_row[0],
+        "campaign_name": lead_row[1],
+        "ai_campaign_value": lead_row[2],
+        "status": lead_row[3],
+        "do_not_call": lead_row[4],
+        "next_action_at": _iso(lead_row[5]),
+        "version": lead_row[6],
+        "updated_at": _iso(lead_row[7]),
+    }
+
+    call_rows = session.execute(text("""
+        SELECT call_id, status, duration_seconds,
+               LEFT(transcript, 120) AS transcript_preview, created_at
+        FROM call_events
+        WHERE contact_id = :cid
+        ORDER BY created_at DESC
+        LIMIT 50
+    """), {"cid": contact_id}).fetchall()
+    call_events = [
+        {"call_id": r[0], "status": r[1], "duration_seconds": r[2],
+         "transcript_preview": r[3], "created_at": _iso(r[4])}
+        for r in call_rows
+    ]
+
+    shadow_rows = session.execute(text("""
+        SELECT action_type, payload, created_at
+        FROM shadow_actions
+        WHERE contact_id = :cid
+        ORDER BY created_at DESC
+        LIMIT 50
+    """), {"cid": contact_id}).fetchall()
+    shadow_actions = [
+        {"action_type": r[0], "payload": r[1], "created_at": _iso(r[2])}
+        for r in shadow_rows
+    ]
+
+    job_rows = session.execute(text("""
+        SELECT job_type, status, run_at, payload_json, created_at
+        FROM scheduled_jobs
+        WHERE payload_json->>'contact_id' = :cid
+        ORDER BY created_at DESC
+        LIMIT 50
+    """), {"cid": contact_id}).fetchall()
+    scheduled_jobs = [
+        {"job_type": r[0], "status": r[1], "run_at": _iso(r[2]),
+         "payload_json": r[3], "created_at": _iso(r[4])}
+        for r in job_rows
+    ]
+
+    msg_rows = session.execute(text("""
+        SELECT channel, status, LEFT(body, 100) AS body_preview, created_at
+        FROM outbound_messages
+        WHERE contact_id = :cid
+        ORDER BY created_at DESC
+        LIMIT 50
+    """), {"cid": contact_id}).fetchall()
+    outbound_messages = [
+        {"channel": r[0], "status": r[1], "body_preview": r[2], "created_at": _iso(r[3])}
+        for r in msg_rows
+    ]
+
+    exc_rows = session.execute(text("""
+        SELECT type, severity, status, context_json, created_at
+        FROM exceptions
+        WHERE entity_id = :cid
+        ORDER BY created_at DESC
+        LIMIT 50
+    """), {"cid": contact_id}).fetchall()
+    exceptions = [
+        {"type": r[0], "severity": r[1], "status": r[2],
+         "context_json": r[3] or {}, "created_at": _iso(r[4])}
+        for r in exc_rows
+    ]
+
+    return {
+        "contact_id": contact_id,
+        "lead_state": lead_state,
+        "call_events": call_events,
+        "shadow_actions": shadow_actions,
+        "scheduled_jobs": scheduled_jobs,
+        "outbound_messages": outbound_messages,
+        "exceptions": exceptions,
+    }
+
+
+@router.get("/settings")
+def get_settings_config(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Read all app_config rows as {key: value}."""
+    from sqlalchemy import text
+
+    rows = session.execute(text(
+        "SELECT key, value, updated_at, updated_by FROM app_config ORDER BY key"
+    )).fetchall()
+
+    config = {r[0]: r[1] for r in rows}
+    audit_rows = session.execute(text("""
+        SELECT created_at, operator_id, entity_id AS key
+        FROM audit_log
+        WHERE entity_type = 'app_config'
+        ORDER BY created_at DESC
+        LIMIT 50
+    """)).fetchall()
+    audit = [
+        {"created_at": r[0].isoformat() if r[0] else None, "operator_id": r[1], "key": r[2]}
+        for r in audit_rows
+    ]
+
+    return {"config": config, "audit_log": audit}
+
+
+class SaveSettingsRequest(BaseModel):
+    operator_id: str
+    values: dict[str, str]
+
+
+@router.post("/settings")
+def save_settings_config(
+    body: SaveSettingsRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    UPSERT app_config entries and write an audit_log entry per key.
+    Requires Bearer token auth. operator_id in body is recorded in audit_log.
+    """
+    import uuid
+    from sqlalchemy import text
+
+    if not body.operator_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="operator_id is required",
+        )
+    if not body.values:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="values must be a non-empty dict",
+        )
+
+    now = datetime.now(tz=timezone.utc)
+    operator = body.operator_id.strip()
+
+    for key, value in body.values.items():
+        session.execute(text("""
+            INSERT INTO app_config (key, value, updated_at, updated_by)
+            VALUES (:key, :value, :now, :by)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at,
+                updated_by = EXCLUDED.updated_by
+        """), {"key": key, "value": value, "now": now, "by": operator})
+
+        session.execute(text("""
+            INSERT INTO audit_log
+              (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+            VALUES
+              (:id, 'app_config', :key, 'config_updated', :by,
+               '{"source": "dashboard_v2"}'::jsonb, :now)
+        """), {"id": str(uuid.uuid4()), "key": key, "by": operator, "now": now})
+
+    session.commit()
+    return {"status": "ok", "keys_saved": len(body.values)}
+
+
 @router.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket) -> None:
     """

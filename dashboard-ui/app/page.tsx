@@ -15,29 +15,35 @@ interface NavItem {
   badgeCritical?: boolean;
 }
 
-const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] = [
+const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: NavItem[] }[] = [
   {
     label: "Operations",
     category: "operations",
+    cols: 3,
     items: [
-      { href: "/activity",    title: "Live Activity", icon: "⚡", description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
-      { href: "/exceptions",  title: "Exceptions Monitor", icon: "⚠️", description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
-      { href: "/queue",       title: "Queue Health",  icon: "⚙️", description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
-      { href: "/alerts",      title: "Alerts",        icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
+      { href: "/activity",        title: "Live Activity",       icon: "⚡",  description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
+      { href: "/exceptions",      title: "Exceptions Monitor",  icon: "⚠️",  description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
+      { href: "/queue",           title: "Queue Health",        icon: "⚙️",  description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
+      { href: "/alerts",          title: "Alerts",              icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
+      { href: "/contact-lookup",  title: "Contact Drill-Down",  icon: "🔍", description: "Inspect all data for a single contact.", category: "operations" },
+      { href: "/settings",        title: "Settings",            icon: "⚙", description: "Calling windows, delays & brand identity.", category: "operations" },
     ],
   },
   {
     label: "Analytics",
     category: "analytics",
+    cols: 2,
     items: [
-      { href: "/voice-performance",  title: "Voice Performance",  icon: "🎙️", description: "Trends, WoW & call efficiency.", category: "analytics" },
-      { href: "/ai-performance",     title: "AI Performance",     icon: "🤖", description: "Intent, consent & AI quality.", category: "analytics" },
-      { href: "/conversion-funnel",  title: "Conversion Funnel",  icon: "📉", description: "Calls → pickup → engagement → booking.", category: "analytics" },
+      { href: "/voice-performance",   title: "Voice Performance",   icon: "🎙️", description: "Trends, WoW & call efficiency.", category: "analytics" },
+      { href: "/ai-performance",      title: "AI Performance",      icon: "🤖", description: "Intent, consent & AI quality.", category: "analytics" },
+      { href: "/conversion-funnel",   title: "Conversion Funnel",   icon: "📉", description: "Calls → pickup → engagement → booking.", category: "analytics" },
+      { href: "/campaign-overview",   title: "Campaign Overview",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
     ],
   },
   {
     label: "System",
     category: "system",
+    cols: 2,
     items: [
       { href: "/crm-health",        title: "CRM Health",       icon: "🔗", description: "GHL task & VM update rates.",       category: "system" },
       { href: "/system-anomalies",  title: "System Anomalies", icon: "📊", description: "Spikes & unusual patterns.",         category: "system" },
@@ -125,10 +131,10 @@ export default async function HomePage() {
       <div
         style={{
           flexShrink: 0,
-          height: 200,
+          height: 320,
           padding: "0 1.5rem 0.875rem",
           display: "grid",
-          gridTemplateColumns: "4fr 3fr 2fr",
+          gridTemplateColumns: "5fr 4fr 2fr",
           gap: "0.75rem",
           overflow: "hidden",
         }}
@@ -182,7 +188,7 @@ export default async function HomePage() {
                 flex: 1,
                 minHeight: 0,
                 display: "grid",
-                gridTemplateColumns: `repeat(${group.items.length}, 1fr)`,
+                gridTemplateColumns: `repeat(${group.cols}, 1fr)`,
                 gap: "0.5rem",
               }}
             >

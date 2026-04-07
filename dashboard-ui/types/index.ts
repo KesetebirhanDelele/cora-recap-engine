@@ -295,6 +295,107 @@ export interface AiTimeSeriesResponse {
   time_series: AiTimeSeriesPoint[];
 }
 
+// ── Campaign Overview ─────────────────────────────────────────────────────────
+
+export interface CampaignOverviewRow {
+  contact_id: string;
+  contact: string;
+  campaign_name: string;
+  last_call_at: string | null;
+  next_action: string | null;
+  status: string | null;
+}
+
+export interface CampaignOverviewResponse {
+  from_date: string;
+  to_date: string;
+  rows: CampaignOverviewRow[];
+  total: number;
+}
+
+// ── Lead Detail (full 6-table drill-down) ─────────────────────────────────────
+
+export interface LeadStateRecord {
+  contact_id: string;
+  campaign_name: string | null;
+  ai_campaign_value: string | null;
+  status: string;
+  do_not_call: boolean;
+  next_action_at: string | null;
+  version: number;
+  updated_at: string | null;
+}
+
+export interface CallEventRecord {
+  call_id: string;
+  status: string;
+  duration_seconds: number | null;
+  transcript_preview: string | null;
+  created_at: string;
+}
+
+export interface ShadowActionRecord {
+  action_type: string;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface ScheduledJobRecord {
+  job_type: string;
+  status: string;
+  run_at: string | null;
+  payload_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface OutboundMessageRecord {
+  channel: string;
+  status: string;
+  body_preview: string | null;
+  created_at: string;
+}
+
+export interface ContactExceptionRecord {
+  type: string;
+  severity: string;
+  status: string;
+  context_json: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface LeadDetailResponse {
+  contact_id: string;
+  lead_state: LeadStateRecord;
+  call_events: CallEventRecord[];
+  shadow_actions: ShadowActionRecord[];
+  scheduled_jobs: ScheduledJobRecord[];
+  outbound_messages: OutboundMessageRecord[];
+  exceptions: ContactExceptionRecord[];
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+
+export interface AuditLogEntry {
+  created_at: string | null;
+  operator_id: string;
+  key: string;
+}
+
+export interface AppConfigResponse {
+  config: Record<string, string>;
+  audit_log: AuditLogEntry[];
+}
+
+export interface SaveSettingsRequest {
+  operator_id: string;
+  values: Record<string, string>;
+}
+
+export interface SaveSettingsResponse {
+  status: "ok";
+  keys_saved: number;
+}
+
 // ── Operator action requests ──────────────────────────────────────────────────
 
 export interface RetryRequest {
