@@ -1,7 +1,8 @@
-import { fetchHealth } from "@/lib/api";
+import { fetchHealth, fetchCardMetrics } from "@/lib/api";
 import SystemStatusBar from "@/components/SystemStatusBar";
 import NavigationCard, { type NavCategory } from "@/components/NavigationCard";
-import type { HealthResponse } from "@/types";
+import { computeIndicator } from "@/lib/indicators";
+import type { HealthResponse, CardMetricsResponse } from "@/types";
 
 export const revalidate = 0;
 
@@ -36,7 +37,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
     items: [
       { href: "/voice-performance",   title: "Voice Performance",   icon: "🎙️", description: "Trends, WoW & call efficiency.", category: "analytics" },
       { href: "/ai-performance",      title: "AI Performance",      icon: "🤖", description: "Intent, consent & AI quality.", category: "analytics" },
-      { href: "/conversion-funnel",   title: "Conversion Funnel",   icon: "📉", description: "Calls → pickup → engagement → booking.", category: "analytics" },
+      { href: "/conversion-funnel",   title: "Recent Calls",        icon: "📞", description: "Calls ≥30s with transcript & recording.", category: "analytics" },
       { href: "/campaign-overview",   title: "Campaign Overview",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
     ],
   },
@@ -70,10 +71,15 @@ function getBadge(item: NavItem, health: HealthResponse): number | undefined {
 export default async function HomePage() {
   let health: HealthResponse | null = null;
   let healthError: string | null = null;
+  let cardMetrics: CardMetricsResponse | null = null;
   try {
-    health = await fetchHealth();
+    [health, cardMetrics] = await Promise.all([fetchHealth(), fetchCardMetrics()]);
   } catch (e) {
     healthError = String(e);
+    // Attempt health independently if card metrics failed
+    if (!health) {
+      try { health = await fetchHealth(); } catch { /* ignore */ }
+    }
   }
 
   return (
@@ -202,6 +208,7 @@ export default async function HomePage() {
                   category={item.category}
                   badge={health ? getBadge(item, health) : undefined}
                   badgeCritical={item.badgeCritical}
+                  indicator={computeIndicator(item.href, cardMetrics)}
                 />
               ))}
             </div>

@@ -16,6 +16,7 @@ import type {
   BulkIgnoreRequest,
   CampaignOverviewResponse,
   CancelRequest,
+  CardMetricsResponse,
   EventsResponse,
   ExceptionAnomaliesResponse,
   ExceptionsResponse,
@@ -23,9 +24,11 @@ import type {
   FinalizeRequest,
   HealthResponse,
   IgnoreRequest,
+  IntentCallsResponse,
   LeadDetailResponse,
   LeadTraceResponse,
   MetricsResponse,
+  RecentCallsResponse,
   ResolveRequest,
   RetryRequest,
   SaveSettingsRequest,
@@ -218,4 +221,37 @@ export async function ignoreException(body: IgnoreRequest): Promise<ActionRespon
 
 export async function bulkIgnoreExceptions(body: BulkIgnoreRequest): Promise<ActionResponse & { ignored_count: number }> {
   return post<ActionResponse & { ignored_count: number }>("/dashboard/actions/bulk-ignore", body);
+}
+
+export async function fetchCardMetrics(): Promise<CardMetricsResponse> {
+  return get<CardMetricsResponse>("/dashboard/card-metrics");
+}
+
+export async function fetchRecentCalls(options?: {
+  from_date?: string;
+  to_date?: string;
+  campaign?: string;
+  limit?: number;
+}): Promise<RecentCallsResponse> {
+  const params: Record<string, string> = {};
+  if (options?.from_date) params.from_date = options.from_date;
+  if (options?.to_date)   params.to_date   = options.to_date;
+  if (options?.campaign)  params.campaign  = options.campaign;
+  if (options?.limit)     params.limit     = String(options.limit);
+  return get<RecentCallsResponse>("/dashboard/recent-calls", params);
+}
+
+export async function fetchIntentCalls(options: {
+  intent: string;
+  from_date?: string;
+  to_date?: string;
+  campaign?: string;
+  limit?: number;
+}): Promise<IntentCallsResponse> {
+  const params: Record<string, string> = { intent: options.intent };
+  if (options.from_date) params.from_date = options.from_date;
+  if (options.to_date)   params.to_date   = options.to_date;
+  if (options.campaign)  params.campaign  = options.campaign;
+  if (options.limit)     params.limit     = String(options.limit);
+  return get<IntentCallsResponse>("/dashboard/intent-calls", params);
 }

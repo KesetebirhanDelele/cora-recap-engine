@@ -11,22 +11,23 @@ interface Props {
   height?: number | string;
 }
 
-const METRIC_LABELS: { key: string; label: string }[] = [
-  { key: "unique_contacts",    label: "Unique\nContacts" },
-  { key: "booking_rate",       label: "Booking\nRate" },
-  { key: "total_calls",        label: "Calls" },
-  { key: "completion_rate",    label: "Completion\nRate" },
-  { key: "avg_call_duration_sec", label: "Call\nDuration" },
-  { key: "pickup_rate",        label: "Pickup\nRate" },
-  { key: "voicemail_rate",     label: "Voicemail\nRate" },
-  { key: "failed_rate",        label: "Failed\nRate" },
+const METRIC_LABELS: { key: string; label: string; fullLabel: string }[] = [
+  { key: "unique_contacts",       label: "UC",  fullLabel: "Unique Contacts" },
+  { key: "booking_rate",          label: "BR",  fullLabel: "Booking Rate" },
+  { key: "total_calls",           label: "C",   fullLabel: "Calls" },
+  { key: "completion_rate",       label: "CR",  fullLabel: "Completion Rate" },
+  { key: "avg_call_duration_sec", label: "CD",  fullLabel: "Call Duration" },
+  { key: "pickup_rate",           label: "PR",  fullLabel: "Pickup Rate" },
+  { key: "voicemail_rate",        label: "VR",  fullLabel: "Voicemail Rate" },
+  { key: "failed_rate",           label: "FR",  fullLabel: "Failed Rate" },
 ];
 
-function CustomTooltip({ active, payload, label }: TooltipProps<number, string>) {
+function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
   if (!active || !payload?.length) return null;
   const entry = payload[0];
   const val = entry?.value as number;
   const isNull = (entry?.payload as { isNull?: boolean })?.isNull;
+  const fullLabel = (entry?.payload as { fullLabel?: string })?.fullLabel ?? "";
   const isUp = val >= 0;
   const color = isNull ? "#e2e8f0" : isUp ? "#16a34a" : "#dc2626";
   return (
@@ -43,7 +44,7 @@ function CustomTooltip({ active, payload, label }: TooltipProps<number, string>)
       }}
     >
       <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 6, fontSize: "1rem" }}>
-        {label}
+        {fullLabel}
       </div>
       {isNull ? (
         <div style={{ color: "#94a3b8", fontStyle: "italic" }}>No prior period data</div>
@@ -88,8 +89,9 @@ function LabelFormatter({ x, y, width, value }: { x?: number; y?: number; width?
 }
 
 export default function WowWaterfall({ wowChanges, height = "100%" }: Props) {
-  const data = METRIC_LABELS.map(({ key, label }) => ({
+  const data = METRIC_LABELS.map(({ key, label, fullLabel }) => ({
     metric: label,
+    fullLabel,
     wow: wowChanges[key] ?? 0,
     isNull: wowChanges[key] === null,
   }));

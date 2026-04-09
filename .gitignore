@@ -209,12 +209,17 @@ __marimo__/
 # =========================
 # Node / Next.js (dashboard-ui)
 # =========================
-dashboard-ui/node_modules/
+dashboard-ui/node_modules
 .next/
 out/
 .vercel/
 *.tsbuildinfo
 next-env.d.ts
+
+node_modules/
+.next/
+out/
+.vercel/
 
 # =========================
 # Cora Recap Engine

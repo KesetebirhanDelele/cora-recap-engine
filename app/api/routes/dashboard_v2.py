@@ -169,6 +169,55 @@ def get_voice_performance(
     return _get_vp(session, from_date=from_date, to_date=to_date)
 
 
+@router.get("/card-metrics")
+def get_card_metrics(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    All navigation card indicator metrics — current + previous 24h period values.
+
+    Returns compact {value, previous_value} pairs for each card:
+      events_per_min, open_exceptions, backlog_size, active_alerts,
+      lookup_rate, config_health, pickup_rate, meaningful_engagement_rate,
+      booking_rate, active_leads, sync_success_rate, anomaly_count.
+    """
+    from app.services.dashboard_metrics import get_card_metrics as _get_cm
+    return _get_cm(session)
+
+
+@router.get("/recent-calls")
+def get_recent_calls(
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+    campaign: str | None = Query(default=None, description="New Lead | Cold Lead | Inbound"),
+    limit: int = Query(default=200, le=500),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Calls with duration >= 30s that have transcript and recording_url.
+    Ordered by call time descending. Used by the Recent Calls page.
+    """
+    from app.services.dashboard_metrics import get_recent_calls as _get_rc
+    return _get_rc(session, from_date=from_date, to_date=to_date, campaign=campaign, limit=limit)
+
+
+@router.get("/intent-calls")
+def get_intent_calls(
+    intent: str = Query(..., description="detected_intent value to drill into"),
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
+    campaign: str | None = Query(default=None, description="New Lead | Cold Lead | Inbound"),
+    limit: int = Query(default=100, le=200),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    All calls matching a specific detected_intent — used by the AI Performance
+    intent bar chart drill-down. Returns transcript and recording_url per call.
+    """
+    from app.services.dashboard_metrics import get_intent_calls as _get_ic
+    return _get_ic(session, intent=intent, from_date=from_date, to_date=to_date, campaign=campaign, limit=limit)
+
+
 @router.get("/exceptions/trend")
 def get_exception_trend(
     from_date: datetime | None = Query(default=None),

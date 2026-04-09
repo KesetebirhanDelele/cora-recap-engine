@@ -815,3 +815,313 @@ def get_exception_anomalies(session: Session) -> dict[str, Any]:
         "anomaly_trend": anomaly_trend,
         "computed_at": now.isoformat(),
     }
+
+
+# ── Card Metrics (nav dashboard) ──────────────────────────────────────────────
+
+def get_card_metrics(session: Session) -> dict[str, Any]:
+    """
+    Returns current + previous-period values for all navigation card indicators.
+
+    Window:
+      current  — last 24 hours
+      previous — 24–48 hours ago
+
+    Compact format:  {"value": X, "previous_value": Y}
+
+    Metrics:
+      events_per_min             — event_stream activity rate (last 5 min)
+      open_exceptions            — exceptions WHERE status='open'
+      backlog_size               — stuck + expired jobs
+      active_alerts              — alert_events WHERE status='active'
+      lookup_rate                — call_events in last hour (system activity proxy)
+      config_health              — "healthy" | "warning" | "error"
+      pickup_rate                — completed / total calls
+      meaningful_engagement_rate — strong-intent calls / total calls
+      booking_rate               — enrolled / unique contacts
+      active_leads               — lead_state not closed/dnc
+      sync_success_rate          — task_events created / total
+      anomaly_count              — exception types with spike (≥3 occurrences) in 24h
+    """
+    from app.config import get_settings
+
+    now = datetime.now(tz=timezone.utc)
+    w24_start = now - timedelta(hours=24)
+    w48_start = now - timedelta(hours=48)
+    w5m_start = now - timedelta(minutes=5)
+    w10m_start = now - timedelta(minutes=10)
+    w1h_start = now - timedelta(hours=1)
+    w2h_start = now - timedelta(hours=2)
+
+    def _scalar(sql: str, params: dict | None = None) -> Any:
+        return session.execute(text(sql), params or {}).scalar()
+
+    def _r(v: Any) -> float | None:
+        return round(float(v), 4) if v is not None else None
+
+    # ── events_per_min ────────────────────────────────────────────────────────
+    ev_curr = _scalar("SELECT COUNT(*) FROM event_stream WHERE created_at >= :w", {"w": w5m_start}) or 0
+    ev_prev = _scalar("SELECT COUNT(*) FROM event_stream WHERE created_at BETWEEN :a AND :b", {"a": w10m_start, "b": w5m_start}) or 0
+
+    # ── open_exceptions ───────────────────────────────────────────────────────
+    open_exc = _scalar("SELECT COUNT(*) FROM exceptions WHERE status = 'open'") or 0
+    prev_open_exc = _scalar(
+        "SELECT COUNT(*) FROM exceptions WHERE status = 'open' AND created_at < :d",
+        {"d": w24_start},
+    ) or 0
+
+    # ── backlog_size (stuck + expired leases) ─────────────────────────────────
+    stuck = _scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'") or 0
+    expired = _scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'running' AND lease_expires_at < NOW()") or 0
+    backlog = stuck + expired
+
+    # ── active_alerts ─────────────────────────────────────────────────────────
+    active_alerts = _scalar("SELECT COUNT(*) FROM alert_events WHERE status = 'active'") or 0
+
+    # ── lookup_rate (call_events last hour as activity proxy) ─────────────────
+    lookup_curr = _scalar("SELECT COUNT(*) FROM call_events WHERE created_at >= :w", {"w": w1h_start}) or 0
+    lookup_prev = _scalar(
+        "SELECT COUNT(*) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        {"a": w2h_start, "b": w1h_start},
+    ) or 0
+
+    # ── config_health ─────────────────────────────────────────────────────────
+    try:
+        settings = get_settings()
+        config_ok = bool(
+            getattr(settings, "ghl_api_key", None)
+            and getattr(settings, "openai_api_key", None)
+        )
+        config_health = "healthy" if config_ok else "warning"
+    except Exception:
+        config_health = "error"
+
+    # ── pickup_rate ───────────────────────────────────────────────────────────
+    pickup_curr = _r(_scalar(
+        "SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at >= :s",
+        {"s": w24_start},
+    ))
+    pickup_prev = _r(_scalar(
+        "SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        {"a": w48_start, "b": w24_start},
+    ))
+
+    # ── meaningful_engagement_rate ────────────────────────────────────────────
+    _strong = "('enrolled','callback_request','re_engaged','interested_not_now')"
+    mer_curr = _r(_scalar(
+        f"SELECT COUNT(*) FILTER (WHERE detected_intent IN {_strong})::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at >= :s",
+        {"s": w24_start},
+    ))
+    mer_prev = _r(_scalar(
+        f"SELECT COUNT(*) FILTER (WHERE detected_intent IN {_strong})::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        {"a": w48_start, "b": w24_start},
+    ))
+
+    # ── booking_rate (enrolled / unique contacts) ─────────────────────────────
+    book_curr = _r(_scalar(
+        "SELECT COUNT(DISTINCT contact_id) FILTER (WHERE detected_intent = 'enrolled')::float / NULLIF(COUNT(DISTINCT contact_id), 0) FROM call_events WHERE created_at >= :s",
+        {"s": w24_start},
+    ))
+    book_prev = _r(_scalar(
+        "SELECT COUNT(DISTINCT contact_id) FILTER (WHERE detected_intent = 'enrolled')::float / NULLIF(COUNT(DISTINCT contact_id), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        {"a": w48_start, "b": w24_start},
+    ))
+
+    # ── active_leads ──────────────────────────────────────────────────────────
+    active_leads = _scalar(
+        "SELECT COUNT(*) FROM lead_state WHERE status NOT IN ('closed', 'do_not_call') AND do_not_call = false"
+    ) or 0
+
+    # ── sync_success_rate ─────────────────────────────────────────────────────
+    sync_curr = _r(_scalar(
+        "SELECT COUNT(*) FILTER (WHERE status = 'created')::float / NULLIF(COUNT(*), 0) FROM task_events WHERE created_at >= :s",
+        {"s": w24_start},
+    ))
+    sync_prev = _r(_scalar(
+        "SELECT COUNT(*) FILTER (WHERE status = 'created')::float / NULLIF(COUNT(*), 0) FROM task_events WHERE created_at BETWEEN :a AND :b",
+        {"a": w48_start, "b": w24_start},
+    ))
+
+    # ── anomaly_count (exception types with ≥3 occurrences in 24h) ────────────
+    anomaly_curr = _scalar("""
+        SELECT COUNT(DISTINCT type) FROM (
+            SELECT type, COUNT(*) AS cnt FROM exceptions
+            WHERE created_at >= :s
+            GROUP BY type HAVING COUNT(*) >= 3
+        ) t
+    """, {"s": w24_start}) or 0
+    anomaly_prev = _scalar("""
+        SELECT COUNT(DISTINCT type) FROM (
+            SELECT type, COUNT(*) AS cnt FROM exceptions
+            WHERE created_at BETWEEN :a AND :b
+            GROUP BY type HAVING COUNT(*) >= 3
+        ) t
+    """, {"a": w48_start, "b": w24_start}) or 0
+
+    def _pt(val: Any, prev: Any) -> dict[str, Any]:
+        return {"value": val, "previous_value": prev}
+
+    return {
+        "events_per_min":             _pt(round(ev_curr / 5, 1),  round(ev_prev / 5, 1)),
+        "open_exceptions":            _pt(open_exc,                prev_open_exc),
+        "backlog_size":               _pt(backlog,                 None),
+        "active_alerts":              _pt(active_alerts,           None),
+        "lookup_rate":                _pt(lookup_curr,             lookup_prev),
+        "config_health":              _pt(config_health,           config_health),
+        "pickup_rate":                _pt(pickup_curr,             pickup_prev),
+        "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
+        "booking_rate":               _pt(book_curr,               book_prev),
+        "active_leads":               _pt(active_leads,            None),
+        "sync_success_rate":          _pt(sync_curr,               sync_prev),
+        "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
+        "computed_at":                now.isoformat(),
+    }
+
+
+# ── Recent Calls ──────────────────────────────────────────────────────────────
+
+def get_recent_calls(
+    session: Session,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    campaign: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """
+    Return calls with duration >= 30s that have both transcript and recording_url.
+    Results are ordered by call start time descending (most recent first).
+    Timestamps are returned as UTC ISO strings; the frontend converts to CST.
+    """
+    now = datetime.now(tz=timezone.utc)
+    to_dt = to_date or now
+    from_dt = from_date or (now - timedelta(days=30))
+
+    params: dict[str, Any] = {
+        "from_dt": from_dt,
+        "to_dt": to_dt,
+        "limit": limit,
+    }
+    campaign_filter = ""
+    if campaign:
+        campaign_filter = "AND ls.campaign_name = :campaign"
+        params["campaign"] = campaign
+
+    rows = session.execute(text(f"""
+        SELECT
+            ce.contact_id,
+            COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
+            COALESCE(ls.campaign_name, 'Unknown')        AS campaign_name,
+            ce.status,
+            COALESCE(ce.duration_seconds, 0)             AS duration_seconds,
+            ce.recording_url,
+            ce.transcript,
+            ce.start_time_utc,
+            ce.detected_intent,
+            ce.created_at
+        FROM call_events ce
+        LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
+        WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+          AND COALESCE(ce.duration_seconds, 0) >= 30
+          AND ce.transcript IS NOT NULL AND ce.transcript != ''
+          AND ce.recording_url IS NOT NULL AND ce.recording_url != ''
+          {campaign_filter}
+        ORDER BY COALESCE(ce.start_time_utc, ce.created_at) DESC
+        LIMIT :limit
+    """), params).fetchall()
+
+    calls = []
+    for r in rows:
+        start_ts = r[7] or r[9]
+        calls.append({
+            "contact_id": r[0],
+            "phone": r[1],
+            "campaign_name": r[2],
+            "status": r[3],
+            "duration_seconds": int(r[4]),
+            "recording_url": r[5],
+            "transcript": r[6],
+            "call_time": start_ts.isoformat() if start_ts and hasattr(start_ts, "isoformat") else str(start_ts),
+            "detected_intent": r[8],
+        })
+
+    return {
+        "period": {"from": from_dt.isoformat(), "to": to_dt.isoformat()},
+        "campaign_filter": campaign,
+        "total": len(calls),
+        "calls": calls,
+    }
+
+
+# ── Intent Calls Drill-Down ───────────────────────────────────────────────────
+
+def get_intent_calls(
+    session: Session,
+    intent: str,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+    campaign: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """
+    Return individual calls matching a specific detected_intent.
+    Used by the AI Performance intent bar chart drill-down.
+    Includes transcript and recording_url for call detail view.
+    """
+    now = datetime.now(tz=timezone.utc)
+    to_dt = to_date or now
+    from_dt = from_date or (now - timedelta(days=28))
+
+    params: dict[str, Any] = {
+        "from_dt": from_dt,
+        "to_dt": to_dt,
+        "intent": intent,
+        "limit": limit,
+    }
+    campaign_filter = ""
+    if campaign:
+        campaign_filter = "AND ls.campaign_name = :campaign"
+        params["campaign"] = campaign
+
+    rows = session.execute(text(f"""
+        SELECT
+            ce.contact_id,
+            COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
+            COALESCE(ls.campaign_name, 'Unknown')        AS campaign_name,
+            ce.status,
+            COALESCE(ce.duration_seconds, 0)             AS duration_seconds,
+            ce.recording_url,
+            ce.transcript,
+            ce.start_time_utc,
+            ce.detected_intent,
+            ce.created_at
+        FROM call_events ce
+        LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
+        WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+          AND ce.detected_intent = :intent
+          {campaign_filter}
+        ORDER BY COALESCE(ce.start_time_utc, ce.created_at) DESC
+        LIMIT :limit
+    """), params).fetchall()
+
+    calls = []
+    for r in rows:
+        start_ts = r[7] or r[9]
+        calls.append({
+            "contact_id": r[0],
+            "phone": r[1],
+            "campaign_name": r[2],
+            "status": r[3],
+            "duration_seconds": int(r[4]),
+            "recording_url": r[5],
+            "transcript": r[6],
+            "call_time": start_ts.isoformat() if start_ts and hasattr(start_ts, "isoformat") else str(start_ts),
+            "detected_intent": r[8],
+        })
+
+    return {
+        "period": {"from": from_dt.isoformat(), "to": to_dt.isoformat()},
+        "intent": intent,
+        "campaign_filter": campaign,
+        "total": len(calls),
+        "calls": calls,
+    }

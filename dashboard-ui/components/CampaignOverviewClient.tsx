@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { fetchCampaignOverview } from "@/lib/api";
 import type { CampaignOverviewRow } from "@/types";
+import ContactLookupClient from "@/components/ContactLookupClient";
 
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -19,8 +20,8 @@ function fmtTs(iso: string | null): string {
   const d = new Date(iso);
   return d.toLocaleString("en-US", {
     year: "numeric", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit", timeZone: "UTC",
-  }) + " UTC";
+    hour: "2-digit", minute: "2-digit", timeZone: "America/Chicago",
+  }) + " CST";
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -78,6 +79,9 @@ export default function CampaignOverviewClient() {
   const [error, setError] = useState<string | null>(null);
   const [campaignFilter, setCampaignFilter] = useState<string>("All");
 
+  // Drill-down state: when set, shows the contact detail view instead of the list
+  const [drillDown, setDrillDown] = useState<{ contactId: string; phone: string } | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -100,6 +104,43 @@ export default function CampaignOverviewClient() {
     ? rows
     : rows.filter((r) => r.campaign_name === campaignFilter);
 
+  // ── Drill-down view ──────────────────────────────────────────────────────────
+  if (drillDown) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+        {/* Back button + header */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: "0.75rem",
+          background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8,
+          padding: "0.75rem 1rem",
+        }}>
+          <button
+            onClick={() => setDrillDown(null)}
+            style={{
+              display: "flex", alignItems: "center", gap: "0.35rem",
+              padding: "0.35rem 0.875rem",
+              background: "#f1f5f9", border: "1px solid #e2e8f0",
+              borderRadius: 6, fontSize: "0.82rem", fontWeight: 600,
+              color: "#475569", cursor: "pointer",
+            }}
+          >
+            ← Back to Campaign Overview
+          </button>
+          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
+            Contact:{" "}
+            <strong style={{ color: "#1e293b", fontFamily: "monospace" }}>
+              {drillDown.phone}
+            </strong>
+          </span>
+        </div>
+
+        {/* Reuse ContactLookupClient in drill-down mode */}
+        <ContactLookupClient contactId={drillDown.contactId} />
+      </div>
+    );
+  }
+
+  // ── List view ────────────────────────────────────────────────────────────────
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
       {/* ── Controls ── */}
@@ -214,7 +255,7 @@ export default function CampaignOverviewClient() {
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
-                  {["Contact", "Campaign", "Last Call", "Next Action", "Status"].map((h) => (
+                  {["Phone", "Campaign", "Last Call (CST)", "Next Action", "Status"].map((h) => (
                     <th key={h} style={HEAD}>{h}</th>
                   ))}
                 </tr>
@@ -225,8 +266,19 @@ export default function CampaignOverviewClient() {
                     key={row.contact_id + i}
                     style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}
                   >
-                    <td style={{ ...CELL, fontFamily: "monospace", fontSize: "0.8rem", color: "#0f172a" }}>
-                      {row.contact}
+                    <td style={{ ...CELL }}>
+                      <button
+                        onClick={() => setDrillDown({ contactId: row.contact_id, phone: row.contact })}
+                        style={{
+                          background: "none", border: "none", padding: 0,
+                          fontFamily: "monospace", fontSize: "0.8rem",
+                          color: "#2563eb", cursor: "pointer",
+                          textDecoration: "underline", textDecorationStyle: "dotted",
+                        }}
+                        title="Click to view full contact details"
+                      >
+                        {row.contact}
+                      </button>
                     </td>
                     <td style={CELL}>{row.campaign_name}</td>
                     <td style={{ ...CELL, color: "#475569" }}>{fmtTs(row.last_call_at)}</td>

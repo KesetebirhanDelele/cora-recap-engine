@@ -437,6 +437,72 @@ export interface ActionResponse {
   cancelled_job_count?: number;
 }
 
+// ── Card Metrics ─────────────────────────────────────────────────────────────
+
+export interface MetricPoint {
+  value: number | string | null;
+  previous_value: number | string | null;
+}
+
+export interface CardMetricsResponse {
+  events_per_min:             MetricPoint;
+  open_exceptions:            MetricPoint;
+  backlog_size:               MetricPoint;
+  active_alerts:              MetricPoint;
+  lookup_rate:                MetricPoint;
+  config_health:              MetricPoint;
+  pickup_rate:                MetricPoint;
+  meaningful_engagement_rate: MetricPoint;
+  booking_rate:               MetricPoint;
+  active_leads:               MetricPoint;
+  sync_success_rate:          MetricPoint;
+  anomaly_count:              MetricPoint;
+  computed_at:                string;
+}
+
+// ── Recent Calls ──────────────────────────────────────────────────────────────
+
+export interface RecentCallRow {
+  contact_id: string;
+  phone: string;
+  campaign_name: string;
+  status: string;
+  duration_seconds: number;
+  recording_url: string;
+  transcript: string;
+  call_time: string; // ISO UTC — frontend converts to CST
+  detected_intent: string | null;
+}
+
+export interface RecentCallsResponse {
+  period: { from: string; to: string };
+  campaign_filter: string | null;
+  total: number;
+  calls: RecentCallRow[];
+}
+
+// ── Intent Calls Drill-Down ───────────────────────────────────────────────────
+
+export interface IntentCallRow {
+  contact_id: string;
+  phone: string;
+  campaign_name: string;
+  status: string;
+  duration_seconds: number;
+  recording_url: string | null;
+  transcript: string | null;
+  call_time: string; // ISO UTC — frontend converts to CST
+  detected_intent: string;
+}
+
+export interface IntentCallsResponse {
+  period: { from: string; to: string };
+  intent: string;
+  campaign_filter: string | null;
+  total: number;
+  calls: IntentCallRow[];
+}
+
 // ── WebSocket messages ────────────────────────────────────────────────────────
 
 export type WebSocketMessage =

@@ -6,9 +6,20 @@ Canonical job state lives in Postgres; Redis/RQ is the execution rail only.
 
 Queue topology:
   default         — process_call_event, process_voicemail_tier
-  ai              — run_call_analysis
+  ai              — run_call_analysis / classify_call_event
+  callbacks       — create_crm_task, send_student_summary, launch_outbound_call
   retries         — retry_failed_job
   sheet_mirror    — sync_sheet_rows (Phase 9, out of scope)
+
+Worker role selection (WORKER_ROLE env var):
+  default    — listens on the default queue; owns the scheduler loop and
+               startup tasks (nurture scheduler, metrics scheduler).
+               Only ONE role should own these to avoid duplicate enqueues.
+  ai         — listens on the ai queue; runs OpenAI analysis jobs.
+  callbacks  — listens on the callbacks queue; runs GHL/Synthflow jobs.
+  retries    — listens on the retries queue; isolated from live job traffic.
+  all        — listens on all queues (default for single-process deployments
+               and backwards-compatible local runs). Also owns scheduler loop.
 
 Worker class selection:
   Windows: SimpleWorker (thread-based; fork() unavailable on Windows)
@@ -17,6 +28,7 @@ Worker class selection:
 Job recovery:
   On worker startup, any scheduled_jobs with status='pending' and
   run_at <= now are re-enqueued. This handles Redis clears and restarts.
+  Only the scheduler-host role (default / all) runs this recovery loop.
 
 Claim/lease:
   Each job function atomically claims its ScheduledJob row before executing.
@@ -26,6 +38,7 @@ Claim/lease:
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import sys
 import threading
@@ -43,16 +56,32 @@ logger = logging.getLogger(__name__)
 _JOB_QUEUE_ATTRS: dict[str, str] = {
     "process_call_event":    "rq_default_queue",
     "process_voicemail_tier": "rq_default_queue",
-    "launch_outbound_call":  "rq_default_queue",
+    "launch_outbound_call":  "rq_callback_queue",
     "run_call_analysis":     "rq_ai_queue",
     "classify_call_event":   "rq_ai_queue",
-    "create_crm_task":       "rq_default_queue",
-    "send_student_summary":  "rq_default_queue",
+    "create_crm_task":       "rq_callback_queue",
+    "send_student_summary":  "rq_callback_queue",
     "update_lead_state":     "rq_default_queue",
     "run_nurture_scheduler": "rq_default_queue",
     "send_sms":              "rq_default_queue",
     "send_email":            "rq_default_queue",
     "collect_metrics":       "rq_default_queue",
+}
+
+# Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
+# "all" preserves the original single-worker topology for local/dev use.
+_ROLE_QUEUE_ATTRS: dict[str, list[str]] = {
+    "default":   ["rq_default_queue"],
+    "ai":        ["rq_ai_queue"],
+    "callbacks": ["rq_callback_queue"],
+    "retries":   ["rq_retry_queue"],
+    "all": [
+        "rq_default_queue",
+        "rq_ai_queue",
+        "rq_callback_queue",
+        "rq_retry_queue",
+        "rq_sheet_mirror_queue",
+    ],
 }
 
 
@@ -115,15 +144,17 @@ def _run_scheduler_loop(
         time.sleep(interval_seconds)
 
 
+def get_queues_for_role(role: str, settings=None) -> list[str]:
+    """Return the list of RQ queue names for the given worker role."""
+    if settings is None:
+        settings = get_settings()
+    attrs = _ROLE_QUEUE_ATTRS.get(role, _ROLE_QUEUE_ATTRS["all"])
+    return [getattr(settings, attr) for attr in attrs]
+
+
 def get_queues() -> list[str]:
-    settings = get_settings()
-    return [
-        settings.rq_default_queue,
-        settings.rq_ai_queue,
-        settings.rq_callback_queue,
-        settings.rq_retry_queue,
-        settings.rq_sheet_mirror_queue,
-    ]
+    """Return all queue names. Kept for backwards compatibility."""
+    return get_queues_for_role("all")
 
 
 def get_job_registry() -> dict[str, object]:
@@ -160,32 +191,57 @@ def get_job_registry() -> dict[str, object]:
 
 
 def run() -> None:
-    """Start RQ workers listening on all queues."""
+    """Start RQ workers listening on queues determined by WORKER_ROLE.
+
+    WORKER_ROLE controls which queues this process listens on and whether it
+    owns the scheduler loop. Only the 'default' and 'all' roles run the
+    scheduler loop — running it in every process would cause duplicate RQ
+    enqueues for the same pending Postgres jobs (safe due to claim/lease, but
+    wasteful and noisy in logs).
+
+    Set WORKER_ROLE=all (or omit it) for local single-process runs.
+    In production, start separate processes with distinct roles.
+    """
+    role = os.environ.get("WORKER_ROLE", "all").lower()
+    if role not in _ROLE_QUEUE_ATTRS:
+        logger.error(
+            "Unknown WORKER_ROLE=%r — valid values: %s",
+            role, ", ".join(_ROLE_QUEUE_ATTRS),
+        )
+        sys.exit(1)
+
     settings = get_settings()
-    queues = get_queues()
+    queues = get_queues_for_role(role, settings)
+
+    # Only the default/all role owns the scheduler loop and startup tasks.
+    # This prevents multiple processes from racing to enqueue the same jobs.
+    is_scheduler_host = role in ("default", "all")
 
     logger.info(
-        "Cora worker starting | env=%s queues=%s shadow_mode=%s",
+        "Cora worker starting | env=%s role=%s queues=%s shadow_mode=%s scheduler_host=%s",
         settings.app_env,
+        role,
         queues,
         settings.shadow_mode_enabled,
+        is_scheduler_host,
     )
 
-    # Ensure the periodic nurture scheduler has a pending job on startup.
-    try:
-        from app.worker.jobs.nurture_scheduler import ensure_scheduled
-        ensure_scheduled(settings)
-        logger.info("Nurture scheduler ensured on startup")
-    except Exception as exc:
-        logger.warning("Could not ensure nurture scheduler on startup: %s", exc)
+    if is_scheduler_host:
+        # Ensure the periodic nurture scheduler has a pending job on startup.
+        try:
+            from app.worker.jobs.nurture_scheduler import ensure_scheduled
+            ensure_scheduled(settings)
+            logger.info("Nurture scheduler ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure nurture scheduler on startup: %s", exc)
 
-    # Ensure the metrics collection job is scheduled on startup.
-    try:
-        from app.worker.jobs.metrics_jobs import start_metrics_scheduler
-        start_metrics_scheduler()
-        logger.info("Metrics scheduler ensured on startup")
-    except Exception as exc:
-        logger.warning("Could not ensure metrics scheduler on startup: %s", exc)
+        # Ensure the metrics collection job is scheduled on startup.
+        try:
+            from app.worker.jobs.metrics_jobs import start_metrics_scheduler
+            start_metrics_scheduler()
+            logger.info("Metrics scheduler ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure metrics scheduler on startup: %s", exc)
 
     try:
         import redis
@@ -210,24 +266,31 @@ def run() -> None:
 
         qs = [Queue(name=q, connection=redis_conn) for q in queues]
 
-        # Build job_type → Queue map for the scheduler loop
-        queue_by_name = {q.name: q for q in qs}
-        registry = get_job_registry()
-        job_type_queues = {
-            jt: queue_by_name.get(getattr(settings, attr, settings.rq_default_queue))
-            for jt, attr in _JOB_QUEUE_ATTRS.items()
-        }
+        if is_scheduler_host:
+            # Build a full queue map across ALL queue names so the scheduler
+            # loop can route any job type to its target queue — regardless of
+            # which queues this worker process actually listens on.
+            all_queue_names = get_queues_for_role("all", settings)
+            all_queues_map = {
+                name: Queue(name=name, connection=redis_conn)
+                for name in all_queue_names
+            }
+            registry = get_job_registry()
+            job_type_queues = {
+                jt: all_queues_map.get(getattr(settings, attr, settings.rq_default_queue))
+                for jt, attr in _JOB_QUEUE_ATTRS.items()
+            }
 
-        # Start the scheduler polling loop in a daemon thread.
-        # This picks up delayed jobs (e.g. voicemail retries) once run_at arrives.
-        t = threading.Thread(
-            target=_run_scheduler_loop,
-            args=(job_type_queues, registry),
-            daemon=True,
-            name="cora-scheduler-loop",
-        )
-        t.start()
-        logger.info("Scheduler loop started (daemon thread)")
+            # Start the scheduler polling loop in a daemon thread.
+            # This picks up delayed jobs (e.g. voicemail retries) once run_at arrives.
+            t = threading.Thread(
+                target=_run_scheduler_loop,
+                args=(job_type_queues, registry),
+                daemon=True,
+                name="cora-scheduler-loop",
+            )
+            t.start()
+            logger.info("Scheduler loop started (daemon thread)")
 
         # Windows does not support fork(); use SimpleWorker (thread-based).
         # Linux/macOS use the standard fork-based Worker for better isolation.

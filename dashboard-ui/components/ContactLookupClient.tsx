@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { fetchLeadDetail } from "@/lib/api";
 import type {
   LeadDetailResponse,
@@ -62,8 +62,8 @@ function fmtTs(iso: string | null | undefined): string {
   const d = new Date(iso);
   return d.toLocaleString("en-US", {
     year: "numeric", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "UTC",
-  }) + " UTC";
+    hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "America/Chicago",
+  }) + " CST";
 }
 
 function JsonCell({ val }: { val: unknown }) {
@@ -336,30 +336,41 @@ function ExceptionsSection({ rows }: { rows: ContactExceptionRecord[] }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ContactLookupClient() {
-  const [input, setInput] = useState("");
+interface ContactLookupClientProps {
+  /** When provided, auto-fetch this contact on mount (used by drill-down pages). */
+  contactId?: string;
+}
+
+export default function ContactLookupClient({ contactId: externalContactId }: ContactLookupClientProps = {}) {
+  const [input, setInput] = useState(externalContactId ?? "");
   const [data, setData] = useState<LeadDetailResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastQueried, setLastQueried] = useState<string | null>(null);
 
-  async function lookup() {
-    const cid = input.trim();
-    if (!cid) return;
+  async function lookup(cid?: string) {
+    const id = (cid ?? input).trim();
+    if (!id) return;
     setLoading(true);
     setError(null);
     setData(null);
     try {
-      const result = await fetchLeadDetail(cid);
+      const result = await fetchLeadDetail(id);
       setData(result);
-      setLastQueried(cid);
+      setLastQueried(id);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      setError(msg.includes("404") ? `No lead found for "${cid}".` : msg);
+      setError(msg.includes("404") ? `No lead found for "${id}".` : msg);
     } finally {
       setLoading(false);
     }
   }
+
+  // Auto-fetch when a contactId is injected externally (drill-down mode)
+  useEffect(() => {
+    if (externalContactId) lookup(externalContactId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalContactId]);
 
   function handleKey(e: React.KeyboardEvent) {
     if (e.key === "Enter") lookup();
@@ -367,47 +378,59 @@ export default function ContactLookupClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-      {/* ── Search bar ── */}
-      <div style={{
-        display: "flex", gap: "0.75rem", alignItems: "center",
-        background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8,
-        padding: "0.875rem 1rem",
-      }}>
-        <input
-          type="text"
-          placeholder="e.g. sim-sc1-001 or +15551110001"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKey}
-          style={{
-            flex: 1, border: "1px solid #e2e8f0", borderRadius: 6,
-            padding: "0.4rem 0.75rem", fontSize: "0.9rem", color: "#1e293b",
-            background: "#fff", outline: "none",
-          }}
-        />
-        <button
-          onClick={lookup}
-          disabled={loading || !input.trim()}
-          style={{
-            padding: "0.4rem 1.1rem",
-            background: "#1e293b",
-            color: "#fff", border: "none", borderRadius: 6,
-            fontSize: "0.85rem", fontWeight: 600,
-            cursor: loading || !input.trim() ? "not-allowed" : "pointer",
-            opacity: loading || !input.trim() ? 0.5 : 1,
-          }}
-        >
-          {loading ? "Looking up…" : "Look up"}
-        </button>
-      </div>
+      {/* ── Search bar — hidden in drill-down mode ── */}
+      {!externalContactId && (
+        <div style={{
+          display: "flex", gap: "0.75rem", alignItems: "center",
+          background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8,
+          padding: "0.875rem 1rem",
+        }}>
+          <input
+            type="text"
+            placeholder="e.g. sim-sc1-001 or +15551110001"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKey}
+            style={{
+              flex: 1, border: "1px solid #e2e8f0", borderRadius: 6,
+              padding: "0.4rem 0.75rem", fontSize: "0.9rem", color: "#1e293b",
+              background: "#fff", outline: "none",
+            }}
+          />
+          <button
+            onClick={() => lookup()}
+            disabled={loading || !input.trim()}
+            style={{
+              padding: "0.4rem 1.1rem",
+              background: "#1e293b",
+              color: "#fff", border: "none", borderRadius: 6,
+              fontSize: "0.85rem", fontWeight: 600,
+              cursor: loading || !input.trim() ? "not-allowed" : "pointer",
+              opacity: loading || !input.trim() ? 0.5 : 1,
+            }}
+          >
+            {loading ? "Looking up…" : "Look up"}
+          </button>
+        </div>
+      )}
 
       {/* ── Hint ── */}
-      {!data && !loading && !error && (
+      {!externalContactId && !data && !loading && !error && (
         <div style={{
           background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8,
           padding: "2rem", textAlign: "center", color: "#64748b", fontSize: "0.9rem",
         }}>
           Enter a contact ID or E.164 phone number above to inspect all data for that contact.
+        </div>
+      )}
+
+      {/* ── Loading spinner ── */}
+      {loading && (
+        <div style={{
+          background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8,
+          padding: "2rem", textAlign: "center", color: "#64748b", fontSize: "0.9rem",
+        }}>
+          Loading…
         </div>
       )}
 
@@ -424,11 +447,13 @@ export default function ContactLookupClient() {
       {/* ── Results ── */}
       {data && (
         <>
-          <div style={{
-            fontSize: "0.8rem", color: "#64748b", padding: "0 0.25rem",
-          }}>
-            Showing all data for <strong style={{ color: "#1e293b" }}>{lastQueried}</strong>
-          </div>
+          {!externalContactId && (
+            <div style={{
+              fontSize: "0.8rem", color: "#64748b", padding: "0 0.25rem",
+            }}>
+              Showing all data for <strong style={{ color: "#1e293b" }}>{lastQueried}</strong>
+            </div>
+          )}
 
           <LeadStateSection data={data.lead_state} />
           <CallEventsSection rows={data.call_events} />

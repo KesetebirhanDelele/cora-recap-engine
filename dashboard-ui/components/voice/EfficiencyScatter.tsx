@@ -12,11 +12,11 @@ interface Props {
   height?: number | string;
 }
 
-// The three canonical campaigns — fixed colors, fixed order, no others rendered.
-const CAMPAIGNS: { label: string; color: string }[] = [
-  { label: "Cold Lead", color: "#2563eb" },
-  { label: "New Lead",  color: "#16a34a" },
-  { label: "Inbound",   color: "#0891b2" },
+// The three voice agents — fixed colors, fixed order, no others rendered.
+const CAMPAIGNS: { label: string; displayLabel: string; color: string }[] = [
+  { label: "Cold Lead", displayLabel: "ColdLead", color: "#2563eb" },
+  { label: "New Lead",  displayLabel: "NewLead",  color: "#16a34a" },
+  { label: "Inbound",   displayLabel: "Inbound",  color: "#0891b2" },
 ];
 
 // Strict normalization: startsWith on trimmed lowercase prevents partial
@@ -46,7 +46,9 @@ function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
       }}
     >
       <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 6, fontSize: "1rem" }}>
-        {d.campaign}
+        {normalizeCampaign(d.campaign) === "Cold Lead" ? "ColdLead"
+          : normalizeCampaign(d.campaign) === "New Lead" ? "NewLead"
+          : d.campaign}
       </div>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <tbody>
@@ -98,10 +100,10 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
     }
   }
 
-  // Render in fixed order: Cold Lead, New Lead, Inbound — at most one bubble each
+  // Render in fixed order: ColdLead, NewLead, Inbound — at most one bubble each
   const series = CAMPAIGNS
     .filter((c) => merged[c.label] !== undefined)
-    .map((c) => ({ label: c.label, color: c.color, point: merged[c.label] }));
+    .map((c) => ({ label: c.label, displayLabel: c.displayLabel, color: c.color, point: merged[c.label] }));
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -146,10 +148,10 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
           height={26}
           wrapperStyle={{ fontSize: "0.85rem" }}
         />
-        {series.map(({ label, color, point }) => (
+        {series.map(({ label, displayLabel, color, point }) => (
           <Scatter
             key={label}
-            name={label}
+            name={displayLabel}
             data={[point]}
             fill={color}
             fillOpacity={0.8}

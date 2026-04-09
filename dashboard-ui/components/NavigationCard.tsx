@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import type { CardIndicator, IndicatorColor } from "@/lib/indicators";
+import { INDICATOR_COLORS } from "@/lib/indicators";
 
 export type NavCategory = "operations" | "analytics" | "system";
 
@@ -12,6 +14,7 @@ interface Props {
   category: NavCategory;
   badge?: number;
   badgeCritical?: boolean;
+  indicator?: CardIndicator;
 }
 
 const ACCENT: Record<NavCategory, string> = {
@@ -20,8 +23,36 @@ const ACCENT: Record<NavCategory, string> = {
   system:     "#8b5cf6",
 };
 
+function IndicatorChip({ indicator }: { indicator: CardIndicator }) {
+  const color = INDICATOR_COLORS[indicator.color];
+  const bgColor = color + "14"; // ~8% opacity background
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "0.2rem",
+        padding: "0.15rem 0.45rem",
+        borderRadius: 5,
+        background: bgColor,
+        border: `1px solid ${color}30`,
+        fontSize: "0.72rem",
+        fontWeight: 700,
+        color,
+        fontVariantNumeric: "tabular-nums",
+        letterSpacing: "0.01em",
+        whiteSpace: "nowrap",
+      }}
+    >
+      [{indicator.text}]
+      <span style={{ marginLeft: 2, opacity: 0.85 }}>{indicator.trend}</span>
+    </span>
+  );
+}
+
 export default function NavigationCard({
-  href, title, description, icon, category, badge, badgeCritical,
+  href, title, description, icon, category, badge, badgeCritical, indicator,
 }: Props) {
   const accent = ACCENT[category];
 
@@ -57,8 +88,8 @@ export default function NavigationCard({
           el.style.borderColor = "#e2e8f0";
         }}
       >
-        {/* Badge */}
-        {badge !== undefined && badge > 0 && (
+        {/* Badge (exception count etc.) — only shown when no indicator */}
+        {badge !== undefined && badge > 0 && !indicator && (
           <div
             style={{
               position: "absolute",
@@ -99,17 +130,22 @@ export default function NavigationCard({
           {title}
         </div>
 
-        {/* Description */}
-        <div
-          style={{
-            fontSize: "0.82rem",
-            fontWeight: 500,
-            color: "#374151",
-            lineHeight: 1.4,
-            marginTop: "auto",
-          }}
-        >
-          {description}
+        {/* Indicator chip (replaces description when present) */}
+        <div style={{ marginTop: "auto" }}>
+          {indicator ? (
+            <IndicatorChip indicator={indicator} />
+          ) : (
+            <div
+              style={{
+                fontSize: "0.82rem",
+                fontWeight: 500,
+                color: "#374151",
+                lineHeight: 1.4,
+              }}
+            >
+              {description}
+            </div>
+          )}
         </div>
       </div>
     </Link>
