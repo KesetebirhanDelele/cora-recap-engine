@@ -98,7 +98,8 @@ export default function CampaignOverviewClient() {
 
   useEffect(() => { load(); }, [load]);
 
-  const campaigns = ["All", ...Array.from(new Set(rows.map((r) => r.campaign_name).filter(Boolean)))];
+  // Campaigns are business concepts only — "New Lead" and "Cold Lead" (not Inbound)
+  const campaigns = ["All", "New Lead", "Cold Lead", "Unknown"];
 
   const visible = campaignFilter === "All"
     ? rows

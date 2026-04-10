@@ -55,6 +55,9 @@ class CallEvent(Base):
     # detected_intent: rule-based intent detected from transcript at processing time
     # (e.g. "callback_request", "partial_engagement", "enrolled"). NULL = none detected.
     detected_intent: Mapped[Optional[str]] = mapped_column(String(100))
+    # voice_agent: which Synthflow agent handled this call — ColdLead | NewLead | Inbound
+    # Extracted from raw_payload_json->>'Agent' at event creation time.
+    voice_agent: Mapped[Optional[str]] = mapped_column(String(50))
     # raw_payload_json: original webhook body preserved for replay
     raw_payload_json: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

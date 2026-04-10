@@ -249,7 +249,7 @@ export default function VoicePerformancePage() {
             <div style={SECTION_LABEL}>
               <span>📈</span> Trends Over Time
               <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                — stacked calls by campaign + rate lines
+                — stacked calls by voice agent + rate lines
               </span>
             </div>
             {/* Chart fills remaining height via flex: 1 + minHeight: 0 */}

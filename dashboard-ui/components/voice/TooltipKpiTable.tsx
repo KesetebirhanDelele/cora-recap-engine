@@ -176,9 +176,9 @@ export default function TooltipKpiTable({ point, label, focusSeries }: Props) {
         </div>
       )}
 
-      {/* Campaign bar breakdown — always shows all three counts */}
+      {/* Voice Agent bar breakdown — always shows all three counts */}
       <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.25rem" }}>
-        Calls by campaign
+        Calls by voice agent
       </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>
@@ -202,7 +202,7 @@ export default function TooltipKpiTable({ point, label, focusSeries }: Props) {
 
       {/* Rate lines — values come from campaign stats when a bar is hovered */}
       <div style={{ fontSize: "0.68rem", fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.25rem" }}>
-        Rates {campStats && <span style={{ color: highlightColor, fontWeight: 400 }}>(campaign)</span>}
+        Rates {campStats && <span style={{ color: highlightColor, fontWeight: 400 }}>(voice agent)</span>}
       </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>

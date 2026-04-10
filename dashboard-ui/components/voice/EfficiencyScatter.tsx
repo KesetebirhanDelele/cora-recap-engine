@@ -13,19 +13,20 @@ interface Props {
 }
 
 // The three voice agents — fixed colors, fixed order, no others rendered.
-const CAMPAIGNS: { label: string; displayLabel: string; color: string }[] = [
-  { label: "Cold Lead", displayLabel: "ColdLead", color: "#2563eb" },
-  { label: "New Lead",  displayLabel: "NewLead",  color: "#16a34a" },
-  { label: "Inbound",   displayLabel: "Inbound",  color: "#0891b2" },
+// label matches the value stored in call_events.voice_agent (exact case).
+const CAMPAIGNS: { label: string; color: string }[] = [
+  { label: "ColdLead", color: "#2563eb" },
+  { label: "NewLead",  color: "#16a34a" },
+  { label: "Inbound",  color: "#eab308" },
 ];
 
-// Strict normalization: startsWith on trimmed lowercase prevents partial
-// matches from producing spurious extra series.
+// Normalize incoming campaign/voice_agent field to canonical stored values.
+// Accepts both old-style ("Cold Lead") and new-style ("ColdLead") spellings.
 function normalizeCampaign(name: string): string | null {
-  const n = name.trim().toLowerCase();
-  if (n === "cold lead" || n.startsWith("cold")) return "Cold Lead";
-  if (n === "new lead"  || n.startsWith("new"))  return "New Lead";
-  if (n === "inbound"   || n.startsWith("inbound")) return "Inbound";
+  const n = name.trim().toLowerCase().replace(/\s+/g, "");
+  if (n === "coldlead") return "ColdLead";
+  if (n === "newlead")  return "NewLead";
+  if (n === "inbound")  return "Inbound";
   return null;
 }
 
@@ -46,9 +47,7 @@ function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
       }}
     >
       <div style={{ fontWeight: 700, color: "#1e293b", marginBottom: 6, fontSize: "1rem" }}>
-        {normalizeCampaign(d.campaign) === "Cold Lead" ? "ColdLead"
-          : normalizeCampaign(d.campaign) === "New Lead" ? "NewLead"
-          : d.campaign}
+        {normalizeCampaign(d.campaign) ?? d.campaign}
       </div>
       <table style={{ borderCollapse: "collapse", width: "100%" }}>
         <tbody>
@@ -103,7 +102,7 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
   // Render in fixed order: ColdLead, NewLead, Inbound — at most one bubble each
   const series = CAMPAIGNS
     .filter((c) => merged[c.label] !== undefined)
-    .map((c) => ({ label: c.label, displayLabel: c.displayLabel, color: c.color, point: merged[c.label] }));
+    .map((c) => ({ label: c.label, color: c.color, point: merged[c.label] }));
 
   return (
     <ResponsiveContainer width="100%" height={height}>
@@ -148,10 +147,10 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
           height={26}
           wrapperStyle={{ fontSize: "0.85rem" }}
         />
-        {series.map(({ label, displayLabel, color, point }) => (
+        {series.map(({ label, color, point }) => (
           <Scatter
             key={label}
-            name={displayLabel}
+            name={label}
             data={[point]}
             fill={color}
             fillOpacity={0.8}

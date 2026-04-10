@@ -26,6 +26,7 @@ Field mapping (Synthflow → internal):
   telephony_duration → CallEvent.telephony_duration
   telephony_start → CallEvent.telephony_start
   telephony_end   → CallEvent.telephony_end
+  Agent        → CallEvent.voice_agent  (ColdLead | NewLead | Inbound)
 """
 from __future__ import annotations
 
@@ -40,6 +41,30 @@ from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, m
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
+
+
+def _infer_voice_agent(payload: dict) -> str | None:
+    """
+    Extract the voice agent identity from the Synthflow Agent field.
+
+    Sample values:
+      "Cora Inbound - Completed Call"          → "Inbound"
+      "Cora Outbound NewLead Completed Call"   → "NewLead"
+      "Cora Outbound ColdLead Completed Call"  → "ColdLead"
+
+    Returns None when the Agent field is absent or doesn't match a known agent.
+    """
+    raw = (payload.get("Agent") or payload.get("agent") or "").lower()
+    if not raw:
+        return None
+    if "coldlead" in raw:
+        return "ColdLead"
+    if "newlead" in raw:
+        return "NewLead"
+    if "inbound" in raw:
+        return "Inbound"
+    return None
+
 
 # Call status values that route to the voicemail path.
 # All Synthflow variants that indicate the call reached a machine/voicemail inbox.
@@ -211,6 +236,7 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
         telephony_duration=payload.get("telephony_duration"),
         telephony_start=_parse_datetime(payload.get("telephony_start")),
         telephony_end=_parse_datetime(payload.get("telephony_end")),
+        voice_agent=_infer_voice_agent(payload),
         dedupe_key=dedupe_key,
         raw_payload_json=payload,
         created_at=datetime.now(tz=timezone.utc),

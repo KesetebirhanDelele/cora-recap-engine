@@ -135,22 +135,54 @@ def get_health(session: Session) -> dict[str, Any]:
 def get_metrics(
     session: Session,
     campaign: str | None = None,
+    direction: str | None = None,
+    voice_agent: str | None = None,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
 ) -> dict[str, Any]:
     """
     Compute aggregated KPIs, queue detail, and CRM metrics for a time window.
     Returns a dict matching the GET /dashboard/metrics response schema.
+
+    campaign:    "New Lead" | "Cold Lead" | "Unknown" (business campaigns)
+    direction:   "Outbound" | "Inbound" (case-insensitive match on call_events.direction)
+    voice_agent: "ColdLead" | "NewLead" | "Inbound" (call_events.voice_agent)
     """
     now = datetime.now(tz=timezone.utc)
     from_dt = from_date or (now - timedelta(days=7))
     to_dt = to_date or now
 
     params: dict[str, Any] = {"from_dt": from_dt, "to_dt": to_dt}
+
+    # Campaign filter — "Unknown" means no recognised campaign value
     campaign_filter = ""
-    if campaign:
+    needs_ls_join = False
+    if campaign == "Unknown":
+        campaign_filter = "AND (ls.campaign_name IS NULL OR ls.campaign_name NOT IN ('New Lead', 'Cold Lead'))"
+        needs_ls_join = True
+    elif campaign:
         campaign_filter = "AND ls.campaign_name = :campaign"
         params["campaign"] = campaign
+        needs_ls_join = True
+
+    # Direction filter:
+    #   "Inbound"  → exact match (LOWER)
+    #   "Outbound" → everything that is NOT inbound (handles NULLs and other variants)
+    direction_filter = ""
+    if direction:
+        if direction.lower() == "inbound":
+            direction_filter = "AND LOWER(ce.direction) = 'inbound'"
+        else:
+            direction_filter = "AND (ce.direction IS NULL OR LOWER(ce.direction) != 'inbound')"
+
+    # Voice agent filter — exact match on ce.voice_agent
+    agent_filter = ""
+    if voice_agent:
+        agent_filter = "AND ce.voice_agent = :voice_agent"
+        params["voice_agent"] = voice_agent
+
+    # Join lead_state whenever campaign filter needs it
+    ls_join = "LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id" if needs_ls_join else ""
 
     # ── KPIs ─────────────────────────────────────────────────────────────────
     kpi_sql = f"""
@@ -166,6 +198,8 @@ def get_metrics(
         LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
         {campaign_filter}
+        {direction_filter}
+        {agent_filter}
     """
     kpi_row = session.execute(text(kpi_sql), params).fetchone()
     total = int(kpi_row[0]) if kpi_row else 0
@@ -177,11 +211,16 @@ def get_metrics(
     voicemail_rate = round(voicemail_n / total, 4) if total else None
     failed_rate = round(failed_n / total, 4) if total else None
 
-    enrolled_row = session.execute(text("""
-        SELECT COUNT(*) FROM call_events
-        WHERE detected_intent = 'enrolled'
-          AND created_at BETWEEN :from_dt AND :to_dt
-    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchone()
+    enrolled_sql = f"""
+        SELECT COUNT(*) FROM call_events ce
+        {ls_join}
+        WHERE ce.detected_intent = 'enrolled'
+          AND ce.created_at BETWEEN :from_dt AND :to_dt
+        {campaign_filter}
+        {direction_filter}
+        {agent_filter}
+    """
+    enrolled_row = session.execute(text(enrolled_sql), params).fetchone()
     enrolled_count = int(enrolled_row[0]) if enrolled_row else 0
 
     dnc_row = session.execute(text("""
@@ -193,30 +232,46 @@ def get_metrics(
     )
 
     # ── AI metrics ────────────────────────────────────────────────────────────
-    blank_row = session.execute(text("""
-        SELECT COUNT(*) FROM call_events
-        WHERE (transcript IS NULL OR transcript = '')
-          AND created_at BETWEEN :from_dt AND :to_dt
-    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchone()
+    blank_sql = f"""
+        SELECT COUNT(*) FROM call_events ce
+        {ls_join}
+        WHERE (ce.transcript IS NULL OR ce.transcript = '')
+          AND ce.created_at BETWEEN :from_dt AND :to_dt
+        {campaign_filter}
+        {direction_filter}
+        {agent_filter}
+    """
+    blank_row = session.execute(text(blank_sql), params).fetchone()
     blank_n = int(blank_row[0]) if blank_row else 0
     blank_transcript_rate = round(blank_n / total, 4) if total else None
 
-    intent_rows = session.execute(text("""
-        SELECT detected_intent, COUNT(*) AS cnt
-        FROM call_events
-        WHERE detected_intent IS NOT NULL
-          AND created_at BETWEEN :from_dt AND :to_dt
-        GROUP BY detected_intent
+    intent_sql = f"""
+        SELECT ce.detected_intent, COUNT(*) AS cnt
+        FROM call_events ce
+        {ls_join}
+        WHERE ce.detected_intent IS NOT NULL
+          AND ce.created_at BETWEEN :from_dt AND :to_dt
+        {campaign_filter}
+        {direction_filter}
+        {agent_filter}
+        GROUP BY ce.detected_intent
         ORDER BY cnt DESC
-    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+    """
+    intent_rows = session.execute(text(intent_sql), params).fetchall()
     intent_distribution = {r[0]: int(r[1]) for r in intent_rows}
 
-    consent_rows = session.execute(text("""
-        SELECT summary_consent, COUNT(*) AS cnt
-        FROM summary_results
-        WHERE created_at BETWEEN :from_dt AND :to_dt
-        GROUP BY summary_consent
-    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+    consent_sql = f"""
+        SELECT sr.summary_consent, COUNT(*) AS cnt
+        FROM summary_results sr
+        JOIN call_events ce ON ce.id = sr.call_event_id
+        {ls_join}
+        WHERE sr.created_at BETWEEN :from_dt AND :to_dt
+        {campaign_filter}
+        {direction_filter}
+        {agent_filter}
+        GROUP BY sr.summary_consent
+    """
+    consent_rows = session.execute(text(consent_sql), params).fetchall()
     consent_distribution = {r[0]: int(r[1]) for r in consent_rows}
 
     # ── Stuck and expired jobs ────────────────────────────────────────────────
@@ -413,10 +468,11 @@ def get_voice_performance(
     wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 
     # ── Weekly time series ────────────────────────────────────────────────────
+    # Group by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     ts_rows = session.execute(text(f"""
         SELECT
             date_trunc('week', ce.created_at)                              AS week_start,
-            COALESCE(ls.campaign_name, 'Unknown')                          AS campaign_name,
+            ce.voice_agent                                                  AS voice_agent,
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
@@ -425,18 +481,16 @@ def get_voice_performance(
             COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
-        LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
-        GROUP BY date_trunc('week', ce.created_at), ls.campaign_name
-        ORDER BY week_start ASC, ls.campaign_name
+        GROUP BY date_trunc('week', ce.created_at), ce.voice_agent
+        ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
 
-    # Pivot by week
-    from collections import defaultdict
+    # Pivot by week — keyed by voice_agent value
     weeks: dict[str, dict[str, Any]] = {}
     for r in ts_rows:
         wk = r[0].date().isoformat() if hasattr(r[0], "date") else str(r[0])[:10]
-        camp = (r[1] or "Unknown").lower()
+        agent = (r[1] or "").lower()  # "coldlead" | "newlead" | "inbound" | ""
         t = int(r[2])
         u = int(r[3])
         c = int(r[4])
@@ -460,13 +514,13 @@ def get_voice_performance(
         w = weeks[wk]
 
         camp_key: str | None = None
-        if "cold" in camp:
+        if agent == "coldlead":
             w["cold"] += t
             camp_key = "cold_s"
-        elif "inbound" in camp:
+        elif agent == "inbound":
             w["inbound"] += t
             camp_key = "inbound_s"
-        elif "new" in camp:
+        elif agent == "newlead":
             w["new_lead"] += t
             camp_key = "new_lead_s"
 
@@ -531,18 +585,18 @@ def get_voice_performance(
             "new_lead_stats":_camp_stats(w["new_lead_s"]),
         })
 
-    # ── Campaign breakdown for scatter ────────────────────────────────────────
+    # ── Voice agent breakdown for scatter ─────────────────────────────────────
+    # Grouped by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     camp_rows = session.execute(text(f"""
         SELECT
-            COALESCE(ls.campaign_name, 'Unknown')                          AS campaign_name,
+            COALESCE(ce.voice_agent, 'Unknown')                            AS voice_agent,
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked
         FROM call_events ce
-        LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
-        GROUP BY ls.campaign_name
+        GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
 
@@ -984,13 +1038,15 @@ def get_recent_calls(
     session: Session,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
-    campaign: str | None = None,
+    voice_agent: str | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
     """
     Return calls with duration >= 30s that have both transcript and recording_url.
     Results are ordered by call start time descending (most recent first).
     Timestamps are returned as UTC ISO strings; the frontend converts to CST.
+
+    voice_agent: "ColdLead" | "NewLead" | "Inbound" — filters on ce.voice_agent.
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
@@ -1001,16 +1057,16 @@ def get_recent_calls(
         "to_dt": to_dt,
         "limit": limit,
     }
-    campaign_filter = ""
-    if campaign:
-        campaign_filter = "AND ls.campaign_name = :campaign"
-        params["campaign"] = campaign
+    agent_filter = ""
+    if voice_agent:
+        agent_filter = "AND ce.voice_agent = :voice_agent"
+        params["voice_agent"] = voice_agent
 
     rows = session.execute(text(f"""
         SELECT
             ce.contact_id,
             COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
-            COALESCE(ls.campaign_name, 'Unknown')        AS campaign_name,
+            COALESCE(ce.voice_agent, ls.campaign_name, 'Unknown') AS voice_agent,
             ce.status,
             COALESCE(ce.duration_seconds, 0)             AS duration_seconds,
             ce.recording_url,
@@ -1024,7 +1080,7 @@ def get_recent_calls(
           AND COALESCE(ce.duration_seconds, 0) >= 30
           AND ce.transcript IS NOT NULL AND ce.transcript != ''
           AND ce.recording_url IS NOT NULL AND ce.recording_url != ''
-          {campaign_filter}
+          {agent_filter}
         ORDER BY COALESCE(ce.start_time_utc, ce.created_at) DESC
         LIMIT :limit
     """), params).fetchall()
@@ -1035,7 +1091,7 @@ def get_recent_calls(
         calls.append({
             "contact_id": r[0],
             "phone": r[1],
-            "campaign_name": r[2],
+            "campaign_name": r[2],   # carries voice_agent value for display
             "status": r[3],
             "duration_seconds": int(r[4]),
             "recording_url": r[5],
@@ -1046,7 +1102,7 @@ def get_recent_calls(
 
     return {
         "period": {"from": from_dt.isoformat(), "to": to_dt.isoformat()},
-        "campaign_filter": campaign,
+        "voice_agent_filter": voice_agent,
         "total": len(calls),
         "calls": calls,
     }
@@ -1060,12 +1116,18 @@ def get_intent_calls(
     from_date: datetime | None = None,
     to_date: datetime | None = None,
     campaign: str | None = None,
+    voice_agent: str | None = None,
+    direction: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
     """
     Return individual calls matching a specific detected_intent.
-    Used by the AI Performance intent bar chart drill-down.
+    Used by the Engagement Analysis intent bar chart drill-down.
     Includes transcript and recording_url for call detail view.
+
+    campaign:    "New Lead" | "Cold Lead" — filters on lead_state.campaign_name
+    voice_agent: "ColdLead" | "NewLead" | "Inbound" — filters on ce.voice_agent
+    direction:   "Outbound" | "Inbound" — filters on call_events.direction
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
@@ -1081,14 +1143,24 @@ def get_intent_calls(
     if campaign:
         campaign_filter = "AND ls.campaign_name = :campaign"
         params["campaign"] = campaign
+    agent_filter = ""
+    if voice_agent:
+        agent_filter = "AND ce.voice_agent = :voice_agent"
+        params["voice_agent"] = voice_agent
+    direction_filter = ""
+    if direction:
+        if direction.lower() == "inbound":
+            direction_filter = "AND LOWER(ce.direction) = 'inbound'"
+        else:
+            direction_filter = "AND (ce.direction IS NULL OR LOWER(ce.direction) != 'inbound')"
 
     rows = session.execute(text(f"""
         SELECT
             ce.contact_id,
-            COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
-            COALESCE(ls.campaign_name, 'Unknown')        AS campaign_name,
+            COALESCE(ls.normalized_phone, ce.contact_id)              AS phone,
+            COALESCE(ce.voice_agent, ls.campaign_name, 'Unknown')     AS display_agent,
             ce.status,
-            COALESCE(ce.duration_seconds, 0)             AS duration_seconds,
+            COALESCE(ce.duration_seconds, 0)                          AS duration_seconds,
             ce.recording_url,
             ce.transcript,
             ce.start_time_utc,
@@ -1099,6 +1171,8 @@ def get_intent_calls(
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
           AND ce.detected_intent = :intent
           {campaign_filter}
+          {agent_filter}
+          {direction_filter}
         ORDER BY COALESCE(ce.start_time_utc, ce.created_at) DESC
         LIMIT :limit
     """), params).fetchall()
@@ -1109,7 +1183,7 @@ def get_intent_calls(
         calls.append({
             "contact_id": r[0],
             "phone": r[1],
-            "campaign_name": r[2],
+            "campaign_name": r[2],   # carries voice_agent value for display
             "status": r[3],
             "duration_seconds": int(r[4]),
             "recording_url": r[5],
@@ -1121,6 +1195,7 @@ def get_intent_calls(
     return {
         "period": {"from": from_dt.isoformat(), "to": to_dt.isoformat()},
         "intent": intent,
+        "voice_agent_filter": voice_agent,
         "campaign_filter": campaign,
         "total": len(calls),
         "calls": calls,

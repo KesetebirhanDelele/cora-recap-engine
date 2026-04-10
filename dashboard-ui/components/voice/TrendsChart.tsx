@@ -99,7 +99,7 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
         {/* Stacked bars — onMouseEnter/Leave tracks the hovered segment */}
         <Bar yAxisId="calls" dataKey="cold"     stackId="calls" name="Cold Lead" fill="#2563eb" radius={[0,0,0,0]}
           onMouseEnter={() => setActiveSeries("cold")}    onMouseLeave={clearSeries} />
-        <Bar yAxisId="calls" dataKey="inbound"  stackId="calls" name="Inbound"  fill="#0891b2" radius={[0,0,0,0]}
+        <Bar yAxisId="calls" dataKey="inbound"  stackId="calls" name="Inbound"  fill="#eab308" radius={[0,0,0,0]}
           onMouseEnter={() => setActiveSeries("inbound")} onMouseLeave={clearSeries} />
         <Bar yAxisId="calls" dataKey="new_lead" stackId="calls" name="New Lead" fill="#16a34a" radius={[2,2,0,0]}
           onMouseEnter={() => setActiveSeries("new_lead")} onMouseLeave={clearSeries} />

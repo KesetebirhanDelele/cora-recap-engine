@@ -86,13 +86,17 @@ export async function fetchHealth(): Promise<HealthResponse> {
 
 export async function fetchMetrics(options?: {
   campaign?: string;
+  direction?: string;
+  voice_agent?: string;
   from_date?: string;
   to_date?: string;
 }): Promise<MetricsResponse> {
   const params: Record<string, string> = {};
-  if (options?.campaign) params.campaign = options.campaign;
-  if (options?.from_date) params.from_date = options.from_date;
-  if (options?.to_date) params.to_date = options.to_date;
+  if (options?.campaign)    params.campaign    = options.campaign;
+  if (options?.direction)   params.direction   = options.direction;
+  if (options?.voice_agent) params.voice_agent = options.voice_agent;
+  if (options?.from_date)   params.from_date   = options.from_date;
+  if (options?.to_date)     params.to_date     = options.to_date;
   return get<MetricsResponse>("/dashboard/metrics", params);
 }
 
@@ -230,14 +234,14 @@ export async function fetchCardMetrics(): Promise<CardMetricsResponse> {
 export async function fetchRecentCalls(options?: {
   from_date?: string;
   to_date?: string;
-  campaign?: string;
+  voice_agent?: string;
   limit?: number;
 }): Promise<RecentCallsResponse> {
   const params: Record<string, string> = {};
-  if (options?.from_date) params.from_date = options.from_date;
-  if (options?.to_date)   params.to_date   = options.to_date;
-  if (options?.campaign)  params.campaign  = options.campaign;
-  if (options?.limit)     params.limit     = String(options.limit);
+  if (options?.from_date)    params.from_date    = options.from_date;
+  if (options?.to_date)      params.to_date      = options.to_date;
+  if (options?.voice_agent)  params.voice_agent  = options.voice_agent;
+  if (options?.limit)        params.limit        = String(options.limit);
   return get<RecentCallsResponse>("/dashboard/recent-calls", params);
 }
 
@@ -246,12 +250,16 @@ export async function fetchIntentCalls(options: {
   from_date?: string;
   to_date?: string;
   campaign?: string;
+  voice_agent?: string;
+  direction?: string;
   limit?: number;
 }): Promise<IntentCallsResponse> {
   const params: Record<string, string> = { intent: options.intent };
-  if (options.from_date) params.from_date = options.from_date;
-  if (options.to_date)   params.to_date   = options.to_date;
-  if (options.campaign)  params.campaign  = options.campaign;
-  if (options.limit)     params.limit     = String(options.limit);
+  if (options.from_date)   params.from_date   = options.from_date;
+  if (options.to_date)     params.to_date     = options.to_date;
+  if (options.campaign)    params.campaign    = options.campaign;
+  if (options.voice_agent) params.voice_agent = options.voice_agent;
+  if (options.direction)   params.direction   = options.direction;
+  if (options.limit)       params.limit       = String(options.limit);
   return get<IntentCallsResponse>("/dashboard/intent-calls", params);
 }

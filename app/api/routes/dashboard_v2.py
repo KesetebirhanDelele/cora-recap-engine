@@ -73,14 +73,16 @@ def get_health(
 
 @router.get("/metrics")
 def get_metrics(
-    campaign: str | None = Query(default=None, description="New Lead | Cold Lead | Inbound"),
+    campaign: str | None = Query(default=None, description="New Lead | Cold Lead | Unknown"),
+    direction: str | None = Query(default=None, description="Outbound | Inbound"),
+    voice_agent: str | None = Query(default=None, description="ColdLead | NewLead | Inbound"),
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Aggregated KPIs and queue metrics for a time window."""
     from app.services.dashboard_metrics import get_metrics as _get_metrics
-    return _get_metrics(session, campaign=campaign, from_date=from_date, to_date=to_date)
+    return _get_metrics(session, campaign=campaign, direction=direction, voice_agent=voice_agent, from_date=from_date, to_date=to_date)
 
 
 @router.get("/events")
@@ -189,16 +191,17 @@ def get_card_metrics(
 def get_recent_calls(
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
-    campaign: str | None = Query(default=None, description="New Lead | Cold Lead | Inbound"),
+    voice_agent: str | None = Query(default=None, description="ColdLead | NewLead | Inbound"),
     limit: int = Query(default=200, le=500),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
     Calls with duration >= 30s that have transcript and recording_url.
     Ordered by call time descending. Used by the Recent Calls page.
+    Filtered by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     """
     from app.services.dashboard_metrics import get_recent_calls as _get_rc
-    return _get_rc(session, from_date=from_date, to_date=to_date, campaign=campaign, limit=limit)
+    return _get_rc(session, from_date=from_date, to_date=to_date, voice_agent=voice_agent, limit=limit)
 
 
 @router.get("/intent-calls")
@@ -206,16 +209,21 @@ def get_intent_calls(
     intent: str = Query(..., description="detected_intent value to drill into"),
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
-    campaign: str | None = Query(default=None, description="New Lead | Cold Lead | Inbound"),
+    campaign: str | None = Query(default=None, description="New Lead | Cold Lead"),
+    voice_agent: str | None = Query(default=None, description="ColdLead | NewLead | Inbound"),
+    direction: str | None = Query(default=None, description="Outbound | Inbound"),
     limit: int = Query(default=100, le=200),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
-    All calls matching a specific detected_intent — used by the AI Performance
+    All calls matching a specific detected_intent — used by the Engagement Analysis
     intent bar chart drill-down. Returns transcript and recording_url per call.
     """
     from app.services.dashboard_metrics import get_intent_calls as _get_ic
-    return _get_ic(session, intent=intent, from_date=from_date, to_date=to_date, campaign=campaign, limit=limit)
+    return _get_ic(
+        session, intent=intent, from_date=from_date, to_date=to_date,
+        campaign=campaign, voice_agent=voice_agent, direction=direction, limit=limit,
+    )
 
 
 @router.get("/exceptions/trend")
@@ -717,6 +725,7 @@ def get_campaign_overview(
             ls.contact_id,
             COALESCE(ls.normalized_phone, ls.contact_id)  AS contact,
             ls.campaign_name,
+            ls.lead_stage,
             ls.status,
             ls.do_not_call,
             ls.invalid,
@@ -777,9 +786,17 @@ def get_campaign_overview(
     window_start = _dt.combine(d_from, _dt.min.time()).replace(tzinfo=_tz.utc)
     window_end = _dt.combine(d_to + _td(days=1), _dt.min.time()).replace(tzinfo=_tz.utc)
 
+    _VALID_CAMPAIGNS = {"cold lead", "new lead"}
+
+    def _resolve_campaign(campaign_name, lead_stage) -> str:
+        for val in (campaign_name, lead_stage):
+            if val and val.strip().lower() in _VALID_CAMPAIGNS:
+                return val.strip()
+        return "Unknown"
+
     result = []
     for r in rows:
-        (contact_id, contact, campaign_name, st, do_not_call, invalid,
+        (contact_id, contact, campaign_name, lead_stage, st, do_not_call, invalid,
          next_action_at, job_type, job_run_at, last_call_at, effective_at) = r
 
         dnc = bool(do_not_call)
@@ -827,7 +844,7 @@ def get_campaign_overview(
         result.append({
             "contact_id": contact_id,
             "contact": contact,
-            "campaign_name": campaign_name or "—",
+            "campaign_name": _resolve_campaign(campaign_name, lead_stage),
             "last_call_at": lc_utc.isoformat() if lc_utc else None,
             "next_action": next_action,
             "status": final_status,

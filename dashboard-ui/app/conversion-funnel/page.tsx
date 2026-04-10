@@ -14,11 +14,12 @@ import Link from "next/link";
 import { fetchRecentCalls } from "@/lib/api";
 import type { RecentCallRow } from "@/types";
 
+// voice_agent values match what is stored in call_events.voice_agent
 const VOICE_AGENTS = [
-  { label: "All", campaign: "" },
-  { label: "NewLead",  campaign: "New Lead" },
-  { label: "ColdLead", campaign: "Cold Lead" },
-  { label: "Inbound",  campaign: "Inbound" },
+  { label: "All",      voice_agent: "" },
+  { label: "NewLead",  voice_agent: "NewLead" },
+  { label: "ColdLead", voice_agent: "ColdLead" },
+  { label: "Inbound",  voice_agent: "Inbound" },
 ];
 
 function defaultDates() {
@@ -172,7 +173,7 @@ export default function RecentCallsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const activeCampaign = VOICE_AGENTS[agentIdx]?.campaign || undefined;
+  const activeVoiceAgent = VOICE_AGENTS[agentIdx]?.voice_agent || undefined;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -181,7 +182,7 @@ export default function RecentCallsPage() {
       const data = await fetchRecentCalls({
         from_date: fromDate ? `${fromDate}T00:00:00Z` : undefined,
         to_date: toDate ? `${toDate}T23:59:59Z` : undefined,
-        campaign: activeCampaign,
+        voice_agent: activeVoiceAgent,
       });
       setCalls(data.calls);
       setTotal(data.total);
@@ -190,7 +191,7 @@ export default function RecentCallsPage() {
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate, activeCampaign]);
+  }, [fromDate, toDate, activeVoiceAgent]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -248,8 +249,10 @@ export default function RecentCallsPage() {
             />
           </div>
 
-          {/* Voice Agent tab buttons */}
-          <div style={{ display: "flex", gap: "0.25rem", alignSelf: "flex-end" }}>
+          {/* Voice Agent filter — includes Inbound agent (distinct from campaigns) */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: "0.72rem", fontWeight: 600, color: "#64748b" }}>Voice Agent</label>
+          <div style={{ display: "flex", gap: "0.25rem" }}>
             {VOICE_AGENTS.map((a, idx) => (
               <button
                 key={a.label}
@@ -265,6 +268,7 @@ export default function RecentCallsPage() {
                 {a.label}
               </button>
             ))}
+          </div>
           </div>
 
           <button
@@ -299,7 +303,7 @@ export default function RecentCallsPage() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
-                    {["Date / Time (CST)", "Phone", "Duration", "Recording", "Campaign", "Status", "Intent", "Transcript"].map((h) => (
+                    {["Date / Time (CST)", "Phone", "Duration", "Recording", "Voice Agent", "Status", "Intent", "Transcript"].map((h) => (
                       <th key={h} style={HEAD}>{h}</th>
                     ))}
                   </tr>
