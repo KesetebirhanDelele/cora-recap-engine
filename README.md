@@ -57,12 +57,14 @@ All build phases are complete. Phase 9 (Google Sheets shadow sync) is **out of s
 ```
 cora-recap-engine/
 ├── app/
-│   ├── main.py              # FastAPI app factory
+│   ├── main.py              # FastAPI app factory (port 8000)
 │   ├── compat.py            # Windows fork→spawn multiprocessing patch
 │   ├── api/
+│   │   ├── dashboard_main.py# Dashboard API factory (port 8001)
 │   │   └── routes/
 │   │       ├── webhooks.py  # POST /v1/webhooks/calls (Synthflow payload normalizer)
-│   │       ├── exceptions.py# Operator dashboard actions
+│   │       ├── exceptions.py# Operator exception actions (v1 API)
+│   │       ├── dashboard_v2.py # All /dashboard/* endpoints (port 8001)
 │   │       └── test_calls.py# POST /v1/test/calls/outbound (dev/staging only)
 │   ├── worker/
 │   │   ├── main.py          # RQ worker entrypoint
@@ -73,7 +75,8 @@ cora-recap-engine/
 │   │       ├── lifecycle_jobs.py   # update_lead_state (post-AI lead stage update)
 │   │       ├── outbound_jobs.py    # launch_outbound_call_job
 │   │       ├── channel_jobs.py     # send_sms_job, send_email_job
-│   │       └── voicemail_jobs.py   # process_voicemail_tier (+ executed_actions/duration intent signals)
+│   │       ├── voicemail_jobs.py   # process_voicemail_tier (+ executed_actions/duration intent signals)
+│   │       └── metrics_jobs.py     # collect_metrics_job (60s self-rescheduling metrics collector)
 │   ├── config/
 │   │   └── settings.py      # Pydantic settings with mode flags
 │   ├── adapters/            # External service clients
@@ -81,24 +84,41 @@ cora-recap-engine/
 │   │   ├── synthflow.py     # schedule_callback + launch_new_lead_call
 │   │   ├── openai_client.py
 │   │   └── sheets.py
-│   ├── models/              # SQLAlchemy ORM
+│   ├── models/              # SQLAlchemy ORM (13 tables)
 │   └── services/            # Business logic
+│       ├── dashboard_metrics.py # get_metrics(), get_health() — pure SQL aggregates
+│       ├── alerting.py          # evaluate_alerts(), SMTP send, 5 alert types
+│       ├── pipeline_trace.py    # get_lead_trace() — per-lead timeline
+│       └── event_publisher.py  # publish_event() — non-fatal DB event writes
+├── dashboard-ui/            # Next.js 14 frontend (port 3000)
+│   ├── app/                 # App Router pages
+│   ├── components/          # React components
+│   ├── lib/api.ts           # Typed API client (all fetch calls)
+│   └── types/index.ts       # TypeScript response types
 ├── execution/
-│   ├── dashboard.py          # Streamlit monitoring dashboard (read-only)
+│   ├── dashboard.py          # Streamlit monitoring dashboard (read-only, legacy)
 │   └── test_scripts/
 │       ├── run_test_call.py  # CLI: trigger a live end-to-end test call
 │       └── watch_test_call.py# CLI: poll DB for test call result
 ├── migrations/
 │   └── versions/
-│       ├── 0001_initial_schema.py       # 8 tables
-│       ├── 0002_reporting_views.py      # fact_call_activity, fact_kpi_daily
-│       ├── 0003_audit_log.py            # audit_log table
-│       └── 0004_call_event_synthflow_fields.py  # model_id, timeline, telephony_*
+│       ├── 0001_initial_schema.py               # 8 core tables
+│       ├── 0002_reporting_views.py              # fact_call_activity, fact_kpi_daily
+│       ├── 0003_audit_log.py                    # audit_log table
+│       ├── 0004_call_event_synthflow_fields.py  # model_id, timeline, telephony_*
+│       ├── 0005_lead_state_intent_fields.py     # status, do_not_call, invalid, next_action_at
+│       ├── 0006_messaging_tables.py             # outbound_messages, inbound_messages
+│       ├── 0007_shadow_actions.py               # shadow_actions table
+│       ├── 0008_call_event_detected_intent.py   # detected_intent field on call_events
+│       ├── 0009_app_config.py                   # app_config table (runtime settings)
+│       ├── 0010_brand_config.py                 # brand/messaging config fields
+│       ├── 0011_dashboard_tables.py             # system_metrics, event_stream, alert_events
+│       └── 0012_call_event_voice_agent.py       # voice_agent field on call_events
 ├── tests/
 │   ├── unit/
 │   └── integration/
 ├── directives/
-│   ├── spec/                # Binding specifications
+│   ├── spec/                # Binding specifications (00–17 + dashboard/)
 │   └── adr/                 # Architecture decision records
 ├── Dockerfile               # python:3.12-slim image
 ├── docker-compose.yml       # Redis + API + Worker (single command startup)
@@ -222,13 +242,18 @@ alembic upgrade head --sql > migrations/upgrade.sql
 ```
 
 Migration files:
-- [0001_initial_schema.py](migrations/versions/0001_initial_schema.py) — 8 tables with unique constraints and indexes
+- [0001_initial_schema.py](migrations/versions/0001_initial_schema.py) — 8 core tables with unique constraints and indexes
 - [0002_reporting_views.py](migrations/versions/0002_reporting_views.py) — `fact_call_activity` and `fact_kpi_daily` views
 - [0003_audit_log.py](migrations/versions/0003_audit_log.py) — `audit_log` table for operator action trail
 - [0004_call_event_synthflow_fields.py](migrations/versions/0004_call_event_synthflow_fields.py) — `model_id`, `timeline`, telephony fields on `call_events`
 - [0005_lead_state_intent_fields.py](migrations/versions/0005_lead_state_intent_fields.py) — intent fields on `lead_state`
 - [0006_messaging_tables.py](migrations/versions/0006_messaging_tables.py) — `outbound_messages` and related tables
 - [0007_shadow_actions.py](migrations/versions/0007_shadow_actions.py) — `shadow_actions` table for shadow mode interception log
+- [0008_call_event_detected_intent.py](migrations/versions/0008_call_event_detected_intent.py) — `detected_intent` column on `call_events`
+- [0009_app_config.py](migrations/versions/0009_app_config.py) — `app_config` table for runtime settings
+- [0010_brand_config.py](migrations/versions/0010_brand_config.py) — brand and messaging configuration fields
+- [0011_dashboard_tables.py](migrations/versions/0011_dashboard_tables.py) — `system_metrics`, `event_stream`, `alert_events` tables (required for Dashboard v2)
+- [0012_call_event_voice_agent.py](migrations/versions/0012_call_event_voice_agent.py) — `voice_agent` column on `call_events` (used for campaign resolution fallback)
 
 ### Start services
 
@@ -505,31 +530,42 @@ Open http://localhost:3000 in your browser.
 |---|---|
 | `/` | Home — status strip, live alert rows, navigation cards with live badge counts |
 | `/activity` | Real-time event stream (WebSocket) of all worker job events |
+| `/campaign-overview` | Upcoming scheduled contacts — date-window filter, campaign filter, drill-down to contact detail |
+| `/contact-lookup` | Search any contact by phone or ID to view full detail and pipeline state |
 | `/exceptions` | Exceptions Monitor — open issue queue with Resolve / Ignore / Bulk-Ignore actions, trend chart, date/type/severity filters |
 | `/system-anomalies` | Spike detection, recurring issues table, failure clusters, 14-day frequency trend |
 | `/queue` | Stuck jobs and expired worker leases |
 | `/alerts` | Threshold alerts (queue lag, error rate, exception spike, worker offline, GHL auth failure) |
 | `/voice-performance` | Single-screen voice analytics: KPI sidebar, stacked trends chart, WoW waterfall, efficiency scatter |
 | `/ai-performance` | AI quality metrics, intent distribution, consent distribution, intent→outcome table, error trends |
+| `/engagement-analysis` | Cross-filter analytics: KPIs by campaign, direction, voice agent, and date range; consent distribution filtered by all active filters |
 | `/conversion-funnel` | Funnel visual (Total Calls → Picked Up → Engaged → Booked), step table, drop-off highlight, trend lines |
 | `/crm-health` | GHL task and VM update success rates, shadow write count |
 | `/lead/[id]` | Per-contact pipeline trace — full job history, shadow flags, failure reasons |
+| `/settings` | Runtime settings management — brand config, messaging config, thresholds |
 
 ### Dashboard API endpoints (port 8001)
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/dashboard/health` | System health snapshot (queue lag, workers, exceptions, mode flags) |
-| `GET` | `/dashboard/metrics` | Aggregate KPIs, AI distribution, queue state, CRM rates |
+| `GET` | `/dashboard/metrics` | Aggregate KPIs, AI distribution, queue state, CRM rates — filterable by `campaign`, `direction`, `voice_agent`, `from_date`, `to_date` |
+| `GET` | `/dashboard/card-metrics` | Compact KPI card set for the home page navigation cards |
 | `GET` | `/dashboard/events` | Cursor-based event stream (polling fallback) |
 | `WS` | `/dashboard/ws/events` | WebSocket real-time event stream |
 | `GET` | `/dashboard/lead/{id}/trace` | Per-contact job timeline |
+| `GET` | `/dashboard/lead/{id}/detail` | Full contact detail (lead state, call history, scheduled jobs) |
 | `GET` | `/dashboard/alerts` | Alert records (filter by status) |
 | `GET` | `/dashboard/exceptions` | Exception records (filter by status, severity, type, date) |
 | `GET` | `/dashboard/exceptions/trend` | Daily exception counts by type (for trend chart) |
 | `GET` | `/dashboard/exceptions/anomalies` | Spike detection, recurring issues, failure clusters |
 | `GET` | `/dashboard/voice-performance` | Voice KPIs, WoW changes, weekly time series, campaign breakdown |
 | `GET` | `/dashboard/ai-timeseries` | Weekly AI quality trend (blank transcript rate, unknown intent %) |
+| `GET` | `/dashboard/campaign-overview` | Leads with upcoming scheduled actions — filterable by date window |
+| `GET` | `/dashboard/recent-calls` | Recent call event log — filterable by date, voice agent, limit |
+| `GET` | `/dashboard/intent-calls` | Call records for a specific intent — filterable by campaign, direction, voice agent |
+| `GET` | `/dashboard/settings` | Current runtime app config values |
+| `POST` | `/dashboard/settings` | Save updated runtime app config values (auth required) |
 | `POST` | `/dashboard/actions/retry` | Re-enqueue a failed job |
 | `POST` | `/dashboard/actions/cancel` | Cancel all pending jobs for a contact |
 | `POST` | `/dashboard/actions/finalize` | Force-advance a contact to terminal state |

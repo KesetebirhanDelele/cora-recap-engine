@@ -60,9 +60,12 @@ The bubble chart shall compare call types using:
 ### Global filters
 The dashboard shall support at minimum:
 - date range filter
-- call type filter
-- campaign filter where applicable
-- direction filter where applicable
+- call type / campaign filter where applicable — valid values: `New Lead`, `Cold Lead`, `Unknown`
+  - `Unknown` is a special value matching leads whose `campaign_name` and `lead_stage` are both absent or non-standard
+- direction filter where applicable — valid values: `Inbound`, `Outbound`
+  - **Outbound is defined as NOT Inbound**: the filter matches rows where `direction IS NULL OR LOWER(direction) != 'inbound'`. This covers NULL values and any non-inbound value, not just an exact match on "outbound"
+- voice agent filter where applicable — valid values: `ColdLead`, `NewLead`, `Inbound` (Synthflow agent identifiers stored in `call_events.voice_agent`)
+- consent distribution shall respect all active filters (campaign, direction, voice agent, date range). The query joins `summary_results` to `call_events` to apply call-level filters
 
 ### Cross-filtering
 Selecting a supported visual element shall cross-filter the related visuals unless explicitly disabled by dashboard configuration.

@@ -29,8 +29,8 @@
 - queue lag breach
 - Postgres write failures
 
-## Dashboard — IMPLEMENTED (8 sections)
-Streamlit dashboard at `execution/dashboard.py`. Run with `streamlit run execution/dashboard.py` (Postgres only required).
+## Dashboard — Legacy Streamlit (read-only monitoring)
+Streamlit dashboard at `execution/dashboard.py`. Run with `streamlit run execution/dashboard.py` (Postgres only required). This dashboard is superseded by Dashboard v2 for all real-time operational use.
 
 Sections:
 - **Overview** — metrics tiles (calls 24 h, shadow actions, open exceptions, failed jobs); bar charts by job status and shadow action type
@@ -55,6 +55,28 @@ Operator retry/cancel/finalize actions remain API-only (Bearer token required):
 - `POST /v1/exceptions/{id}/retry-delay`
 - `POST /v1/exceptions/{id}/cancel-future-jobs`
 - `POST /v1/exceptions/{id}/force-finalize`
+
+## Dashboard v2 — Production Console (Next.js + FastAPI)
+Dashboard v2 is the primary operational and analytics console. It runs as two separate services: FastAPI on port 8001 and Next.js on port 3000.
+
+Pages and capabilities:
+- **Home** (`/`) — system health status bar (Healthy/Warning/Critical), shadow/live mode pill, active alerts, navigation cards with live badge counts
+- **Campaign Overview** (`/campaign-overview`) — scheduled contacts in a date window, filterable by campaign (New Lead / Cold Lead / Unknown); campaign resolved via `campaign_name` → `lead_stage` → `voice_agent` fallback; click-through to Contact Lookup
+- **Contact Lookup** (`/contact-lookup`) — full contact detail by contact_id or phone; also used as drill-down target from Campaign Overview
+- **Live Activity** (`/activity`) — real-time worker event stream via WebSocket with polling fallback
+- **Exceptions Monitor** (`/exceptions`) — open exception queue with Resolve / Ignore / Bulk-Ignore actions; trend chart; date/type/severity filters
+- **System Anomalies** (`/system-anomalies`) — spike detection, recurring issues table, failure clusters, 14-day frequency trend
+- **Queue Health** (`/queue`) — stuck jobs and expired worker leases
+- **Alerts** (`/alerts`) — 5 alert types: queue_lag_exceeded, error_rate_spike, exception_spike, worker_offline, ghl_auth_failure
+- **Voice Performance** (`/voice-performance`) — KPI sidebar (9 metrics + WoW%), stacked trends chart (Cold Lead blue / New Lead green / Inbound yellow), WoW waterfall, efficiency scatter
+- **AI Performance** (`/ai-performance`) — blank transcript rate, unknown intent %, intent distribution, consent distribution, intent→outcome table
+- **Engagement Analysis** (`/engagement-analysis`) — cross-filter analytics by campaign, call direction, and voice agent; all filters including consent distribution apply via `summary_results JOIN call_events`; Outbound direction = NOT Inbound (covers NULLs and non-inbound values)
+- **Conversion Funnel** (`/conversion-funnel`) — 4-stage funnel, drop-off alert, step table, trend lines
+- **CRM Health** (`/crm-health`) — GHL task/VM success rates, shadow write count
+- **Lead Pipeline Trace** (`/lead/[id]`) — per-contact job timeline with shadow flags and failure reasons
+- **Settings** (`/settings`) — runtime app config management (brand, messaging, thresholds); write requires Bearer token
+
+Campaign colors in v2: Cold Lead `#2563eb` (blue), New Lead `#16a34a` (green), Inbound `#eab308` (yellow).
 
 ## Reporting observability
 - reporting refresh success/failure

@@ -12,11 +12,39 @@
 Note: Google Sheets shadow sync is out of scope. No Sheets setup required.
 
 ## Local run
+
+### Core pipeline (port 8000)
 1. Start Postgres and Redis.
 2. Verify `.env` credentials (GHL_API_KEY, OPENAI_API_KEY, SYNTHFLOW_API_KEY).
-3. Start API service: `cora-api` or `uvicorn app.main:app --reload`
-4. Start worker service: `cora-worker`
-5. Post test webhook events to `POST /v1/webhooks/calls`.
+3. Apply migrations: `alembic upgrade head` (current head: 0012)
+4. Start API service: `cora-api` or `uvicorn app.main:app --reload`
+5. Start worker service: `cora-worker`
+6. Post test webhook events to `POST /v1/webhooks/calls`.
+
+### Dashboard v2 (port 8001 + 3000)
+1. Start the dashboard API (separate process):
+   ```bash
+   uvicorn app.api.dashboard_main:app --port 8001 --reload
+   ```
+2. Install frontend dependencies (one-time):
+   ```bash
+   cd dashboard-ui && npm install
+   ```
+3. Start the Next.js frontend:
+   ```bash
+   npm run dev   # http://localhost:3000
+   ```
+4. The metrics collector (`collect_metrics_job`) starts automatically with the worker — no manual step needed.
+
+Required `.env` additions for Dashboard v2:
+```
+SECRET_KEY=your-dev-secret
+DASHBOARD_READ_AUTH_REQUIRED=false
+ALLOW_ORIGINS=http://localhost:3000
+# Frontend: dashboard-ui/.env.local
+NEXT_PUBLIC_API_URL=http://localhost:8001
+NEXT_PUBLIC_DASHBOARD_TOKEN=your-dev-secret
+```
 
 ## Monitoring dashboard
 Requires only Postgres (API/worker do not need to be running).
@@ -151,7 +179,7 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 
 ## Migration commands
 ```bash
-alembic upgrade head     # apply all migrations (current head: 0007)
+alembic upgrade head     # apply all migrations (current head: 0012)
 alembic current          # check current revision
 alembic downgrade -1     # roll back one step
 ```
@@ -164,6 +192,11 @@ Migrations (in order):
 - `0005` — intent fields on `lead_state` (status, do_not_call, invalid, preferred_channel, next_action_at, last_replied_at)
 - `0006` — `outbound_messages` and `inbound_messages` tables
 - `0007` — `shadow_actions` table
+- `0008` — `detected_intent` column on `call_events`
+- `0009` — `app_config` table for runtime settings
+- `0010` — brand and messaging configuration fields
+- `0011` — `system_metrics`, `event_stream`, `alert_events` tables (required for Dashboard v2 metrics collector, event feed, and alerting)
+- `0012` — `voice_agent` column on `call_events` (used by Campaign Overview campaign resolution fallback)
 
 ## Reporting runbook notes
 - Validate KPI values against authoritative SQL queries after schema or logic changes.

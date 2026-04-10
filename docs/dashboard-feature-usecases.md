@@ -204,7 +204,7 @@ Rate KPIs are color-coded to match the corresponding line in the Trends chart. T
 
 ### Trends Over Time (main chart)
 A composed chart with a date-selectable range (default: last 28 days):
-- **Stacked bars** (left Y axis) — weekly total calls split by campaign: Cold Lead (blue), Inbound (teal), New Lead (green)
+- **Stacked bars** (left Y axis) — weekly total calls split by campaign: Cold Lead (blue `#2563eb`), New Lead (green `#16a34a`), Inbound (yellow `#eab308`)
 - **Lines** (right Y axis) — Completion %, Pickup %, Voicemail %, Failed %, Booking Rate %, each in its own color
 
 X axis shows ISO week ranges formatted as `MM/DD–MM/DD`.
@@ -224,7 +224,7 @@ A bubble chart with:
 - Y axis: Booking Rate (Booked Appointment %)
 - Bubble size: Total Calls volume
 
-One bubble per campaign (exactly three: Cold Lead, New Lead, Inbound). A campaign that is large (many calls), low on pickup rate, and low on booking rate is wasting dial capacity.
+One bubble per campaign (exactly three: Cold Lead `#2563eb`, New Lead `#16a34a`, Inbound `#eab308`). A campaign that is large (many calls), low on pickup rate, and low on booking rate is wasting dial capacity.
 
 **Use case:** Prioritize which campaign to investigate for efficiency improvements. A bubble in the top-right is performing well. A large bubble in the bottom-left is a problem.
 
@@ -327,6 +327,89 @@ Shows a chronological list of pipeline steps for the contact:
 
 ---
 
+## Campaign Overview (`/campaign-overview`)
+
+**Question answered:** Who has a scheduled action coming up, and what campaign are they in?
+
+Shows all leads with an upcoming scheduled action (call, SMS, email) within a configurable date window. Terminal leads (Do Not Call, Invalid, Enrolled, Closed) are always included regardless of the date window.
+
+### Controls
+- **Next action from / to** — date range picker (default: today → today + 7 days). Filters non-terminal leads to those whose scheduled action falls within the window.
+- **Campaign** — dropdown filter: All / New Lead / Cold Lead / Unknown. `Unknown` shows leads whose campaign cannot be resolved from either `lead_state.campaign_name` or `lead_state.lead_stage`.
+- **Refresh** button — manual reload.
+
+### Campaign resolution logic
+Each row's campaign is resolved in priority order:
+1. `lead_state.campaign_name` — if it contains "Cold Lead" or "New Lead" (case-insensitive)
+2. `lead_state.lead_stage` — same check
+3. `call_events.voice_agent` from the most recent call — `ColdLead` → "Cold Lead", `NewLead` → "New Lead"
+4. Fallback: "Unknown"
+
+This ensures that leads whose `campaign_name` is null or empty are still classified correctly based on which Synthflow agent last called them.
+
+### Table columns
+- **Phone** — clickable; opens the Contact Lookup drill-down for that contact
+- **Campaign** — resolved campaign name (Cold Lead / New Lead / Unknown)
+- **Last Call (CST)** — timestamp of the most recent call event, in Central Time
+- **Next Action** — label and timing (e.g. "Call in 2h 15m", "Follow-up in 1d 4h", "Unscheduled")
+- **Status** — terminal status badge if applicable (Do Not Call / Invalid / Enrolled / Closed)
+
+**Use case:** Morning queue review. An ops rep opens Campaign Overview to see which leads need to be called today and in what campaign. Clicking a phone number opens the full contact detail without leaving the page.
+
+---
+
+## Contact Lookup (`/contact-lookup`)
+
+**Question answered:** What is the complete current state of this specific contact?
+
+Accepts a contact ID or phone number and returns:
+- Lead state (campaign, status, VM tier, DNC flag, next scheduled action)
+- Full call history (all call events with status, duration, direction, voice agent)
+- Scheduled jobs (pending and recent)
+- Shadow actions (intercepted writes, if any)
+
+Also used as the drill-down view within Campaign Overview: clicking a phone number in the Campaign Overview table loads the Contact Lookup view inline, with a "Back to Campaign Overview" button to return.
+
+**Use case:** An operator receives a complaint about a specific lead. Enter the contact_id or phone number to see exactly what the pipeline has done to that lead, what is scheduled next, and whether anything failed.
+
+---
+
+## Engagement Analysis (`/engagement-analysis`)
+
+**Question answered:** How do campaign performance metrics change when I slice by campaign type, call direction, or Synthflow voice agent?
+
+A cross-filter analytics view over the same KPI and AI distribution dataset used by the Voice Performance page, with additional filter dimensions.
+
+### Filters
+- **Date range** — from / to date pickers
+- **Campaign** — `New Lead` | `Cold Lead` | `Unknown` | (all). "Unknown" matches leads where neither `campaign_name` nor `lead_stage` resolves to a standard campaign.
+- **Call Direction** — `Inbound` | `Outbound` | (all). **Outbound is defined as NOT Inbound**: it matches `call_events` rows where `direction IS NULL OR LOWER(direction) != 'inbound'`. This covers NULL values and any non-inbound variant, not just an exact string match on "outbound".
+- **Voice Agent** — `ColdLead` | `NewLead` | `Inbound` | (all). Matches the Synthflow agent identifier stored in `call_events.voice_agent`. This is distinct from campaign: a single campaign can be handled by different voice agents over time.
+- **All filters apply to every metric including the consent distribution chart.** The consent query joins `summary_results` to `call_events` so that the active campaign, direction, and voice agent filters constrain the consent counts.
+
+### Panels
+- **KPI tiles** — same metrics as Voice Performance (total calls, pickup rate, voicemail rate, etc.), recomputed for the active filter combination
+- **Intent distribution** — bar chart of detected intents for the filtered call set
+- **Consent distribution** — YES / NO / UNKNOWN bars filtered by the full active filter set
+- **Intent → Outcome table** — intent frequency and booking rate for the filtered set
+- **AI trend lines** — blank transcript rate and unknown intent % over time
+
+**Use case:** An analyst wants to know whether the Inbound voice agent has a different booking rate than the ColdLead agent. Set Voice Agent to "Inbound", observe KPIs; switch to "ColdLead", compare. Or: filter to "Unknown" campaign to audit leads that are not being classified correctly.
+
+---
+
+## Settings (`/settings`)
+
+**Question answered:** What are the current runtime configuration values, and can I change them without redeploying?
+
+Displays the active `app_config` values loaded from the database. These are runtime settings (brand name, messaging templates, alert thresholds, tier delays) that can be updated without a code deploy.
+
+Write actions require `Authorization: Bearer {SECRET_KEY}`. The settings page uses the same auth flow as the operator action endpoints.
+
+**Use case:** Update the voicemail SMS message template or adjust an alert threshold during a live incident without restarting any service.
+
+---
+
 ## System Status Bar (home page component)
 
 **Question answered:** Is this a safe time to make changes to the system?
@@ -349,17 +432,24 @@ All read endpoints are optionally auth-gated by `DASHBOARD_READ_AUTH_REQUIRED`. 
 | Method | Path | Used by |
 |---|---|---|
 | `GET` | `/dashboard/health` | Home page, status bar |
-| `GET` | `/dashboard/metrics` | AI Performance, Conversion Funnel, CRM Health, Queue Health |
+| `GET` | `/dashboard/metrics` | Engagement Analysis, AI Performance, Conversion Funnel, CRM Health, Queue Health — accepts `campaign`, `direction`, `voice_agent`, `from_date`, `to_date` |
+| `GET` | `/dashboard/card-metrics` | Home page navigation card badge counts |
 | `GET` | `/dashboard/events` | Live Activity (polling fallback) |
 | `WS` | `/dashboard/ws/events` | Live Activity (WebSocket primary) |
 | `GET` | `/dashboard/lead/{id}/trace` | Lead Pipeline Trace |
+| `GET` | `/dashboard/lead/{id}/detail` | Contact Lookup — full contact detail view |
 | `GET` | `/dashboard/alerts` | Alerts page, SystemStatusBar |
 | `GET` | `/dashboard/exceptions` | Exceptions Monitor |
 | `GET` | `/dashboard/exceptions/trend` | Exceptions Monitor (trend chart) |
 | `GET` | `/dashboard/exceptions/anomalies` | System Anomalies |
 | `GET` | `/dashboard/voice-performance` | Voice Performance, Conversion Funnel |
 | `GET` | `/dashboard/ai-timeseries` | AI Performance |
-| `POST` | `/dashboard/actions/retry` | Exceptions Monitor → Resolve |
+| `GET` | `/dashboard/campaign-overview` | Campaign Overview |
+| `GET` | `/dashboard/recent-calls` | Contact Lookup, Campaign Overview |
+| `GET` | `/dashboard/intent-calls` | Engagement Analysis intent drill-down |
+| `GET` | `/dashboard/settings` | Settings page (read) |
+| `POST` | `/dashboard/settings` | Settings page (write, auth required) |
+| `POST` | `/dashboard/actions/retry` | Exceptions Monitor → Retry |
 | `POST` | `/dashboard/actions/cancel` | Lead trace / operator action |
 | `POST` | `/dashboard/actions/finalize` | Lead trace / operator action |
 | `POST` | `/dashboard/actions/resolve` | Exceptions Monitor → Resolve |
@@ -377,7 +467,7 @@ The dashboard uses a consistent color system across all pages. Understanding it 
 |---|---|---|
 | Cold Lead | Blue | `#2563eb` |
 | New Lead | Green | `#16a34a` |
-| Inbound | Teal | `#0891b2` |
+| Inbound | Yellow | `#eab308` |
 
 ### Rate line colors (Voice Performance, KPI sidebar)
 | Metric | Color | Hex |
@@ -415,7 +505,13 @@ A: In Shadow mode, the pipeline processes calls and runs AI analysis, but outbou
 A: The status bar considers multiple signals. It may be amber due to stuck jobs, expired leases, failed jobs in the last 5 minutes, or a non-zero error rate — even if the exception queue itself is clean. Check Queue Health for stuck/expired jobs and the Alerts page for threshold breaches.
 
 **Q: Voice Performance shows 4 bubbles in the efficiency scatter chart.**
-A: This should not happen. The scatter chart normalizes all incoming campaign names to exactly three canonical labels (Cold Lead, New Lead, Inbound) and merges duplicates using weighted-average rates. If four bubbles appear, the campaign names in the database contain a variant not handled by the normalizer — investigate the raw campaign_name values in the call_events table.
+A: This should not happen. The scatter chart renders exactly three canonical campaigns: Cold Lead (blue `#2563eb`), New Lead (green `#16a34a`), and Inbound (yellow `#eab308`). If four bubbles appear, the campaign names in the database contain a variant not handled by the normalizer — investigate the raw `campaign_name` values in the `call_events` table.
+
+**Q: Why does the Engagement Analysis "Outbound" direction filter show all calls when I expect only outbound ones?**
+A: "Outbound" is defined as NOT Inbound. The filter matches `call_events` rows where `direction IS NULL OR LOWER(direction) != 'inbound'`. This is intentional: most calls use the default direction value of `"outbound"` (lowercase), and some may be NULL. An exact match on `"Outbound"` (capital-O) would miss nearly everything. If you expect a specific direction value in the data, check the raw `direction` column in `call_events`.
+
+**Q: Campaign Overview shows "Unknown" for some contacts even though I know their campaign.**
+A: The Campaign Overview resolves campaign from three sources in order: (1) `lead_state.campaign_name`, (2) `lead_state.lead_stage`, (3) the `voice_agent` field of the most recent call event (`ColdLead` → Cold Lead, `NewLead` → New Lead). If all three are absent or non-standard, the contact shows as "Unknown". Check the contact's `lead_state` record and most recent `call_events.voice_agent` to diagnose why resolution is failing.
 
 **Q: The WoW badges on the KPI sidebar show "—" for everything.**
 A: "—" means no prior-period data exists for comparison. This appears the first time a date range is selected (no previous week to compare against) or if the prior week had zero calls.

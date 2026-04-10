@@ -44,9 +44,13 @@ Returns aggregated KPIs and queue metrics for a time window.
 **Auth**: Optional
 
 **Query params**:
-- `campaign` (optional): `New Lead` | `Cold Lead` | `Inbound`
+- `campaign` (optional): `New Lead` | `Cold Lead` | `Unknown` — `Unknown` matches leads where neither `campaign_name` nor `lead_stage` resolves to a standard campaign
+- `direction` (optional): `Inbound` | `Outbound` — Outbound is defined as NOT Inbound (`direction IS NULL OR LOWER(direction) != 'inbound'`); case-insensitive
+- `voice_agent` (optional): `ColdLead` | `NewLead` | `Inbound` — exact match on `call_events.voice_agent` (Synthflow agent identifier)
 - `from_date` (optional): ISO date, default `now() - 7 days`
 - `to_date` (optional): ISO date, default `now()`
+
+**Note on consent distribution**: the `ai.consent_distribution` values are computed from `summary_results` joined to `call_events`, meaning all active filters (campaign, direction, voice_agent, date range) apply to the consent counts as well.
 
 **Response 200**
 ```json

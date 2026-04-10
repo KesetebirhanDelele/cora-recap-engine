@@ -733,6 +733,7 @@ def get_campaign_overview(
             sj.job_type,
             sj.run_at                                      AS job_run_at,
             ce.last_call_at,
+            ce.last_voice_agent,
             CASE
                 WHEN sj.run_at IS NOT NULL AND ls.next_action_at IS NOT NULL
                     THEN LEAST(sj.run_at, ls.next_action_at)
@@ -748,9 +749,11 @@ def get_campaign_overview(
             LIMIT 1
         ) sj ON true
         LEFT JOIN LATERAL (
-            SELECT MAX(created_at) AS last_call_at
+            SELECT created_at AS last_call_at, voice_agent AS last_voice_agent
             FROM call_events
             WHERE contact_id = ls.contact_id
+            ORDER BY created_at DESC
+            LIMIT 1
         ) ce ON true
         ORDER BY ce.last_call_at DESC NULLS LAST
     """)).fetchall()
@@ -787,17 +790,22 @@ def get_campaign_overview(
     window_end = _dt.combine(d_to + _td(days=1), _dt.min.time()).replace(tzinfo=_tz.utc)
 
     _VALID_CAMPAIGNS = {"cold lead", "new lead"}
+    _VOICE_AGENT_CAMPAIGN = {"coldlead": "Cold Lead", "newlead": "New Lead"}
 
-    def _resolve_campaign(campaign_name, lead_stage) -> str:
+    def _resolve_campaign(campaign_name, lead_stage, voice_agent=None) -> str:
         for val in (campaign_name, lead_stage):
             if val and val.strip().lower() in _VALID_CAMPAIGNS:
                 return val.strip()
+        if voice_agent:
+            mapped = _VOICE_AGENT_CAMPAIGN.get(voice_agent.strip().lower())
+            if mapped:
+                return mapped
         return "Unknown"
 
     result = []
     for r in rows:
         (contact_id, contact, campaign_name, lead_stage, st, do_not_call, invalid,
-         next_action_at, job_type, job_run_at, last_call_at, effective_at) = r
+         next_action_at, job_type, job_run_at, last_call_at, last_voice_agent, effective_at) = r
 
         dnc = bool(do_not_call)
         inv = bool(invalid)
@@ -844,7 +852,7 @@ def get_campaign_overview(
         result.append({
             "contact_id": contact_id,
             "contact": contact,
-            "campaign_name": _resolve_campaign(campaign_name, lead_stage),
+            "campaign_name": _resolve_campaign(campaign_name, lead_stage, last_voice_agent),
             "last_call_at": lc_utc.isoformat() if lc_utc else None,
             "next_action": next_action,
             "status": final_status,

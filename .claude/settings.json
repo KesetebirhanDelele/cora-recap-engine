@@ -75,7 +75,10 @@
       "Bash(python -m pytest tests/unit/test_dashboard_v2.py -q --tb=short)",
       "Bash(find /c/Users/keset/cora-recap-engine/dashboard-ui/app -name \"page.tsx\" -exec wc -l {} +)",
       "Bash(grep -l \"recharts\" c:/Users/keset/cora-recap-engine/dashboard-ui/app/**/*.tsx)",
-      "Bash(ls -la /c/Users/keset/cora-recap-engine/dashboard-ui/app/*/page.tsx)"
+      "Bash(ls -la /c/Users/keset/cora-recap-engine/dashboard-ui/app/*/page.tsx)",
+      "Bash(grep -E \"^d|^-.*\\\\.\\(md|json|py|sh\\)$\")",
+      "Bash(grep -E \"\\\\.\\(md|sh|Makefile\\)$\")",
+      "Bash(grep -E \"Makefile|\\\\.sh$|scripts\")"
     ]
   }
 }
