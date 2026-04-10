@@ -137,6 +137,16 @@ function LeadStateSection({ data }: { data: LeadDetailResponse["lead_state"] }) 
 // ── Call Events ───────────────────────────────────────────────────────────────
 
 function CallEventsSection({ rows }: { rows: CallEventRecord[] }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  function toggle(callId: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(callId) ? next.delete(callId) : next.add(callId);
+      return next;
+    });
+  }
+
   if (rows.length === 0) return (
     <div style={SECTION_STYLE}>
       <div style={SECTION_HEAD}>Call Events</div>
@@ -150,27 +160,63 @@ function CallEventsSection({ rows }: { rows: CallEventRecord[] }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              {["call_id", "status", "duration_s", "transcript_preview", "created_at"].map((h) => (
+              {["call_id", "status", "duration_s", "transcript_preview", "call_summary", "created_at"].map((h) => (
                 <th key={h} style={HEAD}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={r.call_id} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
-                <td style={{ ...CELL, fontFamily: "monospace", fontSize: "0.75rem" }}>{r.call_id}</td>
-                <td style={CELL}>
-                  <StatusBadge
-                    val={r.status}
-                    color={r.status === "completed" ? "#22c55e" : r.status === "failed" ? "#ef4444" : undefined}
-                  />
-                </td>
-                <td style={CELL}>{r.duration_seconds != null ? `${r.duration_seconds}s` : "—"}</td>
-                <td style={{ ...CELL, maxWidth: 320, fontStyle: r.transcript_preview ? "normal" : "italic", color: r.transcript_preview ? "#334155" : "#94a3b8" }}>
-                  {r.transcript_preview ?? "(none)"}
-                </td>
-                <td style={{ ...CELL, color: "#475569" }}>{fmtTs(r.created_at)}</td>
-              </tr>
+              <>
+                <tr key={r.call_id} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                  <td style={{ ...CELL, fontFamily: "monospace", fontSize: "0.75rem" }}>{r.call_id}</td>
+                  <td style={CELL}>
+                    <StatusBadge
+                      val={r.status}
+                      color={r.status === "completed" ? "#22c55e" : r.status === "failed" ? "#ef4444" : undefined}
+                    />
+                  </td>
+                  <td style={CELL}>{r.duration_seconds != null ? `${r.duration_seconds}s` : "—"}</td>
+                  <td style={{ ...CELL, maxWidth: 300, fontStyle: r.transcript_preview ? "normal" : "italic", color: r.transcript_preview ? "#334155" : "#94a3b8" }}>
+                    {r.transcript_preview ?? "(none)"}
+                  </td>
+                  <td style={{ ...CELL, maxWidth: 300 }}>
+                    {r.student_summary ? (
+                      <button
+                        onClick={() => toggle(r.call_id)}
+                        style={{
+                          background: "none", border: "none", padding: 0,
+                          fontSize: "0.78rem", color: "#2563eb", cursor: "pointer",
+                          textDecoration: "underline", textDecorationStyle: "dotted",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {expanded.has(r.call_id) ? "▲ hide summary" : "▼ view summary"}
+                      </button>
+                    ) : (
+                      <span style={{ color: "#94a3b8", fontStyle: "italic", fontSize: "0.78rem" }}>(none)</span>
+                    )}
+                  </td>
+                  <td style={{ ...CELL, color: "#475569" }}>{fmtTs(r.created_at)}</td>
+                </tr>
+
+                {/* Expanded summary row */}
+                {r.student_summary && expanded.has(r.call_id) && (
+                  <tr key={r.call_id + "-summary"} style={{ background: "#f0f9ff" }}>
+                    <td colSpan={6} style={{ padding: "0.625rem 0.75rem", borderBottom: "1px solid #e0f2fe" }}>
+                      <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#0369a1", marginBottom: "0.3rem" }}>
+                        AI Call Summary
+                      </div>
+                      <div style={{
+                        fontSize: "0.82rem", color: "#1e293b", lineHeight: 1.55,
+                        whiteSpace: "pre-wrap", maxHeight: 200, overflowY: "auto",
+                      }}>
+                        {r.student_summary}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
             ))}
           </tbody>
         </table>
@@ -256,12 +302,25 @@ function ScheduledJobsSection({ rows }: { rows: ScheduledJobRecord[] }) {
 // ── Outbound Messages ─────────────────────────────────────────────────────────
 
 function OutboundMessagesSection({ rows }: { rows: OutboundMessageRecord[] }) {
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+
+  function toggle(idx: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(idx) ? next.delete(idx) : next.add(idx);
+      return next;
+    });
+  }
+
   if (rows.length === 0) return (
     <div style={SECTION_STYLE}>
       <div style={SECTION_HEAD}>Outbound Messages</div>
       <p style={EMPTY}>No outbound messages.</p>
     </div>
   );
+
+  const CHANNEL_COLOR: Record<string, string> = { sms: "#8b5cf6", email: "#ec4899" };
+
   return (
     <div style={SECTION_STYLE}>
       <div style={SECTION_HEAD}>Outbound Messages ({rows.length})</div>
@@ -269,23 +328,78 @@ function OutboundMessagesSection({ rows }: { rows: OutboundMessageRecord[] }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
-              {["channel", "status", "body_preview", "created_at"].map((h) => (
+              {["channel", "status", "subject / preview", "content", "created_at"].map((h) => (
                 <th key={h} style={HEAD}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.map((r, i) => (
-              <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
-                <td style={CELL}><StatusBadge val={r.channel} color="#06b6d4" /></td>
-                <td style={CELL}>
-                  <StatusBadge val={r.status} color={r.status === "sent" ? "#22c55e" : r.status === "failed" ? "#ef4444" : undefined} />
-                </td>
-                <td style={{ ...CELL, maxWidth: 360, fontStyle: r.body_preview ? "normal" : "italic", color: r.body_preview ? "#334155" : "#94a3b8" }}>
-                  {r.body_preview ?? "(none)"}
-                </td>
-                <td style={{ ...CELL, color: "#475569" }}>{fmtTs(r.created_at)}</td>
-              </tr>
+              <>
+                <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#fafafa" }}>
+                  <td style={CELL}>
+                    <StatusBadge val={r.channel.toUpperCase()} color={CHANNEL_COLOR[r.channel] ?? "#06b6d4"} />
+                  </td>
+                  <td style={CELL}>
+                    <StatusBadge
+                      val={r.status}
+                      color={r.status === "sent" ? "#22c55e" : r.status === "failed" ? "#ef4444" : r.status === "shadow" ? "#f59e0b" : undefined}
+                    />
+                  </td>
+                  <td style={{ ...CELL, maxWidth: 280 }}>
+                    {r.subject ? (
+                      <span title={r.subject} style={{ fontWeight: 600, color: "#1e293b" }}>
+                        {r.subject.length > 60 ? r.subject.slice(0, 60) + "…" : r.subject}
+                      </span>
+                    ) : r.body ? (
+                      <span style={{ color: "#64748b", fontStyle: "italic" }}>
+                        {r.body.slice(0, 60)}{r.body.length > 60 ? "…" : ""}
+                      </span>
+                    ) : (
+                      <span style={{ color: "#94a3b8", fontStyle: "italic" }}>(none)</span>
+                    )}
+                  </td>
+                  <td style={{ ...CELL }}>
+                    {r.body ? (
+                      <button
+                        onClick={() => toggle(i)}
+                        style={{
+                          background: "none", border: "none", padding: 0,
+                          fontSize: "0.78rem", color: "#2563eb", cursor: "pointer",
+                          textDecoration: "underline", textDecorationStyle: "dotted",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {expanded.has(i) ? "▲ hide" : "▼ view full"}
+                      </button>
+                    ) : (
+                      <span style={{ color: "#94a3b8", fontStyle: "italic", fontSize: "0.78rem" }}>(empty)</span>
+                    )}
+                  </td>
+                  <td style={{ ...CELL, color: "#475569" }}>{fmtTs(r.created_at)}</td>
+                </tr>
+
+                {/* Expanded full message body */}
+                {r.body && expanded.has(i) && (
+                  <tr key={`msg-${i}-body`} style={{ background: "#fdf4ff" }}>
+                    <td colSpan={5} style={{ padding: "0.625rem 0.75rem", borderBottom: "1px solid #e9d5ff" }}>
+                      {r.subject && (
+                        <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "#7c3aed", marginBottom: "0.3rem" }}>
+                          Subject: {r.subject}
+                        </div>
+                      )}
+                      <div style={{
+                        fontSize: "0.82rem", color: "#1e293b", lineHeight: 1.55,
+                        whiteSpace: "pre-wrap", maxHeight: 260, overflowY: "auto",
+                        background: "#fff", border: "1px solid #e9d5ff",
+                        borderRadius: 4, padding: "0.5rem 0.75rem",
+                      }}>
+                        {r.body}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
             ))}
           </tbody>
         </table>

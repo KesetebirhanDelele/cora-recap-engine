@@ -45,6 +45,17 @@ class LeadState(Base):
     next_action_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # last_replied_at: set when an inbound SMS/email reply is received; suppresses future messaging
     last_replied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # ── Sales queue outcome (set by sales rep via dashboard) ──────────────────
+    # sales_outcome: booked | follow_up | not_interested | no_answer | voicemail | wrong_number
+    sales_outcome: Mapped[Optional[str]] = mapped_column(String(100))
+    # sales_next_action: free-form label (e.g. "Call Back", "Send SMS", "Send Email")
+    sales_next_action: Mapped[Optional[str]] = mapped_column(String(100))
+    # sales_follow_up_at: when to follow up (required when sales_next_action is set)
+    sales_follow_up_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # sales_notes: rep's notes, max 200 chars
+    sales_notes: Mapped[Optional[str]] = mapped_column(String(200))
+    # sales_updated_by: agent_id of the rep who last submitted an outcome
+    sales_updated_by: Mapped[Optional[str]] = mapped_column(String(100))
     # version: incremented on every update; used for optimistic concurrency checks
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(

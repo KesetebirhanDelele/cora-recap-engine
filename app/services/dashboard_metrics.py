@@ -896,6 +896,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
       active_leads               — lead_state not closed/dnc
       sync_success_rate          — task_events created / total
       anomaly_count              — exception types with spike (≥3 occurrences) in 24h
+      urgent_leads_count         — calls in last 7 days with high-intent detected_intent
     """
     from app.config import get_settings
 
@@ -906,6 +907,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     w10m_start = now - timedelta(minutes=10)
     w1h_start = now - timedelta(hours=1)
     w2h_start = now - timedelta(hours=2)
+    w7d_start = now - timedelta(days=7)
+    w14d_start = now - timedelta(days=14)
 
     def _scalar(sql: str, params: dict | None = None) -> Any:
         return session.execute(text(sql), params or {}).scalar()
@@ -1012,6 +1015,28 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         ) t
     """, {"a": w48_start, "b": w24_start}) or 0
 
+    # ── urgent_leads_count ────────────────────────────────────────────────────
+    _URGENT_INTENTS = (
+        "'enrolled','callback_request','callback_with_time',"
+        "'re_engaged','human_transfer_request'"
+    )
+    urgent_curr = _scalar(f"""
+        SELECT COUNT(*) FROM call_events
+        WHERE created_at >= :w
+          AND detected_intent IN ({_URGENT_INTENTS})
+          AND COALESCE(duration_seconds, 0) >= 30
+          AND transcript IS NOT NULL AND transcript != ''
+          AND recording_url IS NOT NULL AND recording_url != ''
+    """, {"w": w7d_start}) or 0
+    urgent_prev = _scalar(f"""
+        SELECT COUNT(*) FROM call_events
+        WHERE created_at BETWEEN :a AND :b
+          AND detected_intent IN ({_URGENT_INTENTS})
+          AND COALESCE(duration_seconds, 0) >= 30
+          AND transcript IS NOT NULL AND transcript != ''
+          AND recording_url IS NOT NULL AND recording_url != ''
+    """, {"a": w14d_start, "b": w7d_start}) or 0
+
     def _pt(val: Any, prev: Any) -> dict[str, Any]:
         return {"value": val, "previous_value": prev}
 
@@ -1028,11 +1053,47 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "active_leads":               _pt(active_leads,            None),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),
         "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
+        "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),
         "computed_at":                now.isoformat(),
     }
 
 
-# ── Recent Calls ──────────────────────────────────────────────────────────────
+# ── Recent Calls / Sales Queue ────────────────────────────────────────────────
+
+# Intent → base sales score (0-100).  Used to rank leads in the sales queue.
+_INTENT_SCORES: dict[str, int] = {
+    "enrolled":               95,
+    "callback_request":       90,
+    "callback_with_time":     88,
+    "re_engaged":             85,
+    "human_transfer_request": 80,
+    "failed_booking":         70,
+    "interested_not_now":     65,
+    "partial_engagement":     55,
+    "call_later_no_time":     50,
+    "uncertain":              40,
+    "request_sms":            35,
+    "request_email":          30,
+    "low_confidence_audio":   20,
+    "not_interested":          5,
+    "do_not_call":             0,
+    "wrong_number":            0,
+}
+
+
+def _compute_sales_priority(
+    intent: str | None, minutes_ago: float
+) -> tuple[str, int, str]:
+    """Return (priority, score, recommended_action) for a call row."""
+    base = _INTENT_SCORES.get(intent or "", 30)
+    recency = 10 if minutes_ago < 30 else (5 if minutes_ago < 120 else 0)
+    score = min(100, base + recency)
+    if score >= 80:
+        return "urgent", score, "Call Now"
+    if score >= 40:
+        return "review", score, "Review"
+    return "none", score, "Log & Move On"
+
 
 def get_recent_calls(
     session: Session,
@@ -1046,7 +1107,17 @@ def get_recent_calls(
     Results are ordered by call start time descending (most recent first).
     Timestamps are returned as UTC ISO strings; the frontend converts to CST.
 
-    voice_agent: "ColdLead" | "NewLead" | "Inbound" — filters on ce.voice_agent.
+    Each row is enriched with sales queue fields:
+      lead_name            — extracted from raw_payload_json (first/last/full_name) or "Unknown Lead"
+      voice_agent          — raw voice_agent value from call_events
+      attempts             — total call count for that contact in the query window
+      transcript_preview   — first 120 chars of transcript
+      sales_priority       — "urgent" | "review" | "none"
+      sales_score          — 0-100
+      last_call_minutes_ago — integer minutes since the call
+      recommended_action   — "Call Now" | "Review" | "Log & Move On"
+
+    voice_agent filter: "ColdLead" | "NewLead" | "Inbound" — matches ce.voice_agent.
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
@@ -1073,7 +1144,37 @@ def get_recent_calls(
             ce.transcript,
             ce.start_time_utc,
             ce.detected_intent,
-            ce.created_at
+            ce.created_at,
+            ce.voice_agent,
+            COALESCE(
+                -- Primary: raw_payload_json->>'Name' unless it looks like a phone number
+                CASE
+                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ '^\+?[\d\s\-\(\)\.]{7,}$'
+                      OR TRIM(ce.raw_payload_json->>'Name') = ''
+                      OR ce.raw_payload_json->>'Name' IS NULL
+                    THEN NULL
+                    ELSE TRIM(ce.raw_payload_json->>'Name')
+                END,
+                -- Fallback: GHL contact firstName from executed_actions (Inbound calls)
+                NULLIF(TRIM(
+                    ((ce.raw_payload_json->'executed_actions'
+                        ->'get_the_user_preferences_from_gohighlevel'
+                        ->>'return_value'
+                    )::jsonb
+                    ->'results'
+                    ->'results.data'
+                    ->'contact'
+                    ->>'firstName')
+                ), ''),
+                'Unknown'
+            ) AS lead_name,
+            (
+                SELECT COUNT(*)
+                FROM call_events ce2
+                WHERE ce2.contact_id = ce.contact_id
+                  AND ce2.created_at BETWEEN :from_dt AND :to_dt
+            ) AS attempts,
+            LEFT(ce.transcript, 120) AS transcript_preview
         FROM call_events ce
         LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
@@ -1088,16 +1189,31 @@ def get_recent_calls(
     calls = []
     for r in rows:
         start_ts = r[7] or r[9]
+        if start_ts is not None:
+            if hasattr(start_ts, "tzinfo") and start_ts.tzinfo is None:
+                start_ts = start_ts.replace(tzinfo=timezone.utc)
+            minutes_ago = max(0.0, (now - start_ts).total_seconds() / 60.0)
+        else:
+            minutes_ago = 999999.0
+        priority, score, recommended = _compute_sales_priority(r[8], minutes_ago)
         calls.append({
             "contact_id": r[0],
             "phone": r[1],
-            "campaign_name": r[2],   # carries voice_agent value for display
+            "campaign_name": r[2],
             "status": r[3],
             "duration_seconds": int(r[4]),
             "recording_url": r[5],
             "transcript": r[6],
             "call_time": start_ts.isoformat() if start_ts and hasattr(start_ts, "isoformat") else str(start_ts),
             "detected_intent": r[8],
+            "voice_agent": r[10],
+            "lead_name": r[11] or "Unknown",
+            "attempts": int(r[12]) if r[12] else 1,
+            "transcript_preview": r[13],
+            "last_call_minutes_ago": int(minutes_ago) if minutes_ago < 999999 else None,
+            "sales_priority": priority,
+            "sales_score": score,
+            "recommended_action": recommended,
         })
 
     return {

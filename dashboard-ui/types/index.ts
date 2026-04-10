@@ -304,6 +304,28 @@ export interface CampaignOverviewRow {
   last_call_at: string | null;
   next_action: string | null;
   status: string | null;
+  sales_outcome: string | null;
+  sales_next_action: string | null;
+  sales_follow_up_at: string | null;
+  sales_updated_by: string | null;
+}
+
+// ── Sales Queue ───────────────────────────────────────────────────────────────
+
+export interface SalesOutcomeRequest {
+  contact_id: string;
+  sales_outcome: string;
+  sales_next_action?: string | null;
+  sales_follow_up_at?: string | null;
+  updated_by: string;
+  sales_notes?: string | null;
+}
+
+export interface SalesOutcomeResponse {
+  status: string;
+  contact_id: string;
+  sales_outcome: string;
+  is_terminal: boolean;
 }
 
 export interface CampaignOverviewResponse {
@@ -332,6 +354,7 @@ export interface CallEventRecord {
   duration_seconds: number | null;
   transcript_preview: string | null;
   created_at: string;
+  student_summary: string | null;
 }
 
 export interface ShadowActionRecord {
@@ -351,7 +374,8 @@ export interface ScheduledJobRecord {
 export interface OutboundMessageRecord {
   channel: string;
   status: string;
-  body_preview: string | null;
+  subject: string | null;
+  body: string | null;
   created_at: string;
 }
 
@@ -457,6 +481,7 @@ export interface CardMetricsResponse {
   active_leads:               MetricPoint;
   sync_success_rate:          MetricPoint;
   anomaly_count:              MetricPoint;
+  urgent_leads_count:         MetricPoint;
   computed_at:                string;
 }
 
@@ -464,14 +489,22 @@ export interface CardMetricsResponse {
 
 export interface RecentCallRow {
   contact_id: string;
+  lead_name: string;
   phone: string;
   campaign_name: string;
+  voice_agent: string | null;
   status: string;
   duration_seconds: number;
   recording_url: string;
   transcript: string;
+  transcript_preview: string | null;
   call_time: string; // ISO UTC — frontend converts to CST
   detected_intent: string | null;
+  sales_priority: "urgent" | "review" | "none";
+  sales_score: number;
+  attempts: number;
+  last_call_minutes_ago: number | null;
+  recommended_action: string;
 }
 
 export interface RecentCallsResponse {

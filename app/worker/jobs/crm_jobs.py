@@ -61,10 +61,12 @@ def create_crm_task(job_id: str) -> None:
         call_event_id = payload.get("call_event_id", "")
         call_id = payload.get("call_id", "")
         contact_id = payload.get("contact_id", "")
+        attempt_count = int(payload.get("attempt_count", 1))
 
         try:
             logger.info(
-                "create_crm_task | job_id=%s call_event_id=%s", job_id, call_event_id
+                "create_crm_task | job_id=%s call_event_id=%s attempt=%d",
+                job_id, call_event_id, attempt_count,
             )
 
             if not call_event_id:
@@ -246,8 +248,8 @@ def create_crm_task(job_id: str) -> None:
 
         except Exception as exc:
             logger.exception(
-                "create_crm_task: error | job_id=%s call_event_id=%s: %s",
-                job_id, call_event_id, exc,
+                "create_crm_task: error | job_id=%s call_event_id=%s attempt=%d: %s",
+                job_id, call_event_id, attempt_count, exc,
             )
             create_exception(
                 session,
@@ -258,11 +260,21 @@ def create_crm_task(job_id: str) -> None:
                     "call_event_id": call_event_id,
                     "job_id": job_id,
                     "error": str(exc),
+                    # propagated to retry job payload so attempt counter carries forward
+                    "attempt_count": attempt_count + 1,
                 },
                 entity_type="call",
                 entity_id=call_id or call_event_id,
             )
             fail_job(session, job, reason=str(exc))
+            # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
+            # does not queue an additional automatic retry after the limit.
+            if settings.is_shadow_mode and attempt_count >= 2:
+                logger.warning(
+                    "create_crm_task: shadow mode attempt limit reached (%d), not re-raising",
+                    attempt_count,
+                )
+                return
             raise
 
 
@@ -298,6 +310,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
         channel = payload.get("channel", "sms")
         message_body = payload.get("message_body", "")
         message_subject = payload.get("message_subject", "")
+        attempt_count = int(payload.get("attempt_count", 1))
 
         try:
             logger.info(
@@ -384,18 +397,31 @@ def update_ghl_after_vm_message(job_id: str) -> None:
 
         except Exception as exc:
             logger.exception(
-                "update_ghl_after_vm_message: error | job_id=%s contact_id=%s: %s",
-                job_id, contact_id, exc,
+                "update_ghl_after_vm_message: error | job_id=%s contact_id=%s attempt=%d: %s",
+                job_id, contact_id, attempt_count, exc,
             )
             create_exception(
                 session,
                 type="ghl_vm_message_update_failed",
                 severity="warning",
-                context={"contact_id": contact_id, "job_id": job_id, "error": str(exc)},
+                context={
+                    "contact_id": contact_id,
+                    "job_id": job_id,
+                    "error": str(exc),
+                    "attempt_count": attempt_count + 1,
+                },
                 entity_type="lead",
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
+            # does not queue an additional automatic retry after the limit.
+            if settings.is_shadow_mode and attempt_count >= 2:
+                logger.warning(
+                    "update_ghl_after_vm_message: shadow mode attempt limit reached (%d), not re-raising",
+                    attempt_count,
+                )
+                return
             raise
 
 

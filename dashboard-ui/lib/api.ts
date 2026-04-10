@@ -31,6 +31,8 @@ import type {
   RecentCallsResponse,
   ResolveRequest,
   RetryRequest,
+  SalesOutcomeRequest,
+  SalesOutcomeResponse,
   SaveSettingsRequest,
   SaveSettingsResponse,
   VoicePerformanceResponse,
@@ -191,6 +193,10 @@ export async function fetchCampaignOverview(options?: {
 
 export async function fetchLeadDetail(contactId: string): Promise<LeadDetailResponse> {
   return get<LeadDetailResponse>(`/dashboard/lead/${encodeURIComponent(contactId)}/detail`);
+}
+
+export async function saveSalesOutcome(body: SalesOutcomeRequest): Promise<SalesOutcomeResponse> {
+  return post<SalesOutcomeResponse>("/dashboard/sales-queue/outcome", body);
 }
 
 export async function fetchSettings(): Promise<AppConfigResponse> {

@@ -37,7 +37,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
     items: [
       { href: "/voice-performance",   title: "Voice Performance",   icon: "🎙️", description: "Trends, WoW & call efficiency.", category: "analytics" },
       { href: "/engagement-analysis",  title: "Engagement Analysis", icon: "🤖", description: "Intent, consent & engagement metrics.", category: "analytics" },
-      { href: "/conversion-funnel",   title: "Recent Calls",        icon: "📞", description: "Calls ≥30s with transcript & recording.", category: "analytics" },
+      { href: "/conversion-funnel",   title: "Sales Queue",         icon: "📞", description: "Priority-ranked calls with scoring, recording & outcome logging.", category: "analytics" },
       { href: "/campaign-overview",   title: "Campaign Overview",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
     ],
   },

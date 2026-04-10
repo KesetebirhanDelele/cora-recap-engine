@@ -80,6 +80,12 @@ GHL_RETRY_POLICY = RetryPolicy(
     base_delay_seconds=2.0,
 )
 
+# GHL shadow mode: cap at 2 total attempts to avoid spamming shadow logs
+GHL_SHADOW_RETRY_POLICY = RetryPolicy(
+    max_attempts=2,
+    base_delay_seconds=2.0,
+)
+
 # OpenAI adapter: retry rate limits and timeouts, surface auth failures
 OPENAI_RETRY_POLICY = RetryPolicy(
     max_attempts=3,

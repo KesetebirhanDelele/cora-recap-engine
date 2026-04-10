@@ -738,7 +738,11 @@ def get_campaign_overview(
                 WHEN sj.run_at IS NOT NULL AND ls.next_action_at IS NOT NULL
                     THEN LEAST(sj.run_at, ls.next_action_at)
                 ELSE COALESCE(sj.run_at, ls.next_action_at)
-            END                                            AS effective_at
+            END                                            AS effective_at,
+            ls.sales_outcome,
+            ls.sales_next_action,
+            ls.sales_follow_up_at,
+            ls.sales_updated_by
         FROM lead_state ls
         LEFT JOIN LATERAL (
             SELECT job_type, run_at
@@ -789,23 +793,28 @@ def get_campaign_overview(
     window_start = _dt.combine(d_from, _dt.min.time()).replace(tzinfo=_tz.utc)
     window_end = _dt.combine(d_to + _td(days=1), _dt.min.time()).replace(tzinfo=_tz.utc)
 
-    _VALID_CAMPAIGNS = {"cold lead", "new lead"}
-    _VOICE_AGENT_CAMPAIGN = {"coldlead": "Cold Lead", "newlead": "New Lead"}
+    _VALID_CAMPAIGNS = {"cold lead", "new lead", "inbound"}
+    _VOICE_AGENT_CAMPAIGN = {
+        "coldlead": "Cold Lead",
+        "newlead": "New Lead",
+        "inbound": "Inbound",
+    }
 
     def _resolve_campaign(campaign_name, lead_stage, voice_agent=None) -> str:
         for val in (campaign_name, lead_stage):
             if val and val.strip().lower() in _VALID_CAMPAIGNS:
-                return val.strip()
+                return val.strip().title() if val.strip().lower() == "inbound" else val.strip()
         if voice_agent:
             mapped = _VOICE_AGENT_CAMPAIGN.get(voice_agent.strip().lower())
             if mapped:
                 return mapped
-        return "Unknown"
+        return "Inbound"  # unknown source defaults to Inbound bucket (never Unknown)
 
     result = []
     for r in rows:
         (contact_id, contact, campaign_name, lead_stage, st, do_not_call, invalid,
-         next_action_at, job_type, job_run_at, last_call_at, last_voice_agent, effective_at) = r
+         next_action_at, job_type, job_run_at, last_call_at, last_voice_agent, effective_at,
+         sales_outcome, sales_next_action, sales_follow_up_at, sales_updated_by) = r
 
         dnc = bool(do_not_call)
         inv = bool(invalid)
@@ -849,6 +858,7 @@ def get_campaign_overview(
             final_status = None
 
         lc_utc = _to_utc(last_call_at)
+        sfu_utc = _to_utc(sales_follow_up_at)
         result.append({
             "contact_id": contact_id,
             "contact": contact,
@@ -856,6 +866,10 @@ def get_campaign_overview(
             "last_call_at": lc_utc.isoformat() if lc_utc else None,
             "next_action": next_action,
             "status": final_status,
+            "sales_outcome": sales_outcome,
+            "sales_next_action": sales_next_action,
+            "sales_follow_up_at": sfu_utc.isoformat() if sfu_utc else None,
+            "sales_updated_by": sales_updated_by,
         })
 
     return {
@@ -910,16 +924,20 @@ def get_lead_detail(
     }
 
     call_rows = session.execute(text("""
-        SELECT call_id, status, duration_seconds,
-               LEFT(transcript, 120) AS transcript_preview, created_at
-        FROM call_events
-        WHERE contact_id = :cid
-        ORDER BY created_at DESC
+        SELECT ce.call_id, ce.status, ce.duration_seconds,
+               LEFT(ce.transcript, 120) AS transcript_preview,
+               ce.created_at,
+               sr.student_summary
+        FROM call_events ce
+        LEFT JOIN summary_results sr ON sr.call_event_id = ce.id
+        WHERE ce.contact_id = :cid
+        ORDER BY ce.created_at DESC
         LIMIT 50
     """), {"cid": contact_id}).fetchall()
     call_events = [
         {"call_id": r[0], "status": r[1], "duration_seconds": r[2],
-         "transcript_preview": r[3], "created_at": _iso(r[4])}
+         "transcript_preview": r[3], "created_at": _iso(r[4]),
+         "student_summary": r[5]}
         for r in call_rows
     ]
 
@@ -949,14 +967,15 @@ def get_lead_detail(
     ]
 
     msg_rows = session.execute(text("""
-        SELECT channel, status, LEFT(body, 100) AS body_preview, created_at
+        SELECT channel, status, subject, body, created_at
         FROM outbound_messages
         WHERE contact_id = :cid
         ORDER BY created_at DESC
         LIMIT 50
     """), {"cid": contact_id}).fetchall()
     outbound_messages = [
-        {"channel": r[0], "status": r[1], "body_preview": r[2], "created_at": _iso(r[3])}
+        {"channel": r[0], "status": r[1], "subject": r[2],
+         "body": r[3], "created_at": _iso(r[4])}
         for r in msg_rows
     ]
 
@@ -1063,6 +1082,131 @@ def save_settings_config(
 
     session.commit()
     return {"status": "ok", "keys_saved": len(body.values)}
+
+
+class SalesOutcomeRequest(BaseModel):
+    contact_id: str
+    sales_outcome: str        # required: booked | follow_up | not_interested | no_answer | voicemail | wrong_number
+    sales_next_action: str | None = None   # required when sales_outcome == "follow_up"
+    sales_follow_up_at: datetime | None = None  # required when sales_next_action is set
+    sales_notes: str | None = None         # max 200 chars
+    updated_by: str                        # agent_id — required
+
+
+_VALID_SALES_OUTCOMES = {
+    "booked", "follow_up", "not_interested", "no_answer", "voicemail", "wrong_number",
+}
+
+# Outcomes that end the active queue for this contact
+_TERMINAL_SALES_OUTCOMES = {"booked", "not_interested", "wrong_number"}
+
+
+@router.post("/sales-queue/outcome")
+def save_sales_outcome(
+    body: SalesOutcomeRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Log a post-call outcome for a contact from the sales queue.
+
+    Validation:
+    - sales_outcome is required and must be a known value
+    - sales_next_action + sales_follow_up_at are required when outcome == "follow_up"
+    - sales_notes max 200 chars
+    - updated_by is required
+
+    Updates lead_state with optimistic concurrency (version check).
+    Returns the updated contact_id and sales_outcome.
+    """
+    from sqlalchemy import text
+
+    # ── Input validation ────────────────────────────────────────────────────
+    if not body.sales_outcome:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="sales_outcome is required")
+
+    if body.sales_outcome not in _VALID_SALES_OUTCOMES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"sales_outcome must be one of: {', '.join(sorted(_VALID_SALES_OUTCOMES))}",
+        )
+
+    if body.sales_outcome == "follow_up":
+        if not body.sales_next_action:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="sales_next_action is required when outcome is follow_up",
+            )
+        if not body.sales_follow_up_at:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="sales_follow_up_at is required when sales_next_action is set",
+            )
+
+    if body.sales_notes and len(body.sales_notes) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="sales_notes must be 200 characters or fewer",
+        )
+
+    if not body.updated_by or not body.updated_by.strip():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="updated_by is required")
+
+    # ── Load and update lead_state ──────────────────────────────────────────
+    row = session.execute(text("""
+        SELECT id, version FROM lead_state WHERE contact_id = :cid
+    """), {"cid": body.contact_id}).fetchone()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No lead found for contact_id={body.contact_id}",
+        )
+
+    lead_id, current_version = row[0], row[1]
+    now = datetime.now(tz=timezone.utc)
+
+    result = session.execute(text("""
+        UPDATE lead_state
+        SET sales_outcome     = :outcome,
+            sales_next_action = :next_action,
+            sales_follow_up_at = :follow_up_at,
+            sales_notes       = :notes,
+            sales_updated_by  = :updated_by,
+            version           = version + 1,
+            updated_at        = :now
+        WHERE id = :id AND version = :version
+    """), {
+        "outcome":     body.sales_outcome,
+        "next_action": body.sales_next_action,
+        "follow_up_at": body.sales_follow_up_at,
+        "notes":       body.sales_notes,
+        "updated_by":  body.updated_by.strip(),
+        "now":         now,
+        "id":          lead_id,
+        "version":     current_version,
+    })
+    session.commit()
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Concurrent update conflict — please retry",
+        )
+
+    logger.info(
+        "save_sales_outcome | contact_id=%s outcome=%s updated_by=%s",
+        body.contact_id, body.sales_outcome, body.updated_by,
+    )
+
+    return {
+        "status": "ok",
+        "contact_id": body.contact_id,
+        "sales_outcome": body.sales_outcome,
+        "is_terminal": body.sales_outcome in _TERMINAL_SALES_OUTCOMES,
+    }
 
 
 @router.websocket("/ws/events")
