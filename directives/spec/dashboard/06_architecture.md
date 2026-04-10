@@ -56,6 +56,10 @@ The system shares Postgres and Redis with the existing worker and API but introd
 | `/dashboard/exceptions` | GET | Optional | Exception list with per-type `groups` aggregates |
 | `/dashboard/voice-performance` | GET | Optional | Voice KPIs, WoW changes, weekly time series, campaign scatter |
 | `/dashboard/ai-timeseries` | GET | Optional | Weekly AI behavior: blank rate, unknown intent %, intent distribution |
+| `/dashboard/card-metrics` | GET | Optional | Nav card indicators: current + previous value for all home-page cards |
+| `/dashboard/recent-calls` | GET | Optional | Sales Queue rows: enriched call records with priority, score, lead name |
+| `/dashboard/campaign-overview` | GET | Optional | Campaign Overview rows: per-contact status and sales outcome (read-only) |
+| `/dashboard/sales-queue/outcome` | POST | Required | Log post-call sales outcome; updates `lead_state` |
 | `/dashboard/actions/retry` | POST | Required | Retry a failed job |
 | `/dashboard/actions/cancel` | POST | Required | Cancel pending jobs for a lead |
 | `/dashboard/actions/finalize` | POST | Required | Force finalize a lead |
@@ -170,44 +174,52 @@ All thresholds are settings-driven (`ALERT_*` env vars). See `spec/dashboard/09_
 |---|---|---|
 | Voice Performance (`/voice-performance`) | Business outcomes: call volumes, pickup/booking rates, WoW trends | AI behavior metrics |
 | AI Performance (`/ai-performance`) | AI behavior: intent/consent distribution, blank transcript rate, unknown intent %, weekly AI trends | Business KPIs (total calls, pickup rate) |
-| Conversion Funnel (`/conversion-funnel`) | Drop-off analysis: Total Calls → Picked Up → Engaged → Booked | Raw AI intent data, CRM metrics |
+| Sales Queue (`/conversion-funnel`) | Action queue: urgent calls needing human follow-up; outcome logging | Raw funnel drop-off analysis, CRM sync metrics |
+| Campaign Overview (`/campaign-overview`) | Read-only scheduling/status view per contact; sales outcome badge | Inline editing, outcome forms, action buttons |
 
 ### Current page structure
 ```
 dashboard-ui/
   app/
-    page.tsx                    ← home (health tiles + nav cards)
+    page.tsx                      ← home (health tiles + nav cards)
     health/page.tsx
     activity/page.tsx
     exceptions/page.tsx
     queue/page.tsx
     alerts/page.tsx
     crm-health/page.tsx
-    lead/[id]/page.tsx          ← pipeline trace
-    voice-performance/page.tsx  ← client component, date filter
-    ai-performance/page.tsx     ← client component, date filter
-    conversion-funnel/page.tsx  ← client component, date filter
+    lead/[id]/page.tsx            ← pipeline trace
+    voice-performance/page.tsx    ← client component, date filter
+    ai-performance/page.tsx       ← client component, date filter
+    conversion-funnel/page.tsx    ← Sales Queue: urgent leads + outcome logging
+    campaign-overview/page.tsx    ← read-only scheduling/status view
+    settings/page.tsx
+    contact-lookup/page.tsx
+    system-anomalies/page.tsx
+    engagement-analysis/page.tsx
   components/
     HealthTiles.tsx
     ActivityFeed.tsx
     PipelineTrace.tsx
-    ExceptionQueue.tsx          ← grouped by type, bulk-ignore
-    CampaignFunnel.tsx          ← intent + consent bar charts (used by ai-performance)
+    ExceptionQueue.tsx            ← grouped by type, bulk-ignore
+    CampaignFunnel.tsx            ← intent + consent bar charts (used by ai-performance)
+    CampaignOverviewClient.tsx    ← read-only table: phone, campaign, last call, next action, outcome badge, status
     QueueTable.tsx
     AlertBanner.tsx
     AlertsClient.tsx
     NavigationCard.tsx
     PageShell.tsx
     voice/
-      DateRangePicker.tsx       ← shared across all analytics pages
+      DateRangePicker.tsx         ← shared across all analytics pages
       KpiSidebar.tsx
       TrendsChart.tsx
       WowWaterfall.tsx
       EfficiencyScatter.tsx
   lib/
-    api.ts                      ← typed fetch wrappers for all dashboard API endpoints
+    api.ts                        ← typed fetch wrappers for all dashboard API endpoints
+    indicators.ts                 ← nav card indicator logic; urgent_leads_count drives /conversion-funnel card
   types/
-    index.ts                    ← TypeScript types matching API response schemas
+    index.ts                      ← TypeScript types matching API response schemas
 ```
 
 ---

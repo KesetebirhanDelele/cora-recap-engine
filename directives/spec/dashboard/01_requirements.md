@@ -56,16 +56,32 @@
 - Show weekly AI quality trends: blank transcript rate and unknown intent rate per calendar week, via `GET /dashboard/ai-timeseries`.
 - **Must NOT show** business KPIs (pickup rate, total calls, enrollment counts) — those belong to Voice Performance and Conversion Funnel pages.
 
-### J. Conversion funnel analysis
-- Compute and display a 4-step call lifecycle funnel:
-  1. Total Calls — `call_events` count in range
-  2. Picked Up — calls with `status = 'completed'`
-  3. Engaged — calls where `detected_intent` is one of: `enrolled`, `re_engaged`, `callback_request`, `callback_with_time`, `interested_not_now`, `partial_engagement`, `human_transfer_request`, `failed_booking`, `call_later_no_time`, `request_sms`, `request_email`
-  4. Booked — calls where `detected_intent = 'enrolled'`
-- Show absolute count, % of total, step conversion rate, and drop-off % per funnel step.
-- Highlight the stage with the largest drop-off.
-- Show weekly trend line chart of pickup rate and booking rate over time (from `GET /dashboard/voice-performance` time series).
-- Accept date range filter; defaults to last 7 days.
+### J. Sales Queue (`/conversion-funnel`)
+
+> **Note (2026-04-10)**: This page was originally a funnel analysis view. It has been repurposed as a real-time sales action queue. The funnel analysis requirement is removed.
+
+**Purpose**: Surface leads with high-intent calls that need immediate human follow-up.
+
+**Data source**: `GET /dashboard/recent-calls` — calls with duration ≥ 30s, transcript, and recording URL.
+
+**Display**:
+- Calls split into two tables: **Active Queue** (non-terminal outcomes) and **Completed this session** (terminal outcomes: booked / not_interested / wrong_number).
+- Default sort: priority DESC → score DESC → last_call_minutes_ago ASC.
+- Priority badges: 🔴 urgent / 🟡 review / ⚪ none.
+- Row highlight: urgent + `last_call_minutes_ago > 15` → red tint background.
+- Columns: Priority | Name | Phone | Intent | Last Call | Score | Recording | Transcript | Action.
+- **Name**: resolved using three-tier logic (see `GET /dashboard/recent-calls`). A phone-number value is never displayed as a name — `"Unknown"` is shown instead.
+- **Call Now** button: opens the inline `OutcomeForm` with `callback_scheduled` pre-selected.
+- **Mark Done** button: opens the inline `OutcomeForm` with `no_answer` pre-selected.
+- **CSV export**: all enriched fields including full transcript.
+- Topbar: urgent count badge + CSV download button.
+
+**Outcome form**: submits to `POST /dashboard/sales-queue/outcome`. On success, moves the row from Active Queue to Completed.
+
+**Lead name resolution rules**:
+1. `raw_payload_json->>'Name'` — used unless the value matches a phone pattern or is blank.
+2. `executed_actions->'get_the_user_preferences_from_gohighlevel'` GHL contact `firstName` — used for Inbound calls where `Name` is absent or is a phone number.
+3. `"Unknown"` — final fallback.
 
 ### H. CRM sync health
 - Show GHL write success rate per write path (Path 1 / Path 2 / Path 3) derived from `task_events` and `scheduled_jobs`.

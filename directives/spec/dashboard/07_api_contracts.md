@@ -487,6 +487,176 @@ Bulk-ignore all open exceptions of a given type. Used to clear noise from the ex
 
 ---
 
+## GET /dashboard/card-metrics
+
+Returns compact current + previous metric pairs for every navigation card indicator on the home page.
+
+**Auth**: Optional
+
+**Response 200**
+```json
+{
+  "events_per_min":             {"value": 17,    "previous_value": 14},
+  "open_exceptions":            {"value": 3,     "previous_value": 5},
+  "backlog_size":               {"value": 8,     "previous_value": 11},
+  "active_alerts":              {"value": 1,     "previous_value": 0},
+  "lookup_rate":                {"value": 42,    "previous_value": 38},
+  "config_health":              {"value": "healthy", "previous_value": "healthy"},
+  "pickup_rate":                {"value": 0.31,  "previous_value": 0.28},
+  "meaningful_engagement_rate": {"value": 0.54,  "previous_value": 0.49},
+  "urgent_leads_count":         {"value": 7,     "previous_value": 4},
+  "active_leads":               {"value": 1240,  "previous_value": 1180},
+  "sync_success_rate":          {"value": 0.97,  "previous_value": 0.95},
+  "anomaly_count":              {"value": 2,     "previous_value": 0},
+  "computed_at": "2026-04-10T14:00:00Z"
+}
+```
+
+**Fields**:
+- `urgent_leads_count`: calls in the last 7 days with a high-intent `detected_intent` (enrolled, callback_request, callback_with_time, re_engaged, human_transfer_request), duration ≥ 30s, transcript and recording present. Color semantics: 0 = green, high = red.
+- All numeric rate fields are 0–1 (not 0–100).
+- `config_health` is a string enum: `"healthy"` | `"warning"` | `"error"`.
+- `previous_value` is the corresponding metric from the prior 24-hour window (used for trend arrow direction).
+
+---
+
+## GET /dashboard/recent-calls
+
+Returns calls with duration ≥ 30s that have a transcript and recording URL. Each row is enriched with sales queue metadata. Used by the Sales Queue page (`/conversion-funnel`).
+
+**Auth**: Optional
+
+**Query params**:
+- `from_date` (optional): ISO date, default `now() - 7 days`
+- `to_date` (optional): ISO date, default `now()`
+- `voice_agent` (optional): `ColdLead` | `NewLead` | `Inbound` — exact match on `call_events.voice_agent`
+- `limit` (optional): integer, max 500, default 200
+
+**Response 200**
+```json
+{
+  "period": {"from": "2026-04-03T00:00:00Z", "to": "2026-04-10T00:00:00Z"},
+  "voice_agent_filter": null,
+  "total": 42,
+  "calls": [
+    {
+      "contact_id": "abc123",
+      "lead_name": "Sarah Johnson",
+      "phone": "+16025550101",
+      "campaign_name": "New Lead",
+      "voice_agent": "NewLead",
+      "status": "completed",
+      "duration_seconds": 187,
+      "recording_url": "https://...",
+      "transcript": "Full transcript text...",
+      "transcript_preview": "Hi Sarah, this is Cora from...",
+      "call_time": "2026-04-10T13:45:00Z",
+      "detected_intent": "callback_request",
+      "sales_priority": "urgent",
+      "sales_score": 85,
+      "attempts": 3,
+      "last_call_minutes_ago": 22,
+      "recommended_action": "Call Now"
+    }
+  ]
+}
+```
+
+**`lead_name` resolution** (three-tier, in priority order):
+1. `raw_payload_json->>'Name'` unless the value matches a phone-number pattern (`^\+?[\d\s\-\(\)\.]{7,}$`) or is blank.
+2. GHL contact `firstName` from `raw_payload_json->'executed_actions'->'get_the_user_preferences_from_gohighlevel'->>'return_value'::jsonb->'results'->'results.data'->'contact'->>'firstName'` (Inbound call path).
+3. `"Unknown"` as final fallback.
+
+**Sales priority scoring**:
+- Base score: per-intent table (0–100). `enrolled`/`human_transfer_request` = 100, `callback_request`/`callback_with_time`/`re_engaged` = 90, `interested_not_now` = 70, `failed_booking` = 65, `partial_engagement` = 40, all others ≤ 30.
+- Recency bonus: +10 if `last_call_minutes_ago < 30`; +5 if `< 120`.
+- Thresholds: `urgent` ≥ 80, `review` ≥ 40, `none` < 40.
+
+---
+
+## GET /dashboard/campaign-overview
+
+Returns lead rows for the Campaign Overview page — one row per contact active in the specified window.
+
+**Auth**: Optional
+
+**Query params**:
+- `from_date` (optional): ISO date, default `now() - 7 days`
+- `to_date` (optional): ISO date, default `now()`
+- `campaign` (optional): `New Lead` | `Cold Lead`
+- `limit` (optional): integer, max 500, default 200
+
+**Response 200**
+```json
+{
+  "from_date": "2026-04-03",
+  "to_date": "2026-04-10",
+  "rows": [
+    {
+      "contact_id": "abc123",
+      "contact": "+16025550101",
+      "campaign_name": "New Lead",
+      "last_call_at": "2026-04-09T18:32:00Z",
+      "next_action": "send_sms",
+      "status": "active",
+      "sales_outcome": "follow_up",
+      "sales_next_action": "Send pricing info",
+      "sales_follow_up_at": "2026-04-11T14:00:00Z",
+      "sales_updated_by": "agent_01"
+    }
+  ],
+  "total": 38
+}
+```
+
+**Notes**:
+- This endpoint is read-only. Outcome fields (`sales_outcome`, `sales_next_action`, etc.) reflect whatever was last saved via `POST /dashboard/sales-queue/outcome`.
+- The Campaign Overview page renders these fields as read-only badges — no inline editing.
+
+---
+
+## POST /dashboard/sales-queue/outcome
+
+Log a post-call sales outcome from the Sales Queue view. Updates `lead_state` with the outcome and optional next-action scheduling.
+
+**Auth**: Required
+
+**Request body**
+```json
+{
+  "contact_id": "abc123",
+  "sales_outcome": "follow_up",
+  "sales_next_action": "Send pricing email",
+  "sales_follow_up_at": "2026-04-11T14:00:00Z",
+  "sales_notes": "Interested, wants to compare with competitor",
+  "updated_by": "agent_01"
+}
+```
+
+**Valid `sales_outcome` values**: `booked` | `follow_up` | `not_interested` | `no_answer` | `voicemail` | `wrong_number`
+
+**Terminal outcomes** (row moves to "Completed" in Sales Queue): `booked`, `not_interested`, `wrong_number`
+
+**Validation rules**:
+- `sales_outcome` required; must be a known value.
+- `sales_next_action` + `sales_follow_up_at` required when `sales_outcome == "follow_up"`.
+- `sales_notes` max 200 characters.
+- `updated_by` required.
+
+**Response 200**
+```json
+{
+  "status": "ok",
+  "contact_id": "abc123",
+  "sales_outcome": "follow_up",
+  "is_terminal": false
+}
+```
+
+**Response 422**: missing required fields or unknown outcome value.
+
+---
+
 ## WebSocket ws://host:8001/dashboard/ws/events
 
 **Protocol**: JSON messages, one event per message.
