@@ -237,6 +237,7 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
         telephony_start=_parse_datetime(payload.get("telephony_start")),
         telephony_end=_parse_datetime(payload.get("telephony_end")),
         voice_agent=_infer_voice_agent(payload),
+        campaign_name=payload.get("campaign_name"),
         dedupe_key=dedupe_key,
         raw_payload_json=payload,
         created_at=datetime.now(tz=timezone.utc),
@@ -319,7 +320,8 @@ def process_call_event(job_id: str) -> None:
             # 5. Route by normalized status
             if call_status in _COMPLETED_STATUSES:
                 _route_to_call_through(
-                    session, job, call_id, contact_id, call_event.id, settings
+                    session, job, call_id, contact_id, call_event.id, settings,
+                    campaign_name=payload.get("campaign_name"),
                 )
             elif call_status in _VOICEMAIL_STATUSES:
                 _route_to_voicemail(
@@ -372,7 +374,8 @@ def process_call_event(job_id: str) -> None:
                     entity_id=call_id,
                 )
                 _route_to_call_through(
-                    session, job, call_id, contact_id, call_event.id, settings
+                    session, job, call_id, contact_id, call_event.id, settings,
+                    campaign_name=payload.get("campaign_name"),
                 )
 
             complete_job(session, job)
@@ -455,7 +458,8 @@ def _make_ai_queue(settings):
 
 
 def _route_to_call_through(
-    session, job, call_id: str, contact_id: str | None, call_event_id: str, settings
+    session, job, call_id: str, contact_id: str | None, call_event_id: str, settings,
+    campaign_name: str | None = None,
 ) -> None:
     """
     Schedule a classify_call_event job for a completed non-voicemail call.
@@ -463,6 +467,8 @@ def _route_to_call_through(
     Enqueues to the `ai` RQ queue so the worker picks it up immediately.
     Falls back to Postgres-only (recovery loop) if Redis is unavailable.
     Propagates call_event_id so ai_jobs can load the transcript.
+    Propagates campaign_name so run_call_analysis can use it when no LeadState
+    row exists yet (e.g. first-time inbound callers).
     """
     from app.worker.jobs.ai_jobs import classify_call_event
     from app.worker.scheduler import schedule_job
@@ -480,6 +486,7 @@ def _route_to_call_through(
             "call_id": call_id,
             "contact_id": contact_id,
             "call_event_id": call_event_id,
+            "campaign_name": campaign_name,
             "parent_job_id": job.id,
         },
         rq_queue=ai_queue,

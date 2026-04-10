@@ -98,8 +98,8 @@ export default function CampaignOverviewClient() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Campaigns are business concepts only — "New Lead" and "Cold Lead" (not Inbound)
-  const campaigns = ["All", "New Lead", "Cold Lead", "Unknown"];
+  // Campaigns: "New Lead", "Cold Lead", or "Inbound" (new callers via inbound voice agent)
+  const campaigns = ["All", "New Lead", "Cold Lead", "Inbound"];
 
   const visible = campaignFilter === "All"
     ? rows

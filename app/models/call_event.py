@@ -58,6 +58,9 @@ class CallEvent(Base):
     # voice_agent: which Synthflow agent handled this call — ColdLead | NewLead | Inbound
     # Extracted from raw_payload_json->>'Agent' at event creation time.
     voice_agent: Mapped[Optional[str]] = mapped_column(String(50))
+    # campaign_name: business campaign label at call time — "New Lead" | "Cold Lead" | "Inbound"
+    # Set from the normalised webhook payload; never changes after creation.
+    campaign_name: Mapped[Optional[str]] = mapped_column(String(100))
     # raw_payload_json: original webhook body preserved for replay
     raw_payload_json: Mapped[Optional[dict]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(

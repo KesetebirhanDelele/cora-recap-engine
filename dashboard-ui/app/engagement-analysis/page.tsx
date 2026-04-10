@@ -25,12 +25,12 @@ import { fetchMetrics, fetchAiTimeSeries, fetchIntentCalls } from "@/lib/api";
 import type { MetricsResponse, AiTimeSeriesResponse, IntentCallRow } from "@/types";
 import DateRangePicker from "@/components/voice/DateRangePicker";
 
-// Campaign — business concept (New Lead / Cold Lead only, never Inbound)
+// Campaign — business concept: New Lead, Cold Lead, or Inbound (new inbound callers)
 const CAMPAIGNS: { label: string; value: string | null }[] = [
   { label: "All",       value: null },
   { label: "New Lead",  value: "New Lead" },
   { label: "Cold Lead", value: "Cold Lead" },
-  { label: "Unknown",   value: "Unknown" },
+  { label: "Inbound",   value: "Inbound" },
 ];
 
 // Voice Agent — which Synthflow agent handled the call (stored in call_events.voice_agent)

@@ -143,7 +143,16 @@ def create_crm_task(job_id: str) -> None:
 
             ghl = GHLClient(settings=settings)
             ghl_contact: dict = {}
-            if effective_contact_id:
+
+            # Detect whether effective_contact_id is a real GHL ID or a phone string.
+            # Inbound calls derive contact_id from the caller's phone number; passing
+            # that directly to get_contact() returns a 404.  When it looks like a phone
+            # we go straight to search_contact_by_phone and use the resolved GHL ID.
+            def _looks_like_phone(s: str) -> bool:
+                stripped = s.replace(" ", "").replace("-", "").replace("+", "")
+                return bool(stripped) and stripped.isdigit()
+
+            if effective_contact_id and not _looks_like_phone(effective_contact_id):
                 try:
                     ghl_contact = ghl.get_contact(effective_contact_id)
                     logger.info(
@@ -158,23 +167,30 @@ def create_crm_task(job_id: str) -> None:
                         "contact_id=%s: %s",
                         effective_contact_id, _read_exc,
                     )
-            elif contact_phone:
-                try:
-                    found = ghl.search_contact_by_phone(contact_phone)
-                    if found:
-                        ghl_contact = found
-                        # Back-fill contact_id if we only had a phone
-                        if not effective_contact_id:
-                            effective_contact_id = found.get("id", effective_contact_id)
-                        logger.info(
-                            "create_crm_task: GHL contact resolved by phone | contact_id=%s",
-                            effective_contact_id,
+            else:
+                # Phone-derived contact_id or no contact_id — search by phone
+                phone_to_search = contact_phone or (
+                    effective_contact_id if effective_contact_id else None
+                )
+                if phone_to_search:
+                    try:
+                        found = ghl.search_contact_by_phone(phone_to_search)
+                        if found:
+                            ghl_contact = found
+                            resolved_id = found.get("id")
+                            if resolved_id:
+                                logger.info(
+                                    "create_crm_task: GHL contact resolved by phone | "
+                                    "phone=%s → contact_id=%s",
+                                    phone_to_search, resolved_id,
+                                )
+                                effective_contact_id = resolved_id
+                    except Exception as _read_exc:
+                        logger.warning(
+                            "create_crm_task: GHL phone search failed (non-fatal) | "
+                            "phone=%s: %s",
+                            phone_to_search, _read_exc,
                         )
-                except Exception as _read_exc:
-                    logger.warning(
-                        "create_crm_task: GHL phone search failed (non-fatal) | %s",
-                        _read_exc,
-                    )
 
             # ── GHL contact field updates ────────────────────────────────────
             field_updates: dict[str, str] = {}

@@ -144,7 +144,7 @@ def get_metrics(
     Compute aggregated KPIs, queue detail, and CRM metrics for a time window.
     Returns a dict matching the GET /dashboard/metrics response schema.
 
-    campaign:    "New Lead" | "Cold Lead" | "Unknown" (business campaigns)
+    campaign:    "New Lead" | "Cold Lead" | "Inbound" (business campaigns)
     direction:   "Outbound" | "Inbound" (case-insensitive match on call_events.direction)
     voice_agent: "ColdLead" | "NewLead" | "Inbound" (call_events.voice_agent)
     """
@@ -154,12 +154,11 @@ def get_metrics(
 
     params: dict[str, Any] = {"from_dt": from_dt, "to_dt": to_dt}
 
-    # Campaign filter — "Unknown" means no recognised campaign value
+    # Campaign filter — "Inbound", "New Lead", or "Cold Lead"
     campaign_filter = ""
     needs_ls_join = False
-    if campaign == "Unknown":
-        campaign_filter = "AND (ls.campaign_name IS NULL OR ls.campaign_name NOT IN ('New Lead', 'Cold Lead'))"
-        needs_ls_join = True
+    if campaign == "Inbound":
+        campaign_filter = "AND ce.campaign_name = 'Inbound'"
     elif campaign:
         campaign_filter = "AND ls.campaign_name = :campaign"
         params["campaign"] = campaign
@@ -589,13 +588,14 @@ def get_voice_performance(
     # Grouped by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     camp_rows = session.execute(text(f"""
         SELECT
-            COALESCE(ce.voice_agent, 'Unknown')                            AS voice_agent,
+            ce.voice_agent,
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+          AND ce.voice_agent IS NOT NULL
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -1066,7 +1066,7 @@ def get_recent_calls(
         SELECT
             ce.contact_id,
             COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
-            COALESCE(ce.voice_agent, ls.campaign_name, 'Unknown') AS voice_agent,
+            COALESCE(ce.campaign_name, ls.campaign_name, ce.voice_agent) AS campaign_name,
             ce.status,
             COALESCE(ce.duration_seconds, 0)             AS duration_seconds,
             ce.recording_url,
@@ -1158,7 +1158,7 @@ def get_intent_calls(
         SELECT
             ce.contact_id,
             COALESCE(ls.normalized_phone, ce.contact_id)              AS phone,
-            COALESCE(ce.voice_agent, ls.campaign_name, 'Unknown')     AS display_agent,
+            COALESCE(ce.campaign_name, ls.campaign_name, ce.voice_agent) AS display_agent,
             ce.status,
             COALESCE(ce.duration_seconds, 0)                          AS duration_seconds,
             ce.recording_url,

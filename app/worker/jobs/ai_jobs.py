@@ -31,6 +31,46 @@ from app.worker.exceptions import create_exception
 logger = logging.getLogger(__name__)
 
 
+def _resolve_lead_state(session, contact_id: str | None, call_event):
+    """
+    Return the LeadState for a contact, with a phone-number fallback.
+
+    Priority:
+      1. Direct contact_id match (standard outbound path).
+      2. normalized_phone match using phone fields from call_event.raw_payload_json
+         (inbound path — contact_id is a phone string, real row uses a GHL ID).
+
+    Returns None only when no row can be found via either lookup.
+    """
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
+
+    if not contact_id:
+        return None
+
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    if lead is not None:
+        return lead
+
+    # Fallback: look up by normalised phone extracted from the call payload.
+    raw = (call_event.raw_payload_json or {}) if call_event else {}
+    phone = (
+        raw.get("phone_number_from")
+        or raw.get("phone_number_to")
+        or raw.get("phone_number")
+        or raw.get("phone")
+        or (contact_id if contact_id.startswith("+") else None)
+    )
+    if not phone:
+        return None
+
+    return session.scalars(
+        select(LeadState).where(LeadState.normalized_phone == phone)
+    ).first()
+
+
 def run_call_analysis(job_id: str) -> None:
     """
     AI analysis job for a completed call.
@@ -59,6 +99,7 @@ def run_call_analysis(job_id: str) -> None:
         call_id = payload.get("call_id", "")
         call_event_id = payload.get("call_event_id")
         contact_id = payload.get("contact_id")
+        payload_campaign_name = payload.get("campaign_name") or ""
 
         try:
             logger.info(
@@ -130,11 +171,51 @@ def run_call_analysis(job_id: str) -> None:
                 )
 
                 if intent_result is not None:
-                    live_lead = session.scalars(
-                        select(LeadState).where(LeadState.contact_id == contact_id)
-                    ).first()
+                    live_lead = _resolve_lead_state(session, contact_id, call_event)
+                    # If phone-fallback matched a different row, use its contact_id
+                    # for all downstream operations so intent actions hit the right row.
+                    if live_lead is not None and live_lead.contact_id != contact_id:
+                        contact_id = live_lead.contact_id
+
+                    # ── Stub creation for brand-new inbound callers ────────────
+                    # If no LeadState exists (not found by ID or phone), create a
+                    # minimal row now so that:
+                    #   - handle_intent's _update_lead_state finds a row to update
+                    #   - update_lead_state job hits the upsert branch, not create
+                    #   - campaign_name is stamped correctly from day one
+                    if live_lead is None and contact_id:
+                        raw_payload = (call_event.raw_payload_json or {}) if call_event else {}
+                        derived_phone = (
+                            raw_payload.get("phone_number_from")
+                            or raw_payload.get("phone_number_to")
+                            or raw_payload.get("phone_number")
+                            or raw_payload.get("phone")
+                            or (contact_id if contact_id.startswith("+") else None)
+                        )
+                        now_ts = datetime.now(tz=timezone.utc)
+                        live_lead = LeadState(
+                            id=str(uuid.uuid4()),
+                            contact_id=contact_id,
+                            normalized_phone=derived_phone,
+                            campaign_name=payload_campaign_name or None,
+                            status="active",
+                            version=0,
+                            created_at=now_ts,
+                            updated_at=now_ts,
+                        )
+                        session.add(live_lead)
+                        session.flush()
+                        logger.info(
+                            "run_call_analysis: created LeadState stub for new inbound caller "
+                            "| contact_id=%s phone=%r campaign=%r",
+                            contact_id, derived_phone, payload_campaign_name,
+                        )
+
                     live_phone = live_lead.normalized_phone if live_lead else ""
-                    campaign_name = live_lead.campaign_name if live_lead else ""
+                    campaign_name = (
+                        (live_lead.campaign_name if live_lead else None)
+                        or payload_campaign_name
+                    )
 
                     logger.info(
                         "live_call_detected | contact_id=%s intent=%s",
