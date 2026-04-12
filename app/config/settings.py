@@ -25,7 +25,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -248,6 +248,27 @@ class Settings(BaseSettings):
     # ─────────────────────────────────────────────────────────────────────────
     # Field validators
     # ─────────────────────────────────────────────────────────────────────────
+
+    @model_validator(mode="after")
+    def reject_changeme_in_production(self) -> "Settings":
+        """Prevent silent misconfiguration: refuse to start in production with default secrets.
+
+        If SECRET_KEY or WEBHOOK_SHARED_SECRET are still 'changeme' and APP_ENV is
+        'production', the system would accept forged operator tokens and unauthenticated
+        webhooks. Fail fast at boot rather than silently compromising in production.
+        """
+        if self.app_env == "production":
+            bad = []
+            if self.secret_key == "changeme":
+                bad.append("SECRET_KEY")
+            if self.webhook_shared_secret == "changeme":
+                bad.append("WEBHOOK_SHARED_SECRET")
+            if bad:
+                raise ConfigError(
+                    f"Production startup blocked: {', '.join(bad)} must not be 'changeme'. "
+                    "Set real secret values in your production .env file."
+                )
+        return self
 
     @field_validator("ghl_write_mode")
     @classmethod

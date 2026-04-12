@@ -52,8 +52,8 @@ def create_app() -> FastAPI:
         title="Cora Dashboard API",
         version="2.0.0",
         description="Production dashboard API for the Cora Recap Engine.",
-        docs_url="/docs",
-        redoc_url="/redoc",
+        docs_url="/docs" if settings.app_debug else None,
+        redoc_url="/redoc" if settings.app_debug else None,
         lifespan=lifespan,
     )
 

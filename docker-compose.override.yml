@@ -1,0 +1,87 @@
+# ── Local development overrides ───────────────────────────────────────────────
+#
+# Docker Compose automatically merges this file with docker-compose.yml when
+# you run `docker compose up` locally. It is NOT present on the Hetzner VM, so
+# production always runs the base file only.
+#
+# What this override does:
+#   - Points DATABASE_URL to your local Windows Postgres on host.docker.internal:5433
+#     (skips the postgres container — use your existing local DB)
+#   - Mounts ./app into each container for hot-reload without rebuilding
+#   - Enables --reload on the API and dashboard-api
+#   - Enables --reload equivalent (python -m app.worker.main watches are N/A,
+#     but the source mount means you only need to restart the worker, not rebuild)
+#   - Starts the Next.js dev server instead of the production build
+#
+# To start only core services (skip postgres container and frontend):
+#   docker compose up api dashboard-api worker-default worker-ai worker-callbacks worker-retries redis migrate
+#
+# The postgres service from docker-compose.yml will still start unless excluded.
+# If you prefer to skip it entirely:
+#   docker compose up --scale postgres=0 api ...  (note: migrate healthcheck will be skipped too)
+# Simplest: just ignore the postgres container — nothing connects to it in dev.
+
+services:
+
+  migrate:
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+    # Skip waiting on the postgres container — using local host DB instead
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  api:
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+      APP_ENV: development
+      APP_DEBUG: "true"
+    volumes:
+      - ./app:/app/app
+
+  dashboard-api:
+    command: uvicorn app.api.dashboard_main:app --host 0.0.0.0 --port 8001 --reload
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+      APP_ENV: development
+      APP_DEBUG: "true"
+    volumes:
+      - ./app:/app/app
+
+  worker-default:
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+    volumes:
+      - ./app:/app/app
+
+  worker-ai:
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+    volumes:
+      - ./app:/app/app
+
+  worker-callbacks:
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+    volumes:
+      - ./app:/app/app
+
+  worker-retries:
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@host.docker.internal:5433/${POSTGRES_DATABASE:-cora}
+    volumes:
+      - ./app:/app/app
+
+  # Dev frontend: Next.js hot-reload dev server instead of production build
+  frontend:
+    build:
+      context: ./dashboard-ui
+      dockerfile: Dockerfile.dev
+    command: npm run dev
+    volumes:
+      - ./dashboard-ui:/app
+      - /app/node_modules
+    environment:
+      DASHBOARD_API_URL: http://localhost:8001
+      WS_URL: ws://localhost:8001

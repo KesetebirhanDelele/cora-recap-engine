@@ -79,7 +79,9 @@
       "Bash(grep -E \"^d|^-.*\\\\.\\(md|json|py|sh\\)$\")",
       "Bash(grep -E \"\\\\.\\(md|sh|Makefile\\)$\")",
       "Bash(grep -E \"Makefile|\\\\.sh$|scripts\")",
-      "Bash(python -m pytest tests/unit/test_inbound_call_processing.py -v)"
+      "Bash(python -m pytest tests/unit/test_inbound_call_processing.py -v)",
+      "Bash(git checkout:*)",
+      "Bash(python -c \"from app.config.settings import Settings, ConfigError; print\\('OK'\\)\")"
     ]
   }
 }
