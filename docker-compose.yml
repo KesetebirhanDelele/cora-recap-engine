@@ -96,11 +96,11 @@ services:
     build:
       context: ./dashboard-ui
       dockerfile: Dockerfile
+      args:
+        DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://localhost:8001}
+        WS_URL: ${WS_URL:-ws://localhost:8001}
     ports:
       - "3000:3000"
-    environment:
-      DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://localhost:8001}
-      WS_URL: ${WS_URL:-ws://localhost:8001}
     depends_on:
       - dashboard-api
     restart: unless-stopped
