@@ -65,6 +65,12 @@ def normalize_synthflow_payload(body: dict[str, Any]) -> dict[str, Any]:
     # Work on a shallow copy so we never mutate the caller's dict
     payload = dict(body)
 
+    # ── data envelope: Synthflow HTTP step wraps payload under {"data": {...}} ──
+    # Unwrap one level so all downstream field access is flat.
+    if set(payload.keys()) == {"data"} and isinstance(payload.get("data"), dict):
+        logger.debug("normalize_synthflow_payload: unwrapping 'data' envelope")
+        payload = dict(payload["data"])
+
     # ── call_id: case-insensitive resolution ──────────────────────────────────
     if not payload.get("call_id"):
         for alias in _CALL_ID_ALIASES:
