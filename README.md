@@ -152,9 +152,8 @@ Docker Compose handles the startup order automatically. Redis is always ready be
 
 **First-time setup:**
 ```powershell
-# Copy environment template and fill in credentials
-cp .env.example .env
-# then edit .env
+# Create and fill in .env with your credentials
+# (see Mode Flags section and directives/spec/11_runbook.md for required variables)
 
 # Build and start
 docker compose up --build
@@ -199,10 +198,7 @@ pip install -e ".[dev]"
 
 ### Environment
 
-```bash
-cp .env.example .env
-# Edit .env — fill in credentials for your environment
-```
+Create `.env` in the project root and fill in credentials for your environment.
 
 > **Shadow mode is on by default.** `GHL_WRITE_MODE=shadow` and `GHL_WRITE_SHADOW_LOG_ONLY=true` are the safe defaults. Do not change to `live` without explicit approval.
 
@@ -472,7 +468,7 @@ The following must be supplied before the corresponding write paths go live:
 - `GOOGLE_SHEETS_CALL_LOG_ID`, `GOOGLE_SHEETS_CAMPAIGN_DATA_ID`, and all tab names
 - New Lead VM tier delays: `NEW_VM_TIER_*`
 
-See `.env.example` for the full list.
+See `directives/spec/11_runbook.md` for the full list.
 
 ---
 
@@ -483,18 +479,144 @@ See [directives/spec/11_runbook.md](directives/spec/11_runbook.md).
 Full specifications: [directives/spec/](directives/spec/)
 Architecture decisions: [directives/adr/](directives/adr/)
 
-## Code to see Redus Queue:
-docker run -p 9181:9181 `
---network cora-recap-engine_default `
--e RQ_DASHBOARD_REDIS_URL=redis://redis:6379 `
-eoranged/rq-dashboard
+---
 
+## Production Deployment (Hetzner Cloud)
 
-## Flushing old Redis Queues
-docker exec -it cora-recap-engine-redis-1 redis-cli
-127.0.0.1:6379> flushall
-OK
-127.0.0.1:6379> 
+### Server requirements
+- Hetzner CX22 (2 vCPU, 4 GB RAM) or larger
+- Ubuntu 22.04
+- Docker CE + Docker Compose plugin installed
+
+### One-time server setup
+
+```bash
+# Install Docker CE on the Hetzner Ubuntu VM
+apt-get update
+apt-get install -y ca-certificates curl gnupg
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Clone the repo (use a GitHub PAT for private repos)
+git clone https://github.com/<org>/cora-recap-engine /opt/cora-recap-engine
+cd /opt/cora-recap-engine
+```
+
+### .env on the server
+
+Copy your working local `.env` to the server, then adjust these values:
+
+```
+APP_ENV=production
+DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
+REDIS_HOST=redis
+DASHBOARD_API_URL=http://<server-ip>:8001
+WS_URL=ws://<server-ip>:8001/ws
+ALLOW_ORIGINS=http://<server-ip>:3000
+```
+
+**Critical rules:**
+- `DATABASE_URL` must use the Docker service name `postgres:5432`, NOT `localhost` or `host.docker.internal`
+- `DASHBOARD_API_URL` must be the **public server IP** (not localhost) — it is baked into the Next.js bundle at build time and used by the browser
+- `ALLOW_ORIGINS` must match the origin the browser uses to open the dashboard
+- Do NOT copy `docker-compose.override.yml` to the server — it is local dev only
+
+### Deploy
+
+```bash
+cd /opt/cora-recap-engine
+docker compose up -d --build
+docker compose logs migrate       # verify migrations ran (should exit 0)
+docker compose ps                 # all services should be healthy/running
+```
+
+### Open firewall ports (Hetzner Cloud Console)
+
+In Hetzner Cloud Console → your server → Firewalls, add inbound TCP rules for:
+- Port `8000` — Synthflow webhook intake
+- Port `8001` — Dashboard API (browser)
+- Port `3000` — Next.js frontend
+
+### Point Synthflow webhook
+
+In Synthflow → your workflow → HTTP step, set:
+```
+Method: POST
+URL: http://<server-ip>:8000/v1/webhooks/calls
+```
+
+Use `http://` not `https://` — TLS is not configured without a reverse proxy.
+
+### Verify end-to-end
+
+```bash
+# API healthy
+curl http://<server-ip>:8000/health
+# → {"status":"ok","service":"cora-recap-engine"}
+
+# Dashboard API healthy
+curl http://<server-ip>:8001/health
+# → {"status":"ok","service":"dashboard-api"}
+
+# After a Synthflow call completes
+docker compose logs api --tail=20
+# → INFO: Received call event | call_id=... job_id=... enqueued=True
+
+docker compose logs worker-default --tail=30
+docker compose logs worker-ai --tail=30
+```
+
+### Production troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `migrate` fails with `host.docker.internal` error | `docker-compose.override.yml` present on server, or `.env` has `DATABASE_URL=...localhost...` | Remove override file; set `DATABASE_URL` to use `postgres:5432` in `.env` |
+| `migrate` fails even after fix | Old image cached with wrong DATABASE_URL | `docker compose build --no-cache migrate && docker compose up migrate` |
+| frontend shows `Couldn't find pages or app directory` | Dev Dockerfile used instead of prod | `docker compose build --no-cache frontend && docker compose up -d frontend` |
+| `TypeError: Failed to fetch` on dashboard pages | `DASHBOARD_API_URL` was `localhost` when the image was built — baked wrong URL | Set correct server IP in `.env`, then `docker compose up -d --build frontend` |
+| `TypeError: Failed to fetch` persists after rebuild | Browser cached old JS bundle | Hard reload: `Ctrl+Shift+R` |
+| `TypeError: Failed to fetch` persists after hard reload | Port 8001 blocked by Hetzner firewall | Add inbound TCP 8001 rule in Hetzner Cloud Console → Firewalls |
+| Synthflow POST returns connection error | URL uses `https://` — server has no TLS cert | Change Synthflow HTTP step URL to `http://` |
+| Synthflow POST returns 422 `missing_call_id` | Payload wrapped under `{"data": {...}}` and wasn't unwrapped | Already fixed in normalizer — pull latest and rebuild `api` |
+| Dashboard shows CORS error in browser | `ALLOW_ORIGINS` set to `localhost:3000` but browser hits `<server-ip>:3000` | Set `ALLOW_ORIGINS=http://<server-ip>:3000` in `.env`, restart `dashboard-api` |
+| All data shows zeros / null | No call events in DB yet | Normal on fresh deploy — send real calls via Synthflow first |
+| Worker not processing jobs | Redis not healthy | `docker compose logs redis` — restart if needed; worker reconnects automatically |
+
+### Useful server commands
+
+```bash
+# Tail all logs
+docker compose logs --follow
+
+# Check queue depths
+docker compose exec redis redis-cli llen rq:queue:default
+docker compose exec redis redis-cli llen rq:queue:ai
+
+# Check DB rows after a webhook
+docker compose exec postgres psql -U postgres -d cora -c "SELECT count(*) FROM call_events;"
+docker compose exec postgres psql -U postgres -d cora -c "SELECT count(*) FROM scheduled_jobs;"
+
+# Restart a single service (no rebuild)
+docker compose restart dashboard-api
+
+# Rebuild and restart a single service
+docker compose up -d --build frontend
+
+# View RQ dashboard (browser at http://localhost:9181 via SSH tunnel)
+docker run -p 9181:9181 \
+  --network cora-recap-engine_default \
+  -e RQ_DASHBOARD_REDIS_URL=redis://redis:6379 \
+  eoranged/rq-dashboard
+
+# Flush Redis queues (removes all pending jobs — use with care)
+docker compose exec redis redis-cli flushall
+```
+
+---
 
 ## Dashboard v2
 
