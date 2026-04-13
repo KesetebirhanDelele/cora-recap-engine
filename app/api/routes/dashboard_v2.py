@@ -689,6 +689,54 @@ def action_bulk_ignore(
     return {"status": "ok", "ignored_count": ignored_count, "audit_log_id": audit.id}
 
 
+class AcknowledgeAlertRequest(BaseModel):
+    alert_id: str
+    note: str = ""
+
+
+@router.post("/actions/acknowledge-alert")
+def action_acknowledge_alert(
+    body: AcknowledgeAlertRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Mark an active alert as acknowledged — suppresses repeat notifications without resolving it."""
+    from sqlalchemy import text
+    import uuid
+    from app.models.audit import AuditLog
+
+    operator_id = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+
+    result = session.execute(text("""
+        UPDATE alert_events
+        SET status = 'acknowledged', resolved_at = :now
+        WHERE id = :alert_id AND status = 'active'
+        RETURNING id
+    """), {"alert_id": body.alert_id, "now": now})
+
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Alert not found or not in active status",
+        )
+
+    audit = AuditLog(
+        id=str(uuid.uuid4()),
+        entity_type="alert",
+        entity_id=body.alert_id,
+        action="acknowledge_alert",
+        operator_id=operator_id,
+        context_json={"note": body.note},
+        created_at=now,
+    )
+    session.add(audit)
+    session.flush()
+    session.commit()
+
+    return {"status": "ok", "alert_id": body.alert_id, "audit_log_id": audit.id}
+
+
 # ── WebSocket — real-time event feed ─────────────────────────────────────────
 
 @router.get("/campaign-overview")

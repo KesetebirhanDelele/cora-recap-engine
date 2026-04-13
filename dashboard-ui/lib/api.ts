@@ -233,6 +233,10 @@ export async function bulkIgnoreExceptions(body: BulkIgnoreRequest): Promise<Act
   return post<ActionResponse & { ignored_count: number }>("/dashboard/actions/bulk-ignore", body);
 }
 
+export async function acknowledgeAlert(alertId: string, note = ""): Promise<{ status: string; alert_id: string; audit_log_id: string | null }> {
+  return post("/dashboard/actions/acknowledge-alert", { alert_id: alertId, note });
+}
+
 export async function fetchCardMetrics(): Promise<CardMetricsResponse> {
   return get<CardMetricsResponse>("/dashboard/card-metrics");
 }
