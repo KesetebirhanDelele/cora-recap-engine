@@ -586,6 +586,56 @@ docker compose logs worker-ai --tail=30
 | All data shows zeros / null | No call events in DB yet | Normal on fresh deploy — send real calls via Synthflow first |
 | Worker not processing jobs | Redis not healthy | `docker compose logs redis` — restart if needed; worker reconnects automatically |
 
+### Querying Postgres on the server
+
+All `docker compose` commands require you to be in the project directory first:
+
+```bash
+cd /opt/cora-recap-engine
+```
+
+**Interactive psql shell** (run arbitrary queries):
+```bash
+docker compose exec postgres psql -U postgres -d cora
+```
+Inside psql: `\dt` lists all tables, `\d <table>` describes a table, `\q` exits.
+
+**One-liner queries** (no interactive session):
+```bash
+# Row counts
+docker compose exec postgres psql -U postgres -d cora -c "SELECT COUNT(*) FROM call_events;"
+docker compose exec postgres psql -U postgres -d cora -c "SELECT COUNT(*) FROM scheduled_jobs;"
+
+# Stuck jobs right now
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, contact_id, run_at,
+         EXTRACT(EPOCH FROM (NOW() - run_at))::int AS lag_seconds
+  FROM scheduled_jobs
+  WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'
+  ORDER BY run_at;"
+
+# Recent exceptions
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT type, severity, status, created_at
+  FROM exceptions ORDER BY created_at DESC LIMIT 20;"
+
+# Active alerts
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT alert_type, severity, message, created_at
+  FROM alert_events WHERE status = 'active';"
+
+# Recent call events
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, status, duration_seconds, detected_intent, created_at
+  FROM call_events ORDER BY created_at DESC LIMIT 10;"
+
+# Lead state for a specific contact
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT * FROM lead_state WHERE contact_id = '<contact_id>';"
+```
+
+**Data persistence** — data is stored in a named Docker volume (`postgres_data`) on the host filesystem, independent of any image or container. It survives all rebuilds and restarts. The only commands that delete it are `docker compose down -v` (explicit volume removal flag) or `docker volume rm cora-recap-engine_postgres_data`. Never pass `-v` to `docker compose down` in production.
+
 ### Useful server commands
 
 ```bash
@@ -596,15 +646,14 @@ docker compose logs --follow
 docker compose exec redis redis-cli llen rq:queue:default
 docker compose exec redis redis-cli llen rq:queue:ai
 
-# Check DB rows after a webhook
-docker compose exec postgres psql -U postgres -d cora -c "SELECT count(*) FROM call_events;"
-docker compose exec postgres psql -U postgres -d cora -c "SELECT count(*) FROM scheduled_jobs;"
-
 # Restart a single service (no rebuild)
 docker compose restart dashboard-api
 
 # Rebuild and restart a single service
 docker compose up -d --build frontend
+
+# Check all service health
+docker compose ps
 
 # View RQ dashboard (browser at http://localhost:9181 via SSH tunnel)
 docker run -p 9181:9181 \

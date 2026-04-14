@@ -51,6 +51,95 @@ docker-compose up dashboard-api dashboard-ui
 
 ---
 
+## Querying Postgres directly on the server
+
+All `docker compose` commands must be run from the project directory:
+
+```bash
+cd /opt/cora-recap-engine
+```
+
+Running them from any other directory produces: `no configuration file provided: not found`.
+
+### Interactive shell
+
+```bash
+docker compose exec postgres psql -U postgres -d cora
+```
+
+Useful psql meta-commands:
+
+| Command | What it does |
+|---|---|
+| `\dt` | List all tables |
+| `\d <table>` | Describe a table (columns, types, indexes) |
+| `\q` | Exit |
+
+### One-liner queries
+
+```bash
+# Stuck jobs (pending past run_at by more than 10 minutes)
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, contact_id, run_at,
+         EXTRACT(EPOCH FROM (NOW() - run_at))::int AS lag_seconds
+  FROM scheduled_jobs
+  WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'
+  ORDER BY run_at;"
+
+# Expired leases (running jobs with expired lease)
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, claimed_by,
+         EXTRACT(EPOCH FROM (NOW() - lease_expires_at))::int AS age_seconds
+  FROM scheduled_jobs
+  WHERE status = 'running' AND lease_expires_at < NOW();"
+
+# Active alerts
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT alert_type, severity, message, created_at
+  FROM alert_events WHERE status = 'active';"
+
+# Open exceptions
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT type, severity, status, created_at
+  FROM exceptions WHERE status = 'open'
+  ORDER BY created_at DESC LIMIT 20;"
+
+# Recent call events
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, status, duration_seconds, detected_intent, created_at
+  FROM call_events ORDER BY created_at DESC LIMIT 10;"
+
+# All scheduled jobs for a specific contact
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, status, run_at, claimed_by
+  FROM scheduled_jobs WHERE contact_id = '<contact_id>'
+  ORDER BY created_at DESC;"
+
+# Lead state for a specific contact
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT * FROM lead_state WHERE contact_id = '<contact_id>';"
+
+# Recent audit log (operator actions)
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT entity_type, entity_id, action, operator_id, created_at
+  FROM audit_log ORDER BY created_at DESC LIMIT 20;"
+```
+
+### Data persistence
+
+Postgres data lives in a named Docker volume (`postgres_data`), stored on the host at `/var/lib/docker/volumes/cora-recap-engine_postgres_data`. It is **independent of any container or image**. Rebuilding services, pulling new code, or restarting containers never touches it.
+
+**The only destructive commands are:**
+- `docker compose down -v` — the `-v` flag explicitly removes volumes. **Never run this in production.**
+- `docker volume rm cora-recap-engine_postgres_data` — same effect.
+
+Safe commands (data is always preserved):
+- `docker compose up -d --build <service>` — rebuilds and restarts a service
+- `docker compose restart <service>` — restarts without rebuild
+- `docker compose down` — stops and removes containers, volumes untouched
+
+---
+
 ## Running the migration
 
 ```bash
@@ -131,6 +220,32 @@ streamlit run execution/dashboard.py --server.headless true
 
 ---
 
+## Setting up the Dashboard Token (required for all write actions)
+
+All operator action endpoints (`/dashboard/actions/*` and `POST /dashboard/settings`) require `Authorization: Bearer <SECRET_KEY>`. The frontend reads this token from `localStorage["dashboard_token"]`.
+
+**First-time setup (or after a `SECRET_KEY` rotation):**
+1. Navigate to `http://<host>:3000/settings`.
+2. Find the **Dashboard Token** card at the top of the page.
+3. Paste the value of `SECRET_KEY` from the server's `.env` file into the password input.
+4. Click **Save token**. The green "Token is set" indicator confirms it is stored.
+5. The token persists in the browser's `localStorage` until the browser storage is cleared or the token is explicitly deleted from that field.
+
+**Verifying the token is working:**
+```bash
+# On the server, extract the key:
+SECRET=$(grep '^SECRET_KEY=' /opt/cora-recap-engine/.env | cut -d= -f2)
+
+# Confirm the endpoint accepts it (expect 422, not 403):
+curl -s -w "\n%{http_code}" -X POST http://localhost:8001/dashboard/actions/acknowledge-alert \
+  -H "Authorization: Bearer $SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# Expected: {"detail": ...} with HTTP 422 (body validation error, not auth error)
+```
+
+---
+
 ## Operator action procedures
 
 ### Retry a failed job
@@ -149,6 +264,27 @@ Use when a lead must be removed from all automated follow-up immediately (e.g., 
 3. All `pending` jobs for the lead are marked `cancelled`.
 4. No new outbound calls, SMS, or emails will be scheduled.
 5. Confirm in Queue section: all jobs for that contact_id show `cancelled`.
+
+### Acknowledge an alert
+Use when an alert is active but the underlying issue is already known and being worked. Acknowledging moves the alert off the Active tab so it does not distract from new signals, without suppressing the audit record.
+
+1. Navigate to `http://<host>:3000/alerts`.
+2. Open the **Active** tab.
+3. Locate the alert and click **Acknowledge**.
+4. The alert is immediately removed from the Active tab (optimistic UI).
+5. Confirm: switch to the **Acknowledged** tab — the alert row appears there.
+6. Backend: `PUT alert_events SET status='acknowledged'`; one `audit_log` row written.
+7. **Note**: acknowledging does not suppress the next alert email if the same threshold is breached again after the dedup window.
+
+### Cancel a stuck job from Queue Health
+Use when the Queue Health page (`/queue`) shows a stuck pending job and the associated contact should no longer be processed (e.g. incorrect enrollment, manual resolution, or a job that will never clear without intervention).
+
+1. Navigate to `http://<host>:3000/queue`.
+2. In the **Stuck Jobs** table, locate the job. If the **Contact** column shows a contact ID, a **Cancel jobs** button appears in the **Action** column.
+3. Click **Cancel jobs**.
+4. Backend: `POST /dashboard/actions/cancel` with `contact_id` and `reason="operator_cancelled_from_queue_health"`. All `pending` jobs for that contact are marked `cancelled`.
+5. The page re-fetches automatically. The cancelled contact's jobs should no longer appear in the stuck list.
+6. **No action is available** for rows without a contact ID, or for entries in the **Expired Leases** table — expired leases are auto-recovered by the worker's `recover_expired_claims` routine.
 
 ### Force finalize a lead
 Use when a lead has reached a terminal state outside the automated system (enrolled, withdrawn, wrong number resolved manually).

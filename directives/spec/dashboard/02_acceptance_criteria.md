@@ -88,6 +88,13 @@
 - When: `GET /dashboard/metrics` is called
 - Then: the job appears in the expired lease list with `worker_id` and age
 
+### AC-QM-03 — Cancel stuck job from Queue Health UI
+- Given: the Queue Health page shows a stuck job with a non-null `contact_id`
+- When: the operator clicks **Cancel jobs**
+- Then: `POST /dashboard/actions/cancel` is called with that `contact_id`; all `pending` jobs for the contact transition to `cancelled`; the page re-fetches and the contact's jobs no longer appear in the stuck list; one `audit_log` row is written
+- Edge case: stuck job with `contact_id = null` → no Cancel button rendered; operator must act via the Exceptions Monitor or direct DB query
+- Edge case: expired lease rows never show a Cancel button (no `contact_id` in query; auto-recovery handles them)
+
 ## Campaign and AI metrics
 
 ### AC-KPI-01 — Pickup rate correct
@@ -116,6 +123,14 @@
 - Given: a critical alert was active; the metric drops below threshold
 - When: the next metric check runs
 - Then: a resolve email is sent noting the metric returned to normal
+
+### AC-AL-04 — Acknowledge alert via UI
+- Given: an `alert_events` row with `status = 'active'` is visible on the Active tab
+- When: the operator clicks **Acknowledge**
+- Then: `POST /dashboard/actions/acknowledge-alert` is called with the alert's `id`; the alert row is removed from the Active tab immediately (optimistic); switching to the Acknowledged tab shows the alert with its original message and severity
+- Backend: `alert_events.status = 'acknowledged'` and `resolved_at = now()`; one `audit_log` row with `action = 'acknowledge_alert'`
+- Edge case: double-click or concurrent acknowledge → second request returns HTTP 409; UI shows the error inline; the alert remains visible
+- Edge case: no Dashboard Token set → request returns HTTP 403; error is displayed inline on the alert row
 
 ## Existing system non-regression
 
