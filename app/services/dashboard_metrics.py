@@ -380,6 +380,24 @@ def get_metrics(
 
 _VM_IN = "('voicemail','hangup_on_voicemail','left_voicemail','voicemail_detected','machine_detected')"
 
+# Booking signal varies by campaign:
+#   ColdLead  → Synthflow extract_info action:  {'appointment booked': True}
+#   NewLead   → GHL native booking action:      action_ghl_create_booking status=success
+#   Inbound   → GHL native booking action:      action_ghl_create_booking status=success
+_BOOKED_COND = """(
+    ce.detected_intent = 'enrolled'
+    OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+    OR ce.raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%"status": "success"%'
+)"""
+
+# Unique contact dedup: inbound callers are identified by phone_number_from (the number
+# they called from); outbound leads are identified by phone_number_to (the number dialled).
+_UNIQUE_PHONE = """CASE
+    WHEN lower(ce.direction) = 'inbound'
+    THEN ce.raw_payload_json->>'phone_number_from'
+    ELSE ce.raw_payload_json->>'phone_number_to'
+END"""
+
 
 def _compute_voice_kpis(
     session: Session,
@@ -390,15 +408,12 @@ def _compute_voice_kpis(
     """Aggregate voice KPIs for a given time window."""
     row = session.execute(text(f"""
         SELECT
-            COUNT(DISTINCT ce.raw_payload_json->>'phone_number_to')         AS unique_contacts,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*)                                                        AS total_calls,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
             COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
-            COUNT(*) FILTER (
-                WHERE ce.detected_intent = 'enrolled'
-                   OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-            )                                                               AS booked,
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
@@ -476,14 +491,11 @@ def get_voice_performance(
             date_trunc('week', ce.created_at)                              AS week_start,
             ce.voice_agent                                                  AS voice_agent,
             COUNT(*)                                                        AS total_calls,
-            COUNT(DISTINCT ce.raw_payload_json->>'phone_number_to')        AS unique_contacts,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
             COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
-            COUNT(*) FILTER (
-                WHERE ce.detected_intent = 'enrolled'
-                   OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-            )                                                               AS booked,
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
@@ -599,12 +611,9 @@ def get_voice_performance(
         SELECT
             ce.voice_agent,
             COUNT(*)                                                        AS total_calls,
-            COUNT(DISTINCT ce.raw_payload_json->>'phone_number_to')        AS unique_contacts,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (
-                WHERE ce.detected_intent = 'enrolled'
-                   OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-            )                                                               AS booked
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
           AND ce.voice_agent IS NOT NULL
@@ -988,11 +997,27 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
 
     # ── booking_rate (booked / unique phones) ────────────────────────────────
     book_curr = _r(_scalar(
-        "SELECT COUNT(*) FILTER (WHERE detected_intent = 'enrolled' OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%')::float / NULLIF(COUNT(DISTINCT raw_payload_json->>'phone_number_to'), 0) FROM call_events WHERE created_at >= :s",
+        """SELECT COUNT(*) FILTER (WHERE
+                detected_intent = 'enrolled'
+                OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+                OR raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%"status": "success"%'
+           )::float / NULLIF(COUNT(DISTINCT CASE
+                WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
+                ELSE raw_payload_json->>'phone_number_to'
+           END), 0)
+           FROM call_events WHERE created_at >= :s""",
         {"s": w24_start},
     ))
     book_prev = _r(_scalar(
-        "SELECT COUNT(*) FILTER (WHERE detected_intent = 'enrolled' OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%')::float / NULLIF(COUNT(DISTINCT raw_payload_json->>'phone_number_to'), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        """SELECT COUNT(*) FILTER (WHERE
+                detected_intent = 'enrolled'
+                OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+                OR raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%"status": "success"%'
+           )::float / NULLIF(COUNT(DISTINCT CASE
+                WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
+                ELSE raw_payload_json->>'phone_number_to'
+           END), 0)
+           FROM call_events WHERE created_at BETWEEN :a AND :b""",
         {"a": w48_start, "b": w24_start},
     ))
 
