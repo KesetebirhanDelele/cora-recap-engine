@@ -249,6 +249,9 @@ export interface VoiceTimeSeriesPoint {
   cold: number;
   inbound: number;
   new_lead: number;
+  cold_unique: number;
+  inbound_unique: number;
+  new_lead_unique: number;
   completion_rate: number;
   pickup_rate: number;
   voicemail_rate: number;

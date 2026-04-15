@@ -72,7 +72,7 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
           orientation="left"
           stroke="#e2e8f0"
           tick={AXIS_STYLE}
-          label={{ value: "Total Calls", angle: -90, position: "insideLeft", offset: 12, style: LABEL_STYLE }}
+          label={{ value: "Unique Contacts", angle: -90, position: "insideLeft", offset: 12, style: LABEL_STYLE }}
         />
         <YAxis
           yAxisId="pct"
@@ -96,12 +96,12 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
 
         <Legend verticalAlign="top" height={28} wrapperStyle={{ fontSize: "0.85rem" }} />
 
-        {/* Stacked bars — onMouseEnter/Leave tracks the hovered segment */}
-        <Bar yAxisId="calls" dataKey="cold"     stackId="calls" name="Cold Lead" fill="#2563eb" radius={[0,0,0,0]}
+        {/* Stacked bars — unique contacts per campaign */}
+        <Bar yAxisId="calls" dataKey="cold_unique"     stackId="calls" name="Cold Lead" fill="#2563eb" radius={[0,0,0,0]}
           onMouseEnter={() => setActiveSeries("cold")}    onMouseLeave={clearSeries} />
-        <Bar yAxisId="calls" dataKey="inbound"  stackId="calls" name="Inbound"  fill="#eab308" radius={[0,0,0,0]}
+        <Bar yAxisId="calls" dataKey="inbound_unique"  stackId="calls" name="Inbound"  fill="#eab308" radius={[0,0,0,0]}
           onMouseEnter={() => setActiveSeries("inbound")} onMouseLeave={clearSeries} />
-        <Bar yAxisId="calls" dataKey="new_lead" stackId="calls" name="New Lead" fill="#16a34a" radius={[2,2,0,0]}
+        <Bar yAxisId="calls" dataKey="new_lead_unique" stackId="calls" name="New Lead" fill="#16a34a" radius={[2,2,0,0]}
           onMouseEnter={() => setActiveSeries("new_lead")} onMouseLeave={clearSeries} />
 
         {/* Lines — activeDot carries hover tracking per metric key */}

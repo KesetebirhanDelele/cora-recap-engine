@@ -395,7 +395,10 @@ def _compute_voice_kpis(
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
             COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
-            COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked,
+            COUNT(*) FILTER (
+                WHERE ce.detected_intent = 'enrolled'
+                   OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+            )                                                               AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
@@ -477,7 +480,10 @@ def get_voice_performance(
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
             COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
-            COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked,
+            COUNT(*) FILTER (
+                WHERE ce.detected_intent = 'enrolled'
+                   OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+            )                                                               AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
@@ -569,6 +575,9 @@ def get_voice_performance(
             "cold": w["cold"],
             "inbound": w["inbound"],
             "new_lead": w["new_lead"],
+            "cold_unique": w["cold_s"]["u"],
+            "inbound_unique": w["inbound_s"]["u"],
+            "new_lead_unique": w["new_lead_s"]["u"],
             "completion_rate": round(w["completed"] / t * 100, 1) if t else 0.0,
             "pickup_rate": round(w["completed"] / t * 100, 1) if t else 0.0,
             "voicemail_rate": round(w["voicemail"] / t * 100, 1) if t else 0.0,
@@ -592,7 +601,10 @@ def get_voice_performance(
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked
+            COUNT(*) FILTER (
+                WHERE ce.detected_intent = 'enrolled'
+                   OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+            )                                                               AS booked
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
           AND ce.voice_agent IS NOT NULL
