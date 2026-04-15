@@ -171,6 +171,11 @@ def _row_to_call_event(row: dict) -> CallEvent | None:
         v = (row.get(key) or "").strip()
         return v or None
 
+    start_time = _parse_timestamp(row.get("start_time"))
+    # Use the original call timestamp for created_at so dashboard time-range
+    # queries show real historical data instead of the import date.
+    created_at = start_time or datetime.now(tz=timezone.utc)
+
     return CallEvent(
         id=str(uuid.uuid4()),
         call_id=_trunc(call_id, 255),
@@ -181,7 +186,7 @@ def _row_to_call_event(row: dict) -> CallEvent | None:
         transcript=_s("transcript"),  # Text — no length limit
         duration_seconds=_safe_int(row.get("duration")),
         recording_url=_s("recording_url"),  # Text — no length limit
-        start_time_utc=_parse_timestamp(row.get("start_time")),
+        start_time_utc=start_time,
         model_id=_trunc(_s("module_id"), 255),
         lead_name=_trunc(_s("name"), 255),
         # phone_number_from = the Synthflow outbound number (agent side)
@@ -191,6 +196,7 @@ def _row_to_call_event(row: dict) -> CallEvent | None:
         dedupe_key=_trunc(dedupe_key, 512),
         detected_intent=None,  # not available in sheet
         raw_payload_json=raw_payload,
+        created_at=created_at,
     )
 
 
