@@ -145,6 +145,13 @@ def _safe_int(value: str | None) -> int | None:
         return None
 
 
+def _trunc(value: str | None, max_len: int) -> str | None:
+    """Truncate a string to max_len characters. Silently drops overflow."""
+    if value is None:
+        return None
+    return value[:max_len] if len(value) > max_len else value
+
+
 def _row_to_call_event(row: dict) -> CallEvent | None:
     """
     Convert one CSV row dict to a CallEvent model instance.
@@ -160,24 +167,28 @@ def _row_to_call_event(row: dict) -> CallEvent | None:
     # Store the full row as raw_payload_json for auditability / replay.
     raw_payload = {k: v for k, v in row.items() if v is not None and str(v).strip()}
 
+    def _s(key: str) -> str | None:
+        v = (row.get(key) or "").strip()
+        return v or None
+
     return CallEvent(
         id=str(uuid.uuid4()),
-        call_id=call_id,
+        call_id=_trunc(call_id, 255),
         contact_id=None,  # not available in sheet; may be enriched later
-        direction=(row.get("type_of_call") or "").strip() or None,
-        status=(row.get("status") or "").strip() or None,
-        end_call_reason=(row.get("end_call_reason") or "").strip() or None,
-        transcript=(row.get("transcript") or "").strip() or None,
+        direction=_trunc(_s("type_of_call"), 20),
+        status=_trunc(_s("status"), 50),
+        end_call_reason=_trunc(_s("end_call_reason"), 100),
+        transcript=_s("transcript"),  # Text — no length limit
         duration_seconds=_safe_int(row.get("duration")),
-        recording_url=(row.get("recording_url") or "").strip() or None,
+        recording_url=_s("recording_url"),  # Text — no length limit
         start_time_utc=_parse_timestamp(row.get("start_time")),
-        model_id=(row.get("module_id") or "").strip() or None,
-        lead_name=(row.get("name") or "").strip() or None,
+        model_id=_trunc(_s("module_id"), 255),
+        lead_name=_trunc(_s("name"), 255),
         # phone_number_from = the Synthflow outbound number (agent side)
-        agent_phone_number=_parse_phone(row.get("phone_number_from")),
-        voice_agent=voice_agent,
-        campaign_name=campaign_name,
-        dedupe_key=dedupe_key,
+        agent_phone_number=_trunc(_parse_phone(row.get("phone_number_from")), 50),
+        voice_agent=_trunc(voice_agent, 50),
+        campaign_name=_trunc(campaign_name, 100),
+        dedupe_key=_trunc(dedupe_key, 512),
         detected_intent=None,  # not available in sheet
         raw_payload_json=raw_payload,
     )
@@ -251,51 +262,60 @@ def main() -> None:
             )
         return
 
-    # ---- Insert (batched) ------------------------------------------------
+    # ---- Insert (batched, one commit per batch) --------------------------
+    # Each batch runs in its own session so a bad row only loses that batch.
+    # On re-run, already-inserted rows are skipped via dedupe_key check.
+    import sqlalchemy  # noqa: PLC0415
+
     inserted = 0
     skipped_dup = 0
     batch_num = 0
 
+    # Load existing keys once up front.
     with get_sync_session() as session:
-        # Fetch all existing dedupe_keys in one query to avoid N+1 lookups.
         existing_keys: set[str] = {
-            row[0]
-            for row in session.execute(
-                # Only fetch keys matching our import suffix for speed.
-                __import__("sqlalchemy").text(
+            r[0]
+            for r in session.execute(
+                sqlalchemy.text(
                     "SELECT dedupe_key FROM call_events "
                     "WHERE dedupe_key LIKE :pattern"
                 ),
                 {"pattern": "%:sheets_import"},
             ).fetchall()
         }
-        print(f"Existing sheets_import rows in DB: {len(existing_keys)}")
+    print(f"Existing sheets_import rows in DB: {len(existing_keys)}")
 
-        batch: list[CallEvent] = []
-        for evt in events:
-            if evt.dedupe_key in existing_keys:
-                skipped_dup += 1
-                continue
-            batch.append(evt)
-            existing_keys.add(evt.dedupe_key)  # prevent dupes within this run
+    # Split events into batches, skipping duplicates.
+    batches: list[list[CallEvent]] = []
+    current_batch: list[CallEvent] = []
+    for evt in events:
+        if evt.dedupe_key in existing_keys:
+            skipped_dup += 1
+            continue
+        existing_keys.add(evt.dedupe_key)  # prevent intra-run dupes
+        current_batch.append(evt)
+        if len(current_batch) >= BATCH_SIZE:
+            batches.append(current_batch)
+            current_batch = []
+    if current_batch:
+        batches.append(current_batch)
 
-            if len(batch) >= BATCH_SIZE:
-                batch_num += 1
+    print(f"Batches to insert: {len(batches)}  |  Skipped (duplicates): {skipped_dup}")
+
+    for batch in batches:
+        batch_num += 1
+        try:
+            with get_sync_session() as session:
                 for e in batch:
                     session.add(e)
-                session.flush()
-                inserted += len(batch)
-                print(f"  Batch {batch_num}: committed {inserted} rows so far…")
-                batch = []
-
-        # Final partial batch
-        if batch:
-            for e in batch:
-                session.add(e)
-            session.flush()
             inserted += len(batch)
-
-        # session.commit() is called automatically by get_sync_session() on exit
+            print(f"  Batch {batch_num}/{len(batches)}: committed {inserted} rows so far…")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"  Batch {batch_num} FAILED ({exc.__class__.__name__}: {exc}). "
+                f"Skipping {len(batch)} rows — re-run to retry.",
+                file=sys.stderr,
+            )
 
     print(
         f"\nDone.\n"
