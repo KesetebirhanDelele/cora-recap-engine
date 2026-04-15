@@ -390,7 +390,7 @@ def _compute_voice_kpis(
     """Aggregate voice KPIs for a given time window."""
     row = session.execute(text(f"""
         SELECT
-            COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
+            COUNT(DISTINCT ce.raw_payload_json->>'phone_number_to')         AS unique_contacts,
             COUNT(*)                                                        AS total_calls,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
@@ -476,7 +476,7 @@ def get_voice_performance(
             date_trunc('week', ce.created_at)                              AS week_start,
             ce.voice_agent                                                  AS voice_agent,
             COUNT(*)                                                        AS total_calls,
-            COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
+            COUNT(DISTINCT ce.raw_payload_json->>'phone_number_to')        AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
             COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
@@ -599,7 +599,7 @@ def get_voice_performance(
         SELECT
             ce.voice_agent,
             COUNT(*)                                                        AS total_calls,
-            COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
+            COUNT(DISTINCT ce.raw_payload_json->>'phone_number_to')        AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (
                 WHERE ce.detected_intent = 'enrolled'
@@ -986,13 +986,13 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         {"a": w48_start, "b": w24_start},
     ))
 
-    # ── booking_rate (enrolled / unique contacts) ─────────────────────────────
+    # ── booking_rate (booked / unique phones) ────────────────────────────────
     book_curr = _r(_scalar(
-        "SELECT COUNT(DISTINCT contact_id) FILTER (WHERE detected_intent = 'enrolled')::float / NULLIF(COUNT(DISTINCT contact_id), 0) FROM call_events WHERE created_at >= :s",
+        "SELECT COUNT(*) FILTER (WHERE detected_intent = 'enrolled' OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%')::float / NULLIF(COUNT(DISTINCT raw_payload_json->>'phone_number_to'), 0) FROM call_events WHERE created_at >= :s",
         {"s": w24_start},
     ))
     book_prev = _r(_scalar(
-        "SELECT COUNT(DISTINCT contact_id) FILTER (WHERE detected_intent = 'enrolled')::float / NULLIF(COUNT(DISTINCT contact_id), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        "SELECT COUNT(*) FILTER (WHERE detected_intent = 'enrolled' OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%')::float / NULLIF(COUNT(DISTINCT raw_payload_json->>'phone_number_to'), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
         {"a": w48_start, "b": w24_start},
     ))
 
