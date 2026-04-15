@@ -381,13 +381,20 @@ def get_metrics(
 _VM_IN = "('voicemail','hangup_on_voicemail','left_voicemail','voicemail_detected','machine_detected')"
 
 # Booking signal varies by campaign:
-#   ColdLead  → Synthflow extract_info action:  {'appointment booked': True}
-#   NewLead   → GHL native booking action:      action_ghl_create_booking status=success
-#   Inbound   → GHL native booking action:      action_ghl_create_booking status=success
+#   All campaigns → GHL native booking action: action_ghl_create_booking with non-null booking_id
+#   Synthflow stores return_value in two formats depending on version:
+#     JSON:   {"booking_id": "...", "error_message": null, "status": "success"}
+#     Python: {'booking_id': '...', 'error_message': None, 'status': 'success'}
+#   Presence of action_ghl_create_booking + booking_id not null = successful booking.
+#   NewLead also fires extract_info action with {'appointment booked': True} as a secondary signal.
 _BOOKED_COND = """(
     ce.detected_intent = 'enrolled'
     OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-    OR ce.raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%"status": "success"%'
+    OR (
+        ce.raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+        AND ce.raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
+        AND ce.raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
+    )
 )"""
 
 # Unique contact dedup: inbound callers are identified by phone_number_from (the number
@@ -1000,7 +1007,11 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         """SELECT COUNT(*) FILTER (WHERE
                 detected_intent = 'enrolled'
                 OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-                OR raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%"status": "success"%'
+                OR (
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
+                )
            )::float / NULLIF(COUNT(DISTINCT CASE
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
@@ -1012,7 +1023,11 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         """SELECT COUNT(*) FILTER (WHERE
                 detected_intent = 'enrolled'
                 OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-                OR raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%"status": "success"%'
+                OR (
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
+                )
            )::float / NULLIF(COUNT(DISTINCT CASE
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
