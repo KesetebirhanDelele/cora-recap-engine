@@ -755,10 +755,22 @@ Open http://localhost:3000 in your browser.
 | `ALERT_QUEUE_LAG_THRESHOLD_SECONDS` | `300` | Queue lag threshold for `queue_lag_exceeded` alert |
 | `ALERT_ERROR_RATE_THRESHOLD` | `0.2` | Error rate threshold for `error_rate_spike` alert |
 | `ALERT_EXCEPTION_COUNT_THRESHOLD` | `10` | Open exception count threshold for `exception_spike` alert |
+| `SMTP_ENABLED` | `false` | Enable email delivery for threshold alerts |
+| `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port (587 for TLS/STARTTLS) |
+| `SMTP_USE_TLS` | `true` | Enable STARTTLS |
+| `SMTP_USERNAME` | — | SMTP login (Gmail: your email address) |
+| `SMTP_PASSWORD` | — | SMTP password — **Gmail requires an App Password**, not the account password. Create one at Google Account → Security → 2-Step Verification → App passwords. |
+| `ALERT_EMAIL_FROM` | — | Sender address for alert emails |
+| `ALERT_EMAIL_TO` | — | Recipient address for alert emails |
 
 ### Dashboard background workers
 
-The metrics collector (`collect_metrics_job`) runs every 60 seconds as a self-rescheduling RQ job. It is started automatically by the worker on startup via `start_metrics_scheduler()`. Each run inserts one row into `system_metrics` and evaluates all alert thresholds.
+The metrics collector (`collect_metrics_job`) runs every 60 seconds as a self-rescheduling RQ job on the `default` queue. It is started once at worker startup by `start_metrics_scheduler()` (only the `default`/`all` worker role calls this — not every worker process). Each run inserts one row per metric into `system_metrics`, evaluates all alert thresholds, and prunes expired `event_stream` and `system_metrics` rows.
+
+**Alert trigger metric:** `queue_lag_exceeded` fires on `queue_lag_seconds` — the age of the *oldest* overdue pending job — not on raw backlog count. A large backlog of future-dated jobs does not trigger the alert.
+
+See the Alerting / metrics collector troubleshooting section in `directives/spec/11_runbook.md` for common issues.
 
 ### Feature documentation
 

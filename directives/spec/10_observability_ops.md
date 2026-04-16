@@ -23,11 +23,59 @@
 - dependency error rate
 
 ## Alerts
-- GHL auth failure: critical immediately
-- duplicate rate spike: warning/critical thresholds
-- stuck-call volume spike: warning/critical thresholds
-- queue lag breach
-- Postgres write failures
+
+### Active alert types (implemented)
+
+| Alert type | Trigger metric | Default threshold | Severity |
+|---|---|---|---|
+| `queue_lag_exceeded` | `queue_lag_seconds` — age of the oldest past-due pending job | 300 s | warning |
+| `error_rate_spike` | `error_rate` — failed jobs / total jobs (last hour) | 0.20 (20%) | warning |
+| `exception_spike` | `open_exception_count` | 10 open exceptions | warning |
+| `worker_offline` | `active_workers` — RQ workers connected | 0 | critical |
+| `ghl_auth_failure` | `ghl_auth_failure` metric via health check | any failure | critical |
+
+**Important:** `queue_lag_seconds` is the age of the *oldest* past-due pending job
+(`MIN(run_at)` for `status='pending' AND run_at <= NOW()`). It is **not** the backlog count
+shown in the Queue Health UI (which is `stuck_job_count + expired_lease_count`).
+A large backlog of future-dated jobs does not trigger the alert; only jobs that are
+overdue by more than the threshold do.
+
+### Alert dedup and resolution
+- One email per breach; within `ALERT_DEDUP_WINDOW_SECONDS` only `last_seen_at` is updated.
+- When a metric clears, a resolution email is sent.
+- `alert_events` table records all firings (active/resolved).
+
+### SMTP email delivery
+Alerts send email via SMTP (`app/services/alerting.py`). Required settings:
+```
+SMTP_ENABLED=true
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USERNAME=<gmail address>
+SMTP_PASSWORD=<16-char App Password — NOT the account password>
+ALERT_EMAIL_FROM=<from address>
+ALERT_EMAIL_TO=<recipient address>
+```
+
+**Gmail requires an App Password**, not the account password, for SMTP auth.
+Create one at: Google Account → Security → 2-Step Verification → App passwords.
+Using the account password causes `535 Username and Password not accepted`.
+
+### Metrics collection
+`collect_metrics_job` runs every 60 s as a self-rescheduling RQ job on the `default` queue.
+It is started once at worker startup by `start_metrics_scheduler()` (called by the
+`default`/`all` role only). Each run writes one `system_metrics` row per tracked metric
+and calls `evaluate_alerts()`.
+
+Thresholds are settings-driven:
+```
+ALERT_QUEUE_LAG_THRESHOLD_SECONDS=300
+ALERT_ERROR_RATE_THRESHOLD=0.20
+ALERT_EXCEPTION_COUNT_THRESHOLD=10
+ALERT_DEDUP_WINDOW_SECONDS=3600
+METRICS_COLLECTION_INTERVAL_SECONDS=60
+```
 
 ## Dashboard — Legacy Streamlit (read-only monitoring)
 Streamlit dashboard at `execution/dashboard.py`. Run with `streamlit run execution/dashboard.py` (Postgres only required). This dashboard is superseded by Dashboard v2 for all real-time operational use.

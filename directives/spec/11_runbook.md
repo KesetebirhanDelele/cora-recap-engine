@@ -246,6 +246,26 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - voicemail tier not advancing after shadow mode was on → shadow mode intercepted `launch_outbound_call` without placing a real call; Synthflow never sent a callback; re-trigger from tier 0 once shadow mode is disabled
 - Lead Journey shows only 1 event despite multiple outreach attempts → SMS and outbound calls in shadow mode are in `shadow_actions`, not `outbound_messages`; they are not currently displayed in Lead Journey timeline
 
+### Alerting / metrics collector issues
+
+- **No rows in `system_metrics`, dashboard shows 0 active alerts** → `collect_metrics_job` never ran. Check worker-default startup logs for: `Could not ensure metrics scheduler on startup`. If present, confirm the `collect_metrics` job exists in `scheduled_jobs` with `status='pending'`; if missing, restart `worker-default` (it calls `start_metrics_scheduler()` on boot).
+
+- **Dashboard shows large backlog in Queue Health but 0 active alerts** → The `queue_lag_exceeded` alert fires on `queue_lag_seconds` (age of the oldest overdue pending job), **not** on backlog count. If all pending jobs are future-dated (e.g. voicemail retries scheduled minutes ahead), `queue_lag_seconds` = 0 and no alert fires. Use the diagnostic query below to confirm:
+  ```sql
+  SELECT EXTRACT(EPOCH FROM (NOW() - MIN(run_at)))::int AS lag_s
+  FROM scheduled_jobs WHERE status = 'pending' AND run_at <= NOW();
+  ```
+
+- **Scheduler loop logs only `no handler for job_type=...` warnings and nothing else processes** → A job type exists in DB (`scheduled_jobs`) but is missing from `_JOB_QUEUE_ATTRS` or `get_job_registry()` in `app/worker/main.py`. The scheduler loop's 100-job batch is consumed by unhandled jobs, starving other job types. Add the missing job type to both maps and redeploy `worker-default`.
+
+- **Alert fires on dashboard but no email received** → Check worker-default logs for `SMTP send failed`. Most common cause: Gmail rejects `SMTP_PASSWORD` with `535 Username and Password not accepted` when the value is the account password instead of an App Password. Fix:
+  1. Go to Google Account → Security → 2-Step Verification → App passwords
+  2. Generate a new App Password ("Mail" / "Other")
+  3. Update `SMTP_PASSWORD` in `/opt/cora-recap-engine/.env` with the 16-character App Password (no spaces)
+  4. `docker compose restart worker-default`
+
+- **Alert email delivered but alert not cleared** → Alerts auto-resolve on the next metrics cycle (≤60 s) when the metric drops below threshold. If the metric remains above threshold, the alert stays active — this is correct behavior. The dashboard Alerts page shows current status and last-seen time.
+
 ## Migration commands
 ```bash
 alembic upgrade head     # apply all migrations (current head: 0012)
