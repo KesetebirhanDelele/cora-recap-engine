@@ -296,18 +296,32 @@ class GHLClient:
         return {"body": content}
 
     # ── Write operations (shadow-gated) ───────────────────────────────────────
+    #
+    # All three write methods accept an optional `mode_flags` parameter.
+    # When provided (from a worker that has a DB session), mode_flags takes
+    # precedence over self.settings for the shadow/live gate check. This
+    # allows dashboard changes to propagate immediately without a restart.
+    # When mode_flags is None, falls back to the original settings-based check.
 
     def update_contact_fields(
-        self, contact_id: str, field_updates: dict[str, str]
+        self,
+        contact_id: str,
+        field_updates: dict[str, str],
+        *,
+        mode_flags: Any = None,
     ) -> dict:
         """
         Write custom field values to a GHL contact.
 
         Shadow mode (default): logs payload, returns shadow response dict.
         Live mode: calls GHL PUT /contacts/{id} with the field update payload.
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
+                    When supplied, overrides settings.ghl_writes_enabled.
         """
         payload = self.build_field_update_payload(field_updates)
-        if not self.settings.ghl_writes_enabled:
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
             return self._shadow_write("update_contact_fields", contact_id, payload)
         self.settings.validate_for_ghl_writes()
         logger.info("GHL update_contact_fields | contact_id=%s", contact_id)
@@ -320,6 +334,8 @@ class GHLClient:
         description: str = "",
         assigned_to: str = "",
         due_date: str = "",
+        *,
+        mode_flags: Any = None,
     ) -> dict:
         """
         Create a GHL task for a contact.
@@ -329,24 +345,36 @@ class GHLClient:
 
         Idempotency: callers must check task_events for an existing 'created'
         record before invoking (enforced by the dedupe service, Phase 3+).
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
         """
         payload = self.build_task_payload(title, description, assigned_to, due_date)
-        if not self.settings.ghl_writes_enabled:
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
             return self._shadow_write("create_task", contact_id, payload)
         self.settings.validate_for_ghl_writes()
         logger.info("GHL create_task | contact_id=%s title=%r", contact_id, title)
         return self._request("POST", f"/contacts/{contact_id}/tasks", json=payload)
 
-    def append_note(self, contact_id: str, content: str) -> dict:
+    def append_note(
+        self,
+        contact_id: str,
+        content: str,
+        *,
+        mode_flags: Any = None,
+    ) -> dict:
         """
         Append a note to a GHL contact.
 
         Shadow mode (default): logs payload, returns shadow response dict.
         Live mode: calls GHL POST /contacts/{id}/notes.
         Note content is NOT logged (may contain transcript excerpts).
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
         """
         payload = self.build_note_payload(content)
-        if not self.settings.ghl_writes_enabled:
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
             return self._shadow_write("append_note", contact_id, payload)
         self.settings.validate_for_ghl_writes()
         logger.info("GHL append_note | contact_id=%s", contact_id)

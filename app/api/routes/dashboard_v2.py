@@ -1257,6 +1257,285 @@ def save_sales_outcome(
     }
 
 
+# ── Mode control endpoints ────────────────────────────────────────────────────
+
+_ALLOWED_MODE_KEYS = frozenset({
+    "shadow_mode_enabled",
+    "ghl_write_mode",
+    "ghl_write_shadow_log_only",
+    "ghl_write_contact_fields",
+    "ghl_write_tasks",
+    "ghl_write_summary",
+    "ghl_write_campaign_state",
+    "ghl_write_finalization",
+    "system_paused",
+})
+
+_BOOL_MODE_KEYS = frozenset({
+    "shadow_mode_enabled",
+    "ghl_write_shadow_log_only",
+    "ghl_write_contact_fields",
+    "ghl_write_tasks",
+    "ghl_write_summary",
+    "ghl_write_campaign_state",
+    "ghl_write_finalization",
+    "system_paused",
+})
+
+
+@router.get("/mode")
+def get_mode(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Return current mode flags and pre-flight readiness checks.
+
+    Reads from app_config (DB-first, settings fallback).
+    Always safe to call — never mutates state.
+    """
+    from app.config import get_settings as _get_settings
+    from app.core.mode_flags import get_mode_flags, get_preflight_status
+    from sqlalchemy import text
+
+    settings = _get_settings()
+    flags = get_mode_flags(session, settings)
+    preflight = get_preflight_status(session, settings)
+
+    # Fetch last-changed metadata per flag from audit_log
+    rows = session.execute(text("""
+        SELECT entity_id AS key, operator_id, created_at,
+               context_json->>'new_value' AS new_value
+        FROM audit_log
+        WHERE entity_type = 'app_config'
+          AND entity_id = ANY(:keys)
+        ORDER BY created_at DESC
+        LIMIT 100
+    """), {"keys": list(_ALLOWED_MODE_KEYS)}).fetchall()
+
+    last_changed: dict[str, dict] = {}
+    for r in rows:
+        key = r[0]
+        if key not in last_changed:
+            last_changed[key] = {
+                "operator_id": r[1],
+                "at": r[2].isoformat() if r[2] else None,
+                "new_value": r[3],
+            }
+
+    return {
+        "flags": flags.as_dict(),
+        "last_changed": last_changed,
+        "preflight": [
+            {
+                "key": c.key,
+                "label": c.label,
+                "status": c.status,
+                "detail": c.detail,
+            }
+            for c in preflight
+        ],
+    }
+
+
+class UpdateModeRequest(BaseModel):
+    flags: dict[str, str]
+    reason: str = ""
+
+
+@router.post("/mode")
+def update_mode(
+    body: UpdateModeRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Atomically update one or more mode-control flags.
+
+    Requires Bearer token auth.
+    Only keys in _ALLOWED_MODE_KEYS are accepted — others are rejected with 422.
+    Bool keys accept 'true'/'false' (case-insensitive).
+    ghl_write_mode accepts 'shadow' or 'live'.
+
+    Safety rules enforced:
+    - Enabling outbound calls (shadow_mode_enabled=false) requires
+      SYNTHFLOW_API_KEY and SYNTHFLOW_LAUNCH_WORKFLOW_URL to be set.
+    - Enabling GHL writes (ghl_write_mode=live) requires GHL_API_KEY to be set.
+
+    All changes are written to audit_log with operator_id + reason.
+    """
+    import uuid
+    from app.config import get_settings as _get_settings
+    from sqlalchemy import text
+
+    settings = _get_settings()
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+
+    # ── Validate keys ─────────────────────────────────────────────────────────
+    unknown = set(body.flags.keys()) - _ALLOWED_MODE_KEYS
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unknown mode flag(s): {', '.join(sorted(unknown))}. "
+                   f"Allowed: {', '.join(sorted(_ALLOWED_MODE_KEYS))}",
+        )
+    if not body.flags:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="flags must contain at least one key",
+        )
+
+    # ── Validate values ───────────────────────────────────────────────────────
+    for key, value in body.flags.items():
+        if key in _BOOL_MODE_KEYS:
+            if value.strip().lower() not in ("true", "false"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"'{key}' must be 'true' or 'false', got {value!r}",
+                )
+        elif key == "ghl_write_mode":
+            if value.strip().lower() not in ("shadow", "live"):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"ghl_write_mode must be 'shadow' or 'live', got {value!r}",
+                )
+
+    # ── Safety pre-flight: going live requires credentials ───────────────────
+    enabling_outbound = body.flags.get("shadow_mode_enabled", "").lower() == "false"
+    enabling_ghl_live = body.flags.get("ghl_write_mode", "").lower() == "live"
+
+    if enabling_outbound:
+        missing = []
+        if not settings.synthflow_api_key:
+            missing.append("SYNTHFLOW_API_KEY")
+        if not settings.synthflow_launch_workflow_url:
+            missing.append("SYNTHFLOW_LAUNCH_WORKFLOW_URL")
+        if missing:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot enable outbound calls — missing config: {', '.join(missing)}",
+            )
+
+    if enabling_ghl_live and not settings.ghl_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Cannot enable GHL live writes — GHL_API_KEY is not set",
+        )
+
+    # ── Write to app_config + audit_log ───────────────────────────────────────
+    context_note = body.reason.strip() if body.reason else "updated via dashboard"
+
+    for key, value in body.flags.items():
+        value_normalized = value.strip().lower() if key in _BOOL_MODE_KEYS else value.strip()
+
+        # Read old value for audit
+        old_row = session.execute(
+            text("SELECT value FROM app_config WHERE key = :key"), {"key": key}
+        ).fetchone()
+        old_value = old_row[0] if old_row else None
+
+        session.execute(text("""
+            INSERT INTO app_config (key, value, updated_at, updated_by)
+            VALUES (:key, :value, :now, :by)
+            ON CONFLICT (key) DO UPDATE
+            SET value      = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at,
+                updated_by = EXCLUDED.updated_by
+        """), {"key": key, "value": value_normalized, "now": now, "by": operator})
+
+        session.execute(text("""
+            INSERT INTO audit_log
+              (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+            VALUES
+              (:id, 'app_config', :key, 'mode_flag_updated', :by, :ctx::jsonb, :now)
+        """), {
+            "id": str(uuid.uuid4()),
+            "key": key,
+            "by": operator,
+            "ctx": json.dumps({
+                "old_value": old_value,
+                "new_value": value_normalized,
+                "reason": context_note,
+                "source": "system_controls",
+            }),
+            "now": now,
+        })
+
+    session.commit()
+
+    # Return updated flags snapshot
+    from app.config import get_settings as _get_settings2
+    from app.core.mode_flags import get_mode_flags
+    updated_flags = get_mode_flags(session, _get_settings2())
+
+    logger.info(
+        "mode_flags updated | keys=%s operator=%s reason=%r",
+        list(body.flags.keys()), operator, context_note,
+    )
+
+    return {
+        "status": "ok",
+        "keys_updated": list(body.flags.keys()),
+        "flags": updated_flags.as_dict(),
+    }
+
+
+@router.post("/mode/pause")
+def pause_system(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause the system — workers will hold jobs without executing until resumed."""
+    import uuid
+    from sqlalchemy import text
+
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+    session.execute(text("""
+        INSERT INTO app_config (key, value, updated_at, updated_by)
+        VALUES ('system_paused', 'true', :now, :by)
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by
+    """), {"now": now, "by": operator})
+    session.execute(text("""
+        INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+        VALUES (:id, 'app_config', 'system_paused', 'mode_flag_updated', :by,
+                '{"new_value":"true","reason":"operator pause","source":"system_controls"}'::jsonb, :now)
+    """), {"id": str(uuid.uuid4()), "by": operator, "now": now})
+    session.commit()
+    logger.warning("SYSTEM PAUSED by operator=%s", operator)
+    return {"status": "ok", "system_paused": True}
+
+
+@router.post("/mode/resume")
+def resume_system(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Resume the system — workers will begin executing held jobs."""
+    import uuid
+    from sqlalchemy import text
+
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+    session.execute(text("""
+        INSERT INTO app_config (key, value, updated_at, updated_by)
+        VALUES ('system_paused', 'false', :now, :by)
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by
+    """), {"now": now, "by": operator})
+    session.execute(text("""
+        INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+        VALUES (:id, 'app_config', 'system_paused', 'mode_flag_updated', :by,
+                '{"new_value":"false","reason":"operator resume","source":"system_controls"}'::jsonb, :now)
+    """), {"id": str(uuid.uuid4()), "by": operator, "now": now})
+    session.commit()
+    logger.info("System resumed by operator=%s", operator)
+    return {"status": "ok", "system_paused": False}
+
+
+# ── Campaign overview ─────────────────────────────────────────────────────────
+
 @router.websocket("/ws/events")
 async def websocket_events(websocket: WebSocket) -> None:
     """

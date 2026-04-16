@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,15 @@ def send_sms_job(job_id: str) -> None:
             logger.info("send_sms_job: already claimed | job_id=%s", job_id)
             return
 
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info("send_sms_job: system paused — releasing | job_id=%s", job_id)
+            release_job_to_pending(session, job)
+            session.commit()
+            return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status.
         payload = job.payload_json or {}
@@ -117,7 +126,7 @@ def send_sms_job(job_id: str) -> None:
 
             # ── Shadow mode: write content to outbound_messages (status='shadow')
             #    and log full payload to shadow_actions — real send skipped.
-            if settings.shadow_mode_enabled:
+            if flags.shadow_mode_enabled:
                 from app.worker.shadow import log_shadow_action
                 outbound = OutboundMessage(
                     id=str(uuid.uuid4()),
@@ -213,6 +222,15 @@ def send_email_job(job_id: str) -> None:
             logger.info("send_email_job: already claimed | job_id=%s", job_id)
             return
 
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info("send_email_job: system paused — releasing | job_id=%s", job_id)
+            release_job_to_pending(session, job)
+            session.commit()
+            return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status.
         payload = job.payload_json or {}
@@ -238,7 +256,7 @@ def send_email_job(job_id: str) -> None:
 
             # ── Shadow mode: write content to outbound_messages (status='shadow')
             #    and log full payload to shadow_actions — real send skipped.
-            if settings.shadow_mode_enabled:
+            if flags.shadow_mode_enabled:
                 from app.worker.shadow import log_shadow_action
                 outbound = OutboundMessage(
                     id=str(uuid.uuid4()),

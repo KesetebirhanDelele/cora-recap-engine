@@ -207,6 +207,67 @@ export async function saveSettings(body: SaveSettingsRequest): Promise<SaveSetti
   return post<SaveSettingsResponse>("/dashboard/settings", body);
 }
 
+// ── Mode control ──────────────────────────────────────────────────────────────
+
+export interface ModeFlags {
+  shadow_mode_enabled: boolean;
+  ghl_write_mode: "shadow" | "live";
+  ghl_write_shadow_log_only: boolean;
+  ghl_write_contact_fields: boolean;
+  ghl_write_tasks: boolean;
+  ghl_write_summary: boolean;
+  ghl_write_campaign_state: boolean;
+  ghl_write_finalization: boolean;
+  system_paused: boolean;
+  ghl_writes_enabled: boolean;
+}
+
+export interface PreflightCheck {
+  key: string;
+  label: string;
+  status: "ok" | "warning" | "error";
+  detail: string;
+}
+
+export interface LastChanged {
+  operator_id: string;
+  at: string | null;
+  new_value: string;
+}
+
+export interface ModeResponse {
+  flags: ModeFlags;
+  last_changed: Record<string, LastChanged>;
+  preflight: PreflightCheck[];
+}
+
+export interface UpdateModeRequest {
+  flags: Record<string, string>;
+  reason?: string;
+}
+
+export interface UpdateModeResponse {
+  status: string;
+  keys_updated: string[];
+  flags: ModeFlags;
+}
+
+export async function fetchMode(): Promise<ModeResponse> {
+  return get<ModeResponse>("/dashboard/mode");
+}
+
+export async function updateMode(body: UpdateModeRequest): Promise<UpdateModeResponse> {
+  return post<UpdateModeResponse>("/dashboard/mode", body);
+}
+
+export async function pauseSystem(): Promise<{ status: string; system_paused: boolean }> {
+  return post("/dashboard/mode/pause", {});
+}
+
+export async function resumeSystem(): Promise<{ status: string; system_paused: boolean }> {
+  return post("/dashboard/mode/resume", {});
+}
+
 // ── Operator actions ──────────────────────────────────────────────────────────
 
 export async function retryException(body: RetryRequest): Promise<ActionResponse> {

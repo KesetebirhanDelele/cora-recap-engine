@@ -46,6 +46,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
     category: "system",
     cols: 2,
     items: [
+      { href: "/system-controls",   title: "System Controls",  icon: "🎛️", description: "Shadow/live mode, GHL writes & system pause.", category: "system" },
       { href: "/crm-health",        title: "CRM Health",       icon: "🔗", description: "GHL task & VM update rates.",       category: "system" },
       { href: "/system-anomalies",  title: "System Anomalies", icon: "📊", description: "Spikes & unusual patterns.",         category: "system" },
     ],

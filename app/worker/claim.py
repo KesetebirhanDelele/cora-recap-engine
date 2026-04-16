@@ -214,6 +214,44 @@ def cancel_job(session: Session, job_id: str) -> bool:
     return cancelled
 
 
+def release_job_to_pending(session: Session, job: ScheduledJob) -> None:
+    """
+    Release a claimed job back to 'pending' without executing it.
+
+    Used by the system-pause check: when system_paused=true a worker claims
+    the job (to prevent other workers from double-claiming), then immediately
+    releases it back to pending so it will be re-picked up once the system
+    is resumed.
+
+    This is safe under concurrent workers — the version check ensures only
+    the worker that holds the claim can release it.
+    """
+    now = datetime.now(tz=timezone.utc)
+    result: CursorResult = session.execute(  # type: ignore[assignment]
+        update(ScheduledJob)
+        .where(ScheduledJob.id == job.id, ScheduledJob.version == job.version)
+        .values(
+            status="pending",
+            claimed_by=None,
+            claimed_at=None,
+            lease_expires_at=None,
+            version=job.version + 1,
+            updated_at=now,
+        )
+    )
+    session.flush()
+    if result.rowcount > 0:
+        logger.info(
+            "release_job_to_pending: released (system paused) | job_id=%s job_type=%s",
+            job.id, job.job_type,
+        )
+    else:
+        logger.warning(
+            "release_job_to_pending: version conflict, job may have been modified | job_id=%s",
+            job.id,
+        )
+
+
 def recover_expired_claims(
     session: Session,
     worker_id: str,

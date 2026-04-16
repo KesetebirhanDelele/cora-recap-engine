@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,17 @@ def launch_outbound_call_job(job_id: str) -> None:
             logger.info("launch_outbound_call_job: already claimed | job_id=%s", job_id)
             return
 
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info(
+                "launch_outbound_call_job: system paused — releasing | job_id=%s", job_id
+            )
+            release_job_to_pending(session, job)
+            session.commit()
+            return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status (cancel_job requires
         # pending or claimed).
@@ -60,7 +71,7 @@ def launch_outbound_call_job(job_id: str) -> None:
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
         # is nothing to defer.
-        if not settings.shadow_mode_enabled:
+        if not flags.shadow_mode_enabled:
             from app.core.campaign_schedule import (
                 get_contact_timezone,
                 is_campaign_active,
@@ -92,7 +103,7 @@ def launch_outbound_call_job(job_id: str) -> None:
         mark_running(session, job)
 
         # ── Shadow mode: log and skip the real Synthflow call ─────────────────
-        if settings.shadow_mode_enabled:
+        if flags.shadow_mode_enabled:
             from app.worker.shadow import log_shadow_action
             log_shadow_action(
                 session,

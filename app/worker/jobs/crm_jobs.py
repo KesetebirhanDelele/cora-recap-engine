@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,15 @@ def create_crm_task(job_id: str) -> None:
         job = claim_job(session, job_id, worker_id=worker_id)
         if job is None:
             logger.info("create_crm_task: job already claimed | job_id=%s", job_id)
+            return
+
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info("create_crm_task: system paused — releasing | job_id=%s", job_id)
+            release_job_to_pending(session, job)
+            session.commit()
             return
 
         mark_running(session, job)
@@ -213,6 +222,7 @@ def create_crm_task(job_id: str) -> None:
                 ghl.update_contact_fields(
                     contact_id=effective_contact_id or "unknown",
                     field_updates=field_updates,
+                    mode_flags=flags,
                 )
 
             # ── GHL task creation ────────────────────────────────────────────
@@ -224,6 +234,7 @@ def create_crm_task(job_id: str) -> None:
                     description=analysis.task_description,
                     assigned_to=analysis.assign_to,
                     due_date=analysis.task_due_date,
+                    mode_flags=flags,
                 )
 
             provider_task_id = task_result.get("id") if not task_result.get("shadow") else None
@@ -269,7 +280,7 @@ def create_crm_task(job_id: str) -> None:
             fail_job(session, job, reason=str(exc))
             # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
             # does not queue an additional automatic retry after the limit.
-            if settings.is_shadow_mode and attempt_count >= 2:
+            if not flags.ghl_writes_enabled and attempt_count >= 2:
                 logger.warning(
                     "create_crm_task: shadow mode attempt limit reached (%d), not re-raising",
                     attempt_count,
@@ -302,6 +313,17 @@ def update_ghl_after_vm_message(job_id: str) -> None:
         job = claim_job(session, job_id, worker_id=worker_id)
         if job is None:
             logger.info("update_ghl_after_vm_message: already claimed | job_id=%s", job_id)
+            return
+
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info(
+                "update_ghl_after_vm_message: system paused — releasing | job_id=%s", job_id
+            )
+            release_job_to_pending(session, job)
+            session.commit()
             return
 
         mark_running(session, job)
@@ -361,6 +383,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                 write_result = ghl.update_contact_fields(
                     contact_id=contact_id or "unknown",
                     field_updates=field_updates,
+                    mode_flags=flags,
                 )
                 # Shadow mode: log what would have been written to GHL so
                 # operators can inspect the exact fields via Lead Journey.
@@ -416,7 +439,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
             fail_job(session, job, reason=str(exc))
             # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
             # does not queue an additional automatic retry after the limit.
-            if settings.is_shadow_mode and attempt_count >= 2:
+            if not flags.ghl_writes_enabled and attempt_count >= 2:
                 logger.warning(
                     "update_ghl_after_vm_message: shadow mode attempt limit reached (%d), not re-raising",
                     attempt_count,
