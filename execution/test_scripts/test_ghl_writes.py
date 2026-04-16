@@ -254,11 +254,17 @@ def main() -> None:
     for key, fid in resolved.items():
         expected = test_values.get(key, "")
         # Contact customFields only returns {id, value} — search by ID not label
-        actual = next(
-            (str(f["value"]) if f.get("value") is not None else None
-             for f in updated.get("customFields", []) if f.get("id") == fid),
+        raw = next(
+            (f.get("value") for f in updated.get("customFields", []) if f.get("id") == fid),
             None,
         )
+        # Multi-select fields return a list; unwrap single-element lists for comparison
+        if isinstance(raw, list):
+            actual = raw[0] if len(raw) == 1 else str(raw)
+        elif raw is not None:
+            actual = str(raw)
+        else:
+            actual = None
         if actual == expected:
             _log(PASS, f"  {key:30s} = {actual!r}")
         else:
