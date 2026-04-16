@@ -220,12 +220,6 @@ def get_preflight_status(session: Session, settings: Settings) -> list[Preflight
         "GHL_FIELD_AI_CAMPAIGN not set — campaign state writes will silently skip",
     )
     _check(
-        "ghl_field_ai_campaign_value", "GHL Field: AI Campaign Value",
-        bool(settings.ghl_field_ai_campaign_value),
-        f"'{settings.ghl_field_ai_campaign_value}'",
-        "GHL_FIELD_AI_CAMPAIGN_VALUE not set — voicemail tier mirror will silently skip",
-    )
-    _check(
         "ghl_field_mark_as_lead", "GHL Field: Mark as Lead",
         bool(settings.ghl_field_mark_as_lead),
         f"'{settings.ghl_field_mark_as_lead}'",
