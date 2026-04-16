@@ -84,9 +84,8 @@ def create_task(base_url: str, api_key: str, contact_id: str,
     url = f"{base_url}/contacts/{contact_id}/tasks"
     payload = {
         "title": title,
-        "description": description,
         "dueDate": due_date,
-        "status": "incompleted",
+        "completed": False,
     }
     r = httpx.post(url, headers=_headers(api_key), json=payload, timeout=15)
     r.raise_for_status()
@@ -221,9 +220,9 @@ def main() -> None:
 
     test_values: dict[str, str] = {
         "mark_as_lead":           "Lead",
-        "ai_campaign":            "Cold Lead",
+        "ai_campaign":            "Yes",
         "ai_campaign_value":      "0",
-        "ai_lead_classification": "Interested - Follow Up",
+        "ai_lead_classification": "warm_lead",
         "support_ticket_3":       "[CORA TEST] Task description — verify this appears in GHL",
         "support_ticket_4":       "[CORA TEST] Student summary / VM SMS text",
         "support_ticket_2":       "[CORA TEST] VM email body HTML",
