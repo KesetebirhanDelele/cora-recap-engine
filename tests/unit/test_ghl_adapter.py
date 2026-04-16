@@ -29,6 +29,12 @@ Covers:
   23. Retry: retries on TimeoutException
   24. Context manager: close() called on __exit__
   25. validate_for_ghl_reads called before read ops (missing api_key → ConfigError)
+  26. get_conversations_by_contact — correct path and params, returns conversations list
+  27. get_conversations_by_contact — returns empty list when conversations key missing
+  28. get_conversation_messages — correct path and params, returns messages list
+  29. get_conversation_messages — returns empty list when messages key missing
+  30. get_conversations_by_contact — requires credentials (ConfigError without api_key)
+  31. get_conversation_messages — requires credentials (ConfigError without api_key)
 """
 from __future__ import annotations
 
@@ -595,3 +601,91 @@ def test_validate_for_reads_called_before_get_contact():
     client, _ = _make_client(s)
     with pytest.raises(ConfigError):
         client.get_contact("cid-any")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 26. get_conversations_by_contact — correct path and params
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_conversations_by_contact_returns_list():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"conversations": [{"id": "conv-1"}]})
+
+    result = client.get_conversations_by_contact("cid-abc", limit=10)
+
+    assert result == [{"id": "conv-1"}]
+    call_kwargs = mock_http.request.call_args
+    assert call_kwargs[0][0] == "GET"
+    assert "/conversations/search" in call_kwargs[0][1]
+    params = call_kwargs[1]["params"]
+    assert params["contactId"] == "cid-abc"
+    assert params["locationId"] == "loc-123"
+    assert params["limit"] == 10
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 27. get_conversations_by_contact — empty list when key missing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_conversations_by_contact_missing_key_returns_empty():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {})
+
+    result = client.get_conversations_by_contact("cid-abc")
+    assert result == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 28. get_conversation_messages — correct path and params
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_conversation_messages_returns_list():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    msg = {"id": "msg-1", "direction": "inbound", "body": "Hi"}
+    mock_http.request.return_value = _mock_response(200, {"messages": [msg]})
+
+    result = client.get_conversation_messages("conv-1", limit=15)
+
+    assert result == [msg]
+    call_kwargs = mock_http.request.call_args
+    assert call_kwargs[0][0] == "GET"
+    assert "/conversations/conv-1/messages" in call_kwargs[0][1]
+    assert call_kwargs[1]["params"]["limit"] == 15
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 29. get_conversation_messages — empty list when key missing
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_conversation_messages_missing_key_returns_empty():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {})
+
+    result = client.get_conversation_messages("conv-1")
+    assert result == []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 30. get_conversations_by_contact — ConfigError without credentials
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_conversations_requires_credentials():
+    s = Settings(_env_file=None)
+    client, _ = _make_client(s)
+    with pytest.raises(ConfigError):
+        client.get_conversations_by_contact("cid-any")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 31. get_conversation_messages — ConfigError without credentials
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_conversation_messages_requires_credentials():
+    s = Settings(_env_file=None)
+    client, _ = _make_client(s)
+    with pytest.raises(ConfigError):
+        client.get_conversation_messages("conv-any")

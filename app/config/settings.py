@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     ghl_location_id: Optional[str] = None
     ghl_timeout_seconds: int = 30
     ghl_retry_max: int = 3
+    # When True, conversation_context fetches GHL SMS/email reply history before
+    # generating follow-up messages so the AI sees the full two-way thread.
+    ghl_fetch_conversation_history: bool = False
+    ghl_conversation_history_limit: int = 15
 
     # GHL field labels / identifiers — unresolved external IDs remain Optional
     ghl_field_ai_campaign: Optional[str] = None

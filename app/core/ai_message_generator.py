@@ -187,6 +187,7 @@ def generate_vm_followup(
 
         brand_ctx = _load_brand_context(session, settings)
         prior = _format_prior_messages(context.outbound_messages)
+        ghl_thread = _format_ghl_thread(context.ghl_messages)
         video_transcripts = load_video_transcripts(sample_size=5)
 
         messages = prompt_entry.build_messages(
@@ -194,6 +195,7 @@ def generate_vm_followup(
             campaign_name=context.campaign_name or "our program",
             video_transcripts=video_transcripts,
             prior_messages=prior,
+            ghl_conversation_thread=ghl_thread,
             **brand_ctx,
         )
 
@@ -375,6 +377,29 @@ def _format_prior_messages(outbound_messages: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _format_ghl_thread(ghl_messages: list[dict]) -> str:
+    """
+    Format GHL two-way conversation messages for prompt injection.
+
+    Shows newest-last so the AI reads the thread chronologically.
+    Caps at 8 messages and 200 chars per body to stay within token budget.
+    Returns a placeholder string when no messages are available.
+    """
+    if not ghl_messages:
+        return "(no GHL conversation history)"
+    # ghl_messages arrive newest-first from the API; reverse for chronological order.
+    recent = list(reversed(ghl_messages[-8:]))
+    lines = []
+    for msg in recent:
+        direction = msg.get("direction", "outbound")
+        msg_type = msg.get("type", "SMS")
+        date = (msg.get("date") or "")[:10]  # YYYY-MM-DD only
+        body = (msg.get("body") or "")[:200]
+        tag = "LEAD" if direction == "inbound" else "US"
+        lines.append(f"[{tag} {msg_type} {date}] {body}")
+    return "\n".join(lines)
+
+
 def _vm_fallback(settings: Any) -> VmFollowupResult:
     fb_sms = get_sms_fallback()
     fb_email = get_email_fallback()
@@ -416,15 +441,18 @@ def _build_sms_prompt(context: ConversationContext) -> str:
         if context.outbound_messages
         else "(none)"
     )
+    ghl_thread = _format_ghl_thread(context.ghl_messages)
 
     return (
         "You are writing a friendly, professional SMS follow-up for a lead who missed "
         f"a call from our outreach team about {campaign}.\n\n"
         f"Recent call transcript snippet:\n{snippet}\n\n"
+        f"Previous two-way conversation (newest at bottom):\n{ghl_thread}\n\n"
         f"Last SMS we sent (avoid repetition):\n{prior}\n\n"
         "Rules:\n"
         "- Maximum 160 characters\n"
         "- Sound human, not robotic\n"
+        "- Acknowledge anything the lead has already replied with\n"
         "- Do not mention specific program details unless from the transcript\n"
         "- Do not include a URL\n"
         "- End with an open question to invite a reply\n\n"
@@ -440,15 +468,18 @@ def _build_email_prompt(context: ConversationContext) -> str:
         if context.outbound_messages
         else "This is the first email follow-up."
     )
+    ghl_thread = _format_ghl_thread(context.ghl_messages)
 
     return (
         "You are writing a brief, friendly follow-up email for a lead who missed "
         f"a call from our outreach team about {campaign}.\n\n"
         f"Recent call transcript snippet:\n{snippet}\n\n"
+        f"Previous two-way conversation (newest at bottom):\n{ghl_thread}\n\n"
         f"{attempt_note}\n\n"
         "Rules:\n"
         "- Subject: short, conversational (≤ 8 words)\n"
         "- Body: 2–3 short paragraphs, human tone\n"
+        "- Acknowledge anything the lead has already replied with\n"
         "- Do not include specific program details unless from the transcript\n"
         "- Do not include a URL\n"
         "- End with a soft call-to-action (reply or suggest a time)\n\n"

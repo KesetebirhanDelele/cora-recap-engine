@@ -22,8 +22,10 @@ Context variables injected at generation time:
   {live_open_house_link}  — from app_config
   {explainer_video_link}  — from app_config
   {unsubscribe_text}      — from app_config
-  {video_transcripts}     — sampled stories from knowledge_base/video_transcripts.txt
-  {prior_messages}        — last outbound messages (de-duplication context)
+  {video_transcripts}          — sampled stories from knowledge_base/video_transcripts.txt
+  {prior_messages}             — last outbound messages sent by us (de-duplication context)
+  {ghl_conversation_thread}    — two-way GHL conversation history (LEAD replies + our messages);
+                                 "(no GHL conversation history)" when unavailable
 """
 from app.prompts.registry import register
 
@@ -77,8 +79,11 @@ Context:
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
-Prior messages sent (avoid repetition):
+Prior messages sent by us (avoid repetition):
 {prior_messages}
+
+Lead's two-way conversation history from GHL (LEAD = their replies, US = our messages):
+{ghl_conversation_thread}
 
 Situation: Cora just tried calling {lead_first_name} and reached voicemail. \
 This is the FIRST follow-up, sent about 30 minutes after the missed call. \
@@ -115,8 +120,11 @@ Context:
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
-Prior messages sent (avoid repetition):
+Prior messages sent by us (avoid repetition):
 {prior_messages}
+
+Lead's two-way conversation history from GHL (LEAD = their replies, US = our messages):
+{ghl_conversation_thread}
 
 Situation: Cora has called twice and reached voicemail both times. \
 This is the SECOND follow-up. One previous message has been sent. \
@@ -153,8 +161,11 @@ Context:
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
-Prior messages sent (avoid repetition):
+Prior messages sent by us (avoid repetition):
 {prior_messages}
+
+Lead's two-way conversation history from GHL (LEAD = their replies, US = our messages):
+{ghl_conversation_thread}
 
 Situation: Three calls, two messages sent — no response. \
 This is the THIRD follow-up, sent about 2 days after the previous message. \
@@ -192,8 +203,11 @@ Context:
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
-Prior messages sent (avoid repetition):
+Prior messages sent by us (avoid repetition):
 {prior_messages}
+
+Lead's two-way conversation history from GHL (LEAD = their replies, US = our messages):
+{ghl_conversation_thread}
 
 Situation: A prospective student filled out a social media form expressing interest \
 in Data Analytics or AI. Cora called within 30 seconds but reached voicemail. \

@@ -168,6 +168,44 @@ class GHLClient:
         contacts = result.get("contacts", [])
         return contacts[0] if contacts else None
 
+    def get_conversations_by_contact(self, contact_id: str, limit: int = 20) -> list[dict]:
+        """
+        Return the list of GHL conversations for a contact (newest first).
+
+        Used to find the active conversation ID before fetching message history.
+        Returns an empty list on any error so callers can degrade gracefully.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL get_conversations_by_contact | contact_id=%s", contact_id)
+        result = self._request(
+            "GET",
+            "/conversations/search",
+            params={
+                "locationId": self.settings.ghl_location_id,
+                "contactId": contact_id,
+                "limit": limit,
+            },
+        )
+        return result.get("conversations", [])
+
+    def get_conversation_messages(self, conversation_id: str, limit: int = 20) -> list[dict]:
+        """
+        Return messages for a conversation (newest first).
+
+        Each message dict from GHL includes: id, direction, messageType, body,
+        dateAdded, status.  direction is 'inbound' | 'outbound'.
+        messageType is 'SMS' | 'Email' | 'Activity' | etc.
+        Returns an empty list on any error so callers can degrade gracefully.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL get_conversation_messages | conversation_id=%s", conversation_id)
+        result = self._request(
+            "GET",
+            f"/conversations/{conversation_id}/messages",
+            params={"limit": limit},
+        )
+        return result.get("messages", [])
+
     def get_contact(self, contact_id: str) -> dict:
         """
         Fetch a full GHL contact record by contact ID.
