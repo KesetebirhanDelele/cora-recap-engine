@@ -92,6 +92,20 @@ def create_task(base_url: str, api_key: str, contact_id: str,
     r.raise_for_status()
     return r.json()
 
+def get_location_fields(base_url: str, api_key: str, location_id: str) -> list[dict]:
+    """Fetch all custom field definitions for the location (label→id mapping)."""
+    url = f"{base_url}/locations/{location_id}/customFields"
+    r = httpx.get(url, headers=_headers(api_key), timeout=15)
+    r.raise_for_status()
+    return r.json().get("customFields", [])
+
+def resolve_field_id_from_location(field_label: str, location_fields: list[dict]) -> str | None:
+    """Resolve field ID from location field definitions — works even if field has no value on contact."""
+    for field in location_fields:
+        if field.get("name") == field_label or field.get("fieldKey") == field_label:
+            return field.get("id")
+    return None
+
 def resolve_field_id(field_label: str, contact: dict) -> str | None:
     """Same logic as GHLClient.resolve_field_id."""
     for field in contact.get("customFields", []):
@@ -159,6 +173,16 @@ def main() -> None:
     # ── Step 3: build field map (label → id) for every field Cora writes ─────
     print("\n[ 3 ] Resolving field IDs ...")
 
+    # Fetch location-level field definitions so we can resolve IDs even when
+    # a contact has never had a value written to those fields yet.
+    print("      Fetching location custom field definitions ...")
+    try:
+        location_fields = get_location_fields(base_url, api_key, location_id)
+        _log(INFO, f"Location defines {len(location_fields)} custom fields")
+    except httpx.HTTPStatusError as e:
+        _log(WARN, f"Could not fetch location fields ({e.response.status_code}) — falling back to contact-only resolution")
+        location_fields = []
+
     field_labels: dict[str, str | None] = {
         "mark_as_lead":           settings.ghl_field_mark_as_lead,
         "ai_campaign":            settings.ghl_field_ai_campaign,
@@ -178,9 +202,10 @@ def main() -> None:
         if not label:
             _log(WARN, f"  {key:30s} — label not configured, skipping")
             continue
-        fid = resolve_field_id(label, contact)
+        # Prefer location-level field definitions; fall back to contact record
+        fid = resolve_field_id_from_location(label, location_fields) or resolve_field_id(label, contact)
         if not fid:
-            _log(WARN, f"  {key:30s} ({label!r}) — field ID not found in contact record")
+            _log(WARN, f"  {key:30s} ({label!r}) — field ID not found in location or contact record")
             continue
         current = get_field_value(label, contact)
         resolved[key] = fid
