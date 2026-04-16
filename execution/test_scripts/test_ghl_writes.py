@@ -252,9 +252,13 @@ def main() -> None:
 
     all_passed = True
     for key, fid in resolved.items():
-        label = field_labels[key]
         expected = test_values.get(key, "")
-        actual = get_field_value(label, updated) if label else None
+        # Contact customFields only returns {id, value} — search by ID not label
+        actual = next(
+            (str(f["value"]) if f.get("value") is not None else None
+             for f in updated.get("customFields", []) if f.get("id") == fid),
+            None,
+        )
         if actual == expected:
             _log(PASS, f"  {key:30s} = {actual!r}")
         else:
