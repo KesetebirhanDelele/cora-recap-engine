@@ -65,7 +65,8 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "run_nurture_scheduler": "rq_default_queue",
     "send_sms":              "rq_default_queue",
     "send_email":            "rq_default_queue",
-    "collect_metrics":       "rq_default_queue",
+    "collect_metrics":            "rq_default_queue",
+    "update_ghl_after_vm_message": "rq_callback_queue",
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -162,7 +163,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.ai_jobs import classify_call_event, run_call_analysis
     from app.worker.jobs.call_processing import process_call_event
     from app.worker.jobs.channel_jobs import send_email_job, send_sms_job
-    from app.worker.jobs.crm_jobs import create_crm_task, send_student_summary
+    from app.worker.jobs.crm_jobs import create_crm_task, send_student_summary, update_ghl_after_vm_message
     from app.worker.jobs.lifecycle_jobs import update_lead_state
     from app.worker.jobs.metrics_jobs import collect_metrics_job
     from app.worker.jobs.nurture_scheduler import run_nurture_scheduler
@@ -187,6 +188,8 @@ def get_job_registry() -> dict[str, object]:
         "send_email": send_email_job,
         # Dashboard metrics collection
         "collect_metrics": collect_metrics_job,
+        # GHL post-voicemail update
+        "update_ghl_after_vm_message": update_ghl_after_vm_message,
     }
 
 

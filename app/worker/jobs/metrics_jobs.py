@@ -175,9 +175,11 @@ def start_metrics_scheduler() -> None:
     Enqueue the first metrics collection job.
     Call once from worker startup if no pending metrics job exists.
     """
+    from datetime import datetime, timezone
+
     from app.config import get_settings
     from app.db import get_sync_session
-    from app.worker.scheduler import enqueue_now
+    from app.worker.scheduler import schedule_job
 
     settings = get_settings()
 
@@ -196,11 +198,12 @@ def start_metrics_scheduler() -> None:
             )
             return
 
-        enqueue_now(
+        schedule_job(
             session=session,
             job_type="collect_metrics",
             entity_type="system",
             entity_id="metrics_collector",
+            run_at=datetime.now(tz=timezone.utc),
             payload={"_scheduled_by": "startup"},
         )
         session.commit()
