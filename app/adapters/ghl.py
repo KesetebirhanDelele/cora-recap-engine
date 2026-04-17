@@ -219,17 +219,64 @@ class GHLClient:
 
     # ── Field resolution helpers ──────────────────────────────────────────────
 
+    def get_location_fields(self) -> list[dict]:
+        """
+        Fetch all custom field definitions for the GHL location.
+
+        Returns a list of {id, name, fieldKey, ...} objects — one per field
+        defined in the location, regardless of whether any contact has a value.
+
+        This is required for reliable label→ID resolution because
+        GET /contacts/{id} only returns customFields that already have a value
+        on that specific contact. New contacts or contacts that have never had
+        a particular field written will have an empty customFields array.
+
+        Requires `locations/customFields.readonly` scope on the Private
+        Integration token.
+
+        Use resolve_field_id_from_location() with the result to map
+        field labels to UUIDs before any live write call.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL get_location_fields | location_id=%s", self.settings.ghl_location_id)
+        result = self._request(
+            "GET",
+            f"/locations/{self.settings.ghl_location_id}/customFields",
+        )
+        return result.get("customFields", [])
+
+    @staticmethod
+    def resolve_field_id_from_location(field_label: str, location_fields: list[dict]) -> str | None:
+        """
+        Find a custom field UUID from location-level field definitions.
+
+        Preferred over resolve_field_id() when the contact may not yet have
+        a value for the target field (new contact, first write to that field).
+
+        location_fields: result of get_location_fields().
+        Matches on `name` (human label) or `fieldKey` (snake_case).
+        """
+        for field in location_fields:
+            if field.get("name") == field_label or field.get("fieldKey") == field_label:
+                return field.get("id")
+        return None
+
     @staticmethod
     def resolve_field_id(field_label: str, contact: dict) -> str | None:
         """
         Find a custom field ID from a fetched contact record by label or key.
 
-        GHL custom field objects: {id, name, fieldKey, value}.
-        Matches on `name` (human label) first, then `fieldKey` (snake_case).
+        IMPORTANT: GHL only returns customFields entries that already have a
+        value on this contact. If a field has never been written, it will not
+        appear here and this method will return None. Use
+        resolve_field_id_from_location() with get_location_fields() when the
+        contact may be new or when a field has never been set.
+
+        GHL custom field objects in contact record: {id, value} only — the
+        `name` and `fieldKey` are NOT returned by GET /contacts/{id}.
+        (They ARE returned by GET /locations/{id}/customFields.)
 
         Returns the field `id` string used for write payloads, or None.
-        This resolves unresolved external field IDs at runtime without
-        hard-coding production values.
         """
         for field in contact.get("customFields", []):
             if field.get("name") == field_label or field.get("fieldKey") == field_label:
@@ -274,17 +321,19 @@ class GHLClient:
         due_date: str = "",
     ) -> dict:
         """
-        Build the request body for a GHL task creation.
+        Build the request body for a GHL task creation (v2 API).
+
+        GHL v2 task API accepts: title, dueDate, completed (bool), assignedTo.
+        It does NOT accept `status` or `description` — sending those fields
+        causes a 422 response. description is accepted by the UI but not the API.
 
         assigned_to: GHL user ID string — omitted when blank.
         due_date: ISO 8601 string — omitted when blank.
         """
         payload: dict[str, Any] = {
             "title": title,
-            "status": "incompleted",
+            "completed": False,
         }
-        if description:
-            payload["description"] = description
         if assigned_to:
             payload["assignedTo"] = assigned_to
         if due_date:

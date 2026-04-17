@@ -280,16 +280,20 @@ def _finalize_campaign(session, lead, settings) -> None:
     )
     ghl = GHLClient(settings=settings)
 
-    field_updates: dict[str, str] = {}
+    # Build with label keys, then resolve → UUIDs before live write.
+    from app.worker.jobs.crm_jobs import _resolve_to_field_ids
+    label_updates: dict[str, str] = {}
     if settings.ghl_field_mark_as_lead:
-        field_updates[settings.ghl_field_mark_as_lead] = "Yes"
-    ai_campaign_field = settings.ghl_field_ai_campaign or "AI Campaign"
-    field_updates[ai_campaign_field] = "No"
+        label_updates[settings.ghl_field_mark_as_lead] = "Yes"
+    ai_campaign_label = settings.ghl_field_ai_campaign or "AI Campaign"
+    label_updates[ai_campaign_label] = "No"
 
-    ghl.update_contact_fields(
-        contact_id=lead.contact_id,
-        field_updates=field_updates,
-    )
+    field_updates = _resolve_to_field_ids(ghl, label_updates)
+    if field_updates:
+        ghl.update_contact_fields(
+            contact_id=lead.contact_id,
+            field_updates=field_updates,
+        )
 
 
 def _make_default_queue(settings):

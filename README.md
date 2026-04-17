@@ -98,8 +98,9 @@ cora-recap-engine/
 ├── execution/
 │   ├── dashboard.py          # Streamlit monitoring dashboard (read-only, legacy)
 │   └── test_scripts/
-│       ├── run_test_call.py  # CLI: trigger a live end-to-end test call
-│       └── watch_test_call.py# CLI: poll DB for test call result
+│       ├── run_test_call.py       # CLI: trigger a live end-to-end test call
+│       ├── watch_test_call.py     # CLI: poll DB for test call result
+│       └── test_ghl_writes.py     # Pre-go-live GHL write integration test
 ├── migrations/
 │   └── versions/
 │       ├── 0001_initial_schema.py               # 8 core tables
@@ -451,24 +452,51 @@ INTEGRATION_TESTS=1 pytest tests/integration/
 |---|---|---|
 | `GHL_WRITE_MODE` | `shadow` | GHL writes are logged but not executed |
 | `GHL_WRITE_SHADOW_LOG_ONLY` | `true` | Shadow payloads are log-only |
+| `GHL_WRITE_CONTACT_FIELDS` | `false` | Enable field update writes |
+| `GHL_WRITE_TASKS` | `false` | Enable task creation writes |
+| `GHL_WRITE_SUMMARY` | `false` | Enable student summary delivery |
+| `GHL_WRITE_CAMPAIGN_STATE` | `false` | Enable campaign state field writes |
+| `GHL_WRITE_FINALIZATION` | `false` | Enable voicemail finalization writes |
 | `SHADOW_MODE_ENABLED` | `true` | Intercepts all outbound actions (calls, SMS, email); logs to `shadow_actions` instead of executing |
-| `GOOGLE_SHADOW_MODE_ENABLED` | `true` | Sheets in mirror-only mode |
 
-To enable real GHL writes: set `GHL_WRITE_MODE=live` and `GHL_WRITE_SHADOW_LOG_ONLY=false`. This requires explicit approval per the autonomous execution contract.
+All mode flags are DB-backed. Changes made on the **System Controls** dashboard page (`/system-controls`) take effect immediately on the next job — no `.env` edit or restart required.
+
+To go live: use the System Controls dashboard to set `GHL_WRITE_MODE=live`, `SHADOW_MODE_ENABLED=false`, and enable each write category. See `directives/spec/dashboard/11_runbook.md` for the full go-live procedure.
+
+---
+
+## GHL Private Integration Token
+
+`GHL_API_KEY` must be a **GHL Private Integration JWT token** — not a simple API key.
+
+Create one at: GHL → Settings → Integrations → Private Integrations.
+
+Required scopes:
+- `contacts.readonly` — search and fetch contacts
+- `contacts.write` — update custom fields, create tasks, append notes
+- `locations/tasks.write` — task creation
+- `locations/customFields.readonly` — field label→UUID resolution (required for all field writes)
+
+Tokens can expire or be revoked. If you receive 401 errors, regenerate the token, update `.env`, and restart the API and worker services.
+
+Run `execution/test_scripts/test_ghl_writes.py` to verify all GHL writes before going live:
+
+```bash
+python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+```
 
 ---
 
 ## Unresolved External IDs
 
-The following must be supplied before the corresponding write paths go live:
+The following are not yet configured and block those specific write paths:
 
-- `GHL_FIELD_VM_EMAIL_HTML`, `GHL_FIELD_VM_EMAIL_SUBJECT`, `GHL_FIELD_VM_SMS_TEXT`
-- `GHL_FIELD_LAST_CALL_STATUS`, `GHL_FIELD_MARK_AS_LEAD`, `GHL_FIELD_NOTES`
-- `GHL_TASK_PIPELINE_ID`, `GHL_TASK_DEFAULT_OWNER_ID`
-- `GOOGLE_SHEETS_CALL_LOG_ID`, `GOOGLE_SHEETS_CAMPAIGN_DATA_ID`, and all tab names
-- New Lead VM tier delays: `NEW_VM_TIER_*`
+- `GHL_FIELD_LAST_CALL_STATUS`, `GHL_FIELD_NOTES` — planned, not yet live
+- `GHL_TASK_PIPELINE_ID`, `GHL_TASK_DEFAULT_OWNER_ID` — planned, not yet live
 
-See `directives/spec/11_runbook.md` for the full list.
+Note: `GHL_FIELD_MARK_AS_LEAD` — the `Mark as Lead` custom field does not currently exist in GHL. The write path is implemented but silently skips until the field is created in GHL and the label configured in `.env`.
+
+See `directives/spec/11_runbook.md` for the go-live procedure.
 
 ---
 

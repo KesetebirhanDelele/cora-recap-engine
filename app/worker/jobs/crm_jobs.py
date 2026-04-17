@@ -24,6 +24,49 @@ from app.worker.exceptions import create_exception
 logger = logging.getLogger(__name__)
 
 
+# ── Field ID resolution helper ────────────────────────────────────────────────
+
+def _resolve_to_field_ids(
+    ghl: "GHLClient",  # noqa: F821  (forward ref — imported inside job functions)
+    field_updates: dict[str, str],
+) -> dict[str, str]:
+    """
+    Convert a {field_label: value} dict to {field_uuid: value} for GHL writes.
+
+    GHL's PUT /contacts/{id} requires the field UUID as the "id" key, not the
+    human-readable label.  This fetches location-level field definitions
+    (GET /locations/{id}/customFields) and resolves each label to its UUID.
+
+    Fields whose labels cannot be matched are skipped with a warning so a
+    single unmapped field never blocks the rest of the write batch.
+
+    Requires the `locations/customFields.readonly` scope on the GHL Private
+    Integration token.  If the fetch fails, returns an empty dict (the entire
+    write call is safely skipped with a logged warning).
+    """
+    try:
+        location_fields = ghl.get_location_fields()
+    except Exception as exc:
+        logger.warning(
+            "_resolve_to_field_ids: location fields fetch failed — GHL writes skipped: %s",
+            exc,
+        )
+        return {}
+
+    resolved: dict[str, str] = {}
+    for label, value in field_updates.items():
+        from app.adapters.ghl import GHLClient  # local import avoids circular
+        fid = GHLClient.resolve_field_id_from_location(label, location_fields)
+        if fid:
+            resolved[fid] = value
+        else:
+            logger.warning(
+                "_resolve_to_field_ids: no field UUID found for label=%r — skipped",
+                label,
+            )
+    return resolved
+
+
 # ── Feature 2: CRM Task Creation ─────────────────────────────────────────────
 
 def create_crm_task(job_id: str) -> None:
@@ -204,26 +247,30 @@ def create_crm_task(job_id: str) -> None:
                         )
 
             # ── GHL contact field updates ────────────────────────────────────
-            field_updates: dict[str, str] = {}
+            # Build with label keys first, then resolve labels → UUIDs.
+            # GHL's PUT /contacts/{id} requires field UUIDs, not label strings.
+            label_updates: dict[str, str] = {}
             if settings.ghl_field_mark_as_lead:
-                field_updates[settings.ghl_field_mark_as_lead] = (
+                label_updates[settings.ghl_field_mark_as_lead] = (
                     "Yes" if analysis.is_lead_classification else "No"
                 )
             if settings.ghl_field_ai_lead_assign_to and analysis.assign_to:
-                field_updates[settings.ghl_field_ai_lead_assign_to] = analysis.assign_to
+                label_updates[settings.ghl_field_ai_lead_assign_to] = analysis.assign_to
             if settings.ghl_field_support_ticket_3 and analysis.task_description:
-                field_updates[settings.ghl_field_support_ticket_3] = analysis.task_description
+                label_updates[settings.ghl_field_support_ticket_3] = analysis.task_description
             if settings.ghl_field_ai_lead_classification and analysis.lead_classification:
-                field_updates[settings.ghl_field_ai_lead_classification] = analysis.lead_classification
+                label_updates[settings.ghl_field_ai_lead_classification] = analysis.lead_classification
             if settings.ghl_field_ai_campaign:
-                field_updates[settings.ghl_field_ai_campaign] = analysis.ai_campaign
+                label_updates[settings.ghl_field_ai_campaign] = analysis.ai_campaign
 
-            if field_updates:
-                ghl.update_contact_fields(
-                    contact_id=effective_contact_id or "unknown",
-                    field_updates=field_updates,
-                    mode_flags=flags,
-                )
+            if label_updates:
+                field_updates = _resolve_to_field_ids(ghl, label_updates)
+                if field_updates:
+                    ghl.update_contact_fields(
+                        contact_id=effective_contact_id or "unknown",
+                        field_updates=field_updates,
+                        mode_flags=flags,
+                    )
 
             # ── GHL task creation ────────────────────────────────────────────
             task_result: dict = {"shadow": True}
@@ -363,22 +410,24 @@ def update_ghl_after_vm_message(job_id: str) -> None:
             # Ticket #2 carries a brief identifier; Message carries the full body
             ticket_2_value = message_subject if channel == "email" else message_body[:200]
 
-            field_updates: dict[str, str] = {}
+            # Build with label keys first, then resolve labels → UUIDs.
+            label_updates: dict[str, str] = {}
             if settings.ghl_field_mark_as_lead:
-                field_updates[settings.ghl_field_mark_as_lead] = "Yes"
+                label_updates[settings.ghl_field_mark_as_lead] = "Yes"
             if settings.ghl_field_support_ticket_2 and ticket_2_value:
-                field_updates[settings.ghl_field_support_ticket_2] = ticket_2_value
+                label_updates[settings.ghl_field_support_ticket_2] = ticket_2_value
             if settings.ghl_field_message and message_body:
-                field_updates[settings.ghl_field_message] = message_body
+                label_updates[settings.ghl_field_message] = message_body
             if settings.ghl_field_ai_campaign:
-                field_updates[settings.ghl_field_ai_campaign] = "Yes"
+                label_updates[settings.ghl_field_ai_campaign] = "Yes"
 
             # Support Ticket #4: most recent lead classification from classification_results
             if settings.ghl_field_support_ticket_4:
                 classification = _get_latest_classification(session, contact_id)
                 if classification:
-                    field_updates[settings.ghl_field_support_ticket_4] = classification
+                    label_updates[settings.ghl_field_support_ticket_4] = classification
 
+            field_updates = _resolve_to_field_ids(ghl, label_updates) if label_updates else {}
             if field_updates:
                 write_result = ghl.update_contact_fields(
                     contact_id=contact_id or "unknown",

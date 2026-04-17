@@ -185,12 +185,15 @@ def _handle_enrolled(session, contact_id, phone, entities, settings) -> None:
     # Mirror finalization in GHL (shadow-gated)
     try:
         from app.adapters.ghl import GHLClient
+        from app.worker.jobs.crm_jobs import _resolve_to_field_ids
         ghl = GHLClient(settings=settings)
-        ai_campaign_field = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
-        ghl.update_contact_fields(
-            contact_id=contact_id,
-            field_updates={ai_campaign_field: "No"},
-        )
+        ai_campaign_label = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
+        resolved = _resolve_to_field_ids(ghl, {ai_campaign_label: "No"})
+        if resolved:
+            ghl.update_contact_fields(
+                contact_id=contact_id,
+                field_updates=resolved,
+            )
     except Exception as exc:
         logger.warning(
             "_handle_enrolled: GHL write failed (non-fatal) | contact_id=%s: %s",
@@ -444,12 +447,15 @@ def _write_ghl_campaign_off(contact_id: str, settings: Any, reason: str) -> None
     """
     try:
         from app.adapters.ghl import GHLClient
+        from app.worker.jobs.crm_jobs import _resolve_to_field_ids
         ghl = GHLClient(settings=settings)
-        ai_campaign_field = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
-        ghl.update_contact_fields(
-            contact_id=contact_id,
-            field_updates={ai_campaign_field: "No"},
-        )
+        ai_campaign_label = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
+        resolved = _resolve_to_field_ids(ghl, {ai_campaign_label: "No"})
+        if resolved:
+            ghl.update_contact_fields(
+                contact_id=contact_id,
+                field_updates=resolved,
+            )
         logger.info(
             "_write_ghl_campaign_off: AI Campaign=No written | contact_id=%s reason=%s",
             contact_id, reason,

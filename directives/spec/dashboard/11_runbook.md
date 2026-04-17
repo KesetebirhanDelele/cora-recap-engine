@@ -186,11 +186,20 @@ streamlit run execution/dashboard.py --server.headless true
 
 **Symptoms**: Email received; Exceptions section shows `ghl_auth_failed` exceptions.
 
-1. Check `GHL_API_KEY` in environment: confirm it has not expired (GHL API keys can rotate).
-2. Check `GHL_LOCATION_ID`: confirm it matches the active GHL location.
-3. In GHL dashboard: Settings → Integrations → API Keys → verify key is active.
-4. If key expired: generate a new key, update `GHL_API_KEY` in environment, restart API and worker.
-5. After fix: retry affected exceptions via the Exceptions action button.
+1. Check `GHL_API_KEY` in environment — it is a **Private Integration JWT token**, not a simple key. These expire or can be revoked.
+2. In GHL: Settings → Integrations → Private Integrations → verify the integration is active and the token has not been revoked.
+3. Check `GHL_LOCATION_ID` matches the active GHL location.
+4. Verify the token has all required scopes: `contacts.readonly`, `contacts.write`, `locations/tasks.write`, `locations/customFields.readonly`.
+5. If expired/revoked: regenerate the token, update `GHL_API_KEY` in `/opt/cora-recap-engine/.env`, then restart API and worker:
+   ```bash
+   cd /opt/cora-recap-engine
+   docker compose restart api worker-default worker-ai
+   ```
+6. After fix: retry affected exceptions via the Exceptions action button.
+7. Verify fix:
+   ```bash
+   python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+   ```
 
 ---
 
@@ -217,6 +226,77 @@ streamlit run execution/dashboard.py --server.headless true
 2. If one type dominates: follow the relevant runbook entry above.
 3. If exceptions are spread across types: may indicate a broader infrastructure issue (Postgres, Redis, GHL all degraded simultaneously). Check infrastructure health.
 4. Resolve or ignore exceptions that are confirmed stale or no longer actionable.
+
+---
+
+## Go-Live Procedure (shadow → live)
+
+All mode flags are DB-backed and can be toggled from the **System Controls** page (`/system-controls`) without any `.env` edit or container restart. Changes take effect on the next job execution.
+
+### Pre-flight checklist
+
+1. Verify `test_ghl_writes.py` passes against the production contact:
+   ```bash
+   cd /opt/cora-recap-engine
+   python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+   # Expected: ALL CHECKS PASSED
+   ```
+2. Check System Controls → Pre-flight status panel: all items green or yellow (no red).
+3. Confirm no active `ghl_auth_failure` alerts in the Alerts page.
+4. Confirm Zapier enrollment is stopped / no new leads being enrolled.
+5. Wait for any in-flight Zapier-triggered calls to complete (check Live Activity for idle state).
+
+### Cutover sequence (from System Controls dashboard)
+
+1. Navigate to `http://<server-ip>:3000/system-controls`.
+2. Set **GHL Write Mode** → `live`.
+3. Enable **GHL Write: Contact Fields** → on.
+4. Enable **GHL Write: Tasks** → on.
+5. Enable **GHL Write: Summary** → on.
+6. Enable **GHL Write: Campaign State** → on.
+7. Enable **GHL Write: Finalization** → on.
+8. Set **Shadow Mode** → off (enables outbound calls / SMS / email).
+9. Confirm each toggle shows the updated state.
+
+### Verify after cutover
+
+```bash
+# Watch worker logs for live write confirmations
+docker compose logs -f worker-default
+
+# Expected log lines on next call processed:
+# INFO GHL update_contact_fields | contact_id=...
+# INFO GHL create_task | contact_id=...
+```
+
+Check GHL contact for the test lead — fields should have real values, not stale test data.
+
+### Rollback
+
+Return to System Controls and set **GHL Write Mode** → `shadow` and **Shadow Mode** → on. No restart required.
+
+---
+
+## Pre-Live GHL Write Integration Test
+
+Before go-live, run `test_ghl_writes.py` to verify all field writes against a real GHL contact:
+
+```bash
+cd /opt/cora-recap-engine
+python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+# or by contact ID:
+python execution/test_scripts/test_ghl_writes.py --contact-id <GHL_CONTACT_ID>
+```
+
+The script:
+1. Looks up the contact in GHL
+2. Fetches all field definitions from the location (`GET /locations/{id}/customFields`)
+3. Writes test values to every field Cora uses
+4. Reads back and verifies each write
+5. Creates a test task (delete it from GHL afterwards)
+6. Restores original field values
+
+**Required Private Integration scopes:** `contacts.readonly`, `contacts.write`, `locations/tasks.write`, `locations/customFields.readonly`
 
 ---
 
