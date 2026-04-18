@@ -164,11 +164,12 @@ def get_ai_timeseries(
 def get_voice_performance(
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
+    all_time: bool = Query(default=False, description="Return cumulative all-time KPIs with no date floor"),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Voice call performance analytics — KPIs, time series, WoW, scatter data."""
     from app.services.dashboard_metrics import get_voice_performance as _get_vp
-    return _get_vp(session, from_date=from_date, to_date=to_date)
+    return _get_vp(session, from_date=from_date, to_date=to_date, all_time=all_time)
 
 
 @router.get("/card-metrics")

@@ -454,6 +454,7 @@ def get_voice_performance(
     session: Session,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
+    all_time: bool = False,
 ) -> dict[str, Any]:
     """
     Voice Call Performance analytics — feeds /voice-performance dashboard page.
@@ -462,10 +463,22 @@ def get_voice_performance(
       period, kpis (current), kpis_prev (prior equal-length period),
       wow_changes (% delta per KPI), time_series (weekly buckets),
       campaign_breakdown (per-campaign scatter aggregates).
+
+    all_time=True: skips the default 28-day floor and queries from the earliest
+    record, so KPIs and campaign_breakdown reflect cumulative totals.
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
-    from_dt = from_date or (now - timedelta(days=28))
+    if all_time and from_date is None:
+        # Find the earliest call_event timestamp so the window covers all records
+        from sqlalchemy import text as _text
+        row = session.execute(_text("SELECT MIN(created_at) FROM call_events")).fetchone()
+        earliest = row[0] if (row and row[0]) else None
+        if earliest is not None and earliest.tzinfo is None:
+            earliest = earliest.replace(tzinfo=timezone.utc)
+        from_dt = earliest or (now - timedelta(days=365))
+    else:
+        from_dt = from_date or (now - timedelta(days=28))
 
     days = max(1.0, (to_dt - from_dt).total_seconds() / 86400)
 

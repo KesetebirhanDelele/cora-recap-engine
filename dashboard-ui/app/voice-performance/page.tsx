@@ -94,7 +94,7 @@ export default function VoicePerformancePage() {
           from_date: from ? `${from}T00:00:00Z` : undefined,
           to_date:   to   ? `${to}T23:59:59Z`   : undefined,
         }),
-        fetchVoicePerformance(), // no date filter — cumulative totals
+        fetchVoicePerformance({ all_time: true }), // no date filter — cumulative totals
       ]);
       setData(filtered);
       setAllData(all);
