@@ -1447,7 +1447,7 @@ def update_mode(
             INSERT INTO audit_log
               (id, entity_type, entity_id, action, operator_id, context_json, created_at)
             VALUES
-              (:id, 'app_config', :key, 'mode_flag_updated', :by, :ctx::jsonb, :now)
+              (:id, 'app_config', :key, 'mode_flag_updated', :by, CAST(:ctx AS jsonb), :now)
         """), {
             "id": str(uuid.uuid4()),
             "key": key,
