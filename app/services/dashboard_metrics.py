@@ -524,6 +524,22 @@ def get_voice_performance(
         ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
 
+    # Per-week true unique-contact count — NOT grouped by voice_agent to avoid
+    # double-counting contacts who received calls from multiple campaign types.
+    ts_unique_rows = session.execute(text(f"""
+        SELECT
+            date_trunc('week', ce.created_at)  AS week_start,
+            COUNT(DISTINCT {_UNIQUE_PHONE})     AS unique_contacts
+        FROM call_events ce
+        WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+        GROUP BY date_trunc('week', ce.created_at)
+    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+    # Build a week → true unique count lookup
+    week_unique: dict[str, int] = {}
+    for r in ts_unique_rows:
+        wk = r[0].date().isoformat() if hasattr(r[0], "date") else str(r[0])[:10]
+        week_unique[wk] = int(r[1]) if r[1] else 0
+
     # Pivot by week — keyed by voice_agent value
     weeks: dict[str, dict[str, Any]] = {}
     for r in ts_rows:
@@ -563,7 +579,9 @@ def get_voice_performance(
             camp_key = "new_lead_s"
 
         w["total"] += t
-        w["unique"] += u
+        # w["unique"] is set from the deduplicated per-week query below; do not
+        # accumulate per-agent unique counts here (would double-count contacts
+        # who received calls from more than one campaign type in the same week).
         w["completed"] += c
         w["voicemail"] += v
         w["failed"] += f
@@ -602,7 +620,9 @@ def get_voice_performance(
     for wk_date in sorted(weeks):
         w = weeks[wk_date]
         t = w["total"]
-        u = w["unique"]
+        # Use the true per-week unique count (from the deduplicated query) so
+        # contacts who appeared in multiple campaign types are not double-counted.
+        u = week_unique.get(wk_date, w["unique"])
         time_series.append({
             "date": wk_date,
             "cold": w["cold"],
