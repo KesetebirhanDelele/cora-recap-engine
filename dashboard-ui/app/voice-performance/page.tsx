@@ -28,7 +28,13 @@ import DateRangePicker from "@/components/voice/DateRangePicker";
 
 function defaultDates() {
   const to = new Date();
-  const from = new Date(to.getTime() - 28 * 24 * 60 * 60 * 1000);
+  // Align "from" to the Monday of the week that is 7 weeks before the current week,
+  // so the default window is 8 calendar weeks (7 past + current, inclusive).
+  const dayOfWeek = to.getDay(); // 0 = Sun, 1 = Mon, …
+  const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+  const startOfCurrentWeek = new Date(to);
+  startOfCurrentWeek.setDate(to.getDate() - daysToMonday);
+  const from = new Date(startOfCurrentWeek.getTime() - 7 * 7 * 24 * 60 * 60 * 1000);
   return {
     from: from.toISOString().slice(0, 10),
     to: to.toISOString().slice(0, 10),
