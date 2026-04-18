@@ -372,7 +372,13 @@ class GHLClient:
         writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
         if not writes_enabled:
             return self._shadow_write("update_contact_fields", contact_id, payload)
-        self.settings.validate_for_ghl_writes()
+        # When mode_flags provided the DB already authorized live writes — only
+        # validate credentials (not the settings-level mode gate, which may lag
+        # behind the DB state).  Fall back to full settings validation otherwise.
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
         logger.info("GHL update_contact_fields | contact_id=%s", contact_id)
         return self._request("PUT", f"/contacts/{contact_id}", json=payload)
 
@@ -401,7 +407,10 @@ class GHLClient:
         writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
         if not writes_enabled:
             return self._shadow_write("create_task", contact_id, payload)
-        self.settings.validate_for_ghl_writes()
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
         logger.info("GHL create_task | contact_id=%s title=%r", contact_id, title)
         return self._request("POST", f"/contacts/{contact_id}/tasks", json=payload)
 
@@ -425,7 +434,10 @@ class GHLClient:
         writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
         if not writes_enabled:
             return self._shadow_write("append_note", contact_id, payload)
-        self.settings.validate_for_ghl_writes()
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
         logger.info("GHL append_note | contact_id=%s", contact_id)
         return self._request("POST", f"/contacts/{contact_id}/notes", json=payload)
 
