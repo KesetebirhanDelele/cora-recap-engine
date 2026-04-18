@@ -36,6 +36,29 @@
 - Prefer JSONB for flexible context fields; use strict typed columns for all indexed and filtered fields.
 - Prefer connection pooling via existing `get_sync_engine()` rather than creating new engine instances.
 
+## SQL authoring rules (enforced — production bugs resulted from violations)
+
+### No `E'...'` string prefix in regex literals
+Never use `E'...'` (PostgreSQL escape string syntax) for regex patterns in `text(f"""...""")` blocks.
+With `standard_conforming_strings = on` (default since PG 9.1), `E'...'` causes the server to silently **strip backslashes** before passing the string to the regex engine. A pattern like `E'^\+?...'` becomes `^+?...` in the regex engine — `+?` quantifies the zero-width anchor `^`, producing `ERROR: quantifier operand invalid`.
+
+**Must**: Use plain single-quoted strings: `'^\+?[\d\s\-\(\)\.]{7,}'`.
+
+### F-string brace escaping in `text(f"""...""")` blocks
+SQL regex quantifiers like `{7,}` must be written as `{{7,}}` inside Python f-strings to prevent Python from evaluating `{7,}` as the tuple expression `(7,)`.
+
+Correct: `{{7,}}` → SQL receives `{7,}`.
+Wrong: `{7,}` → Python produces `(7,)` in the string → invalid SQL.
+
+### No `::jsonb` cast immediately after a named parameter
+psycopg2 fails to translate named parameters when `::` immediately follows the parameter token.
+
+Wrong: `:ctx::jsonb` — psycopg2 does not translate `:ctx` → syntax error at `:ctx`.
+Correct: `CAST(:ctx AS jsonb)` — standard SQL, translates correctly.
+
+### Mode flags: always read from DB, not settings
+`get_health()` and any endpoint that surfaces operational mode state must read flags via `get_mode_flags(session, settings)`, **not** `settings.shadow_mode_enabled` or `settings.ghl_write_mode` directly. The settings object reflects `.env` values only; `app_config` (DB) is the source of truth for all runtime toggles changed via System Controls.
+
 ## Escalation triggers
 
 - If a required Postgres query exceeds 3 seconds in testing under realistic data volume (1000+ leads, 10 000+ call_events), escalate before shipping: add index or rewrite the query.

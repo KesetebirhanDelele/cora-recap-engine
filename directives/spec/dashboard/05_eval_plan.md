@@ -126,10 +126,21 @@ Each phase has a defined eval suite that must pass before the phase is considere
 - All 11 section queries execute against the migrated schema in < 5 seconds.
 
 ### EVAL-REG-02: Worker jobs unaffected
-- Run `python -m pytest tests/unit/ -q` → 827+ passing.
+- Run `python -m pytest tests/unit/ -q` → 886+ passing.
 
 ### EVAL-REG-03: No schema lock conflicts
 - Apply migration in a transaction. Confirm no `AccessExclusiveLock` held for more than 1 second on `call_events`, `lead_state`, or `scheduled_jobs`.
+
+### EVAL-REG-04: SQL correctness without Postgres (production regression)
+`TestGetRecentCallsSql` in `tests/unit/test_dashboard_v2.py` intercepts `session.execute()`, captures the SQL string, and asserts:
+- No `E'` prefix before regex literals (would cause backslash stripping in PG).
+- `{7,}` present and `(7,)` absent (f-string brace escaping correct).
+- `^\+?` anchor intact (not collapsed to `^+`).
+- Named params use `:from_dt` / `:to_dt` / `:limit` style (not `%(x)s`).
+
+Run with: `python -m pytest tests/unit/test_dashboard_v2.py::TestGetRecentCallsSql -v`
+
+These four tests are intentionally runnable without a live Postgres — they caught the production `InvalidRegularExpression` bug (2026-04-18) that unit mocks would have missed.
 
 ---
 

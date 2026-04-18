@@ -44,9 +44,29 @@ ALERT_EMAIL_TO=<recipient>
 ```
 
 ### Production
+
+**Required `.env` settings before building the frontend:**
+```
+# Internal Docker hostname — must NOT be localhost (that resolves to the frontend container itself)
+DASHBOARD_API_URL=http://dashboard-api:8001
+WS_URL=ws://<server-ip>:8001
+
+# Allow the Next.js origin so WebSocket connections aren't blocked by CORS
+ALLOW_ORIGINS=http://<server-ip>:3000
+```
+
+`DASHBOARD_API_URL` is baked into the Next.js image at build time via `next.config.js`. If it is wrong, all server-side data fetches (SSR) will fail silently and browser POSTs will never reach the server.
+
 ```bash
-# docker-compose.yml additions (see spec/dashboard/06_architecture.md)
-docker-compose up dashboard-api dashboard-ui
+cd /opt/cora-recap-engine
+# Pull latest code
+git pull
+
+# Rebuild and restart — only dashboard-api and frontend need rebuilding for most changes
+docker compose up -d --build dashboard-api frontend
+
+# Rebuild only dashboard-api (no frontend code changes)
+docker compose up -d --build dashboard-api
 ```
 
 ---
@@ -396,6 +416,54 @@ No database migrations are required for frontend-only changes.
 3. Restart both services.
 4. All existing Bearer tokens are immediately invalidated. Operators must re-authenticate.
 5. The existing Streamlit dashboard also uses `SECRET_KEY` — restart it or it will reject tokens until restarted.
+
+---
+
+## Known production bug patterns (resolved — documented for future reference)
+
+### "Failed to fetch" on write actions from the browser
+**Symptom**: System Controls / operator action buttons show `Failed: TypeError: Failed to fetch`. Read pages (health, metrics) work fine.
+
+**Root cause**: `NEXT_PUBLIC_API_URL` was baked in as `http://localhost:8001` at build time. Browser-side calls sent requests to the user's local machine (not the server), which has no port 8001.
+
+**Fix applied (2026-04-18)**: Added Next.js rewrites in `next.config.js` so all `/dashboard/*` calls from the browser go to port 3000 (same origin) and are proxied server-side to `http://dashboard-api:8001`. `lib/api.ts` now uses `window.location.origin` in the browser. `docker-compose.yml` default `DASHBOARD_API_URL` changed to `http://dashboard-api:8001`.
+
+**If this recurs**: Check `DASHBOARD_API_URL` in `.env` is `http://dashboard-api:8001` (not `localhost`). Rebuild the frontend image.
+
+---
+
+### "Internal Server Error" on POST /dashboard/mode (Go Live button)
+**Symptom**: Clicking "Go Live" in System Controls shows `Failed: Internal Server Error`.
+
+**Root cause**: `psycopg2` fails to translate named parameters when `::` cast follows immediately. `:ctx::jsonb` was left untranslated in the SQL → `syntax error at ":"`.
+
+**Fix applied (2026-04-18)**: Changed `:ctx::jsonb` to `CAST(:ctx AS jsonb)` in the `audit_log` INSERT in `dashboard_v2.py`.
+
+**Prevention**: Never write `:param::type` in SQLAlchemy `text()` blocks. Always use `CAST(:param AS type)`.
+
+---
+
+### Status bar shows "◉ Shadow" after going live
+**Symptom**: System Controls shows LIVE, but the home page header still shows `◉ Shadow | GHL: shadow`.
+
+**Root cause**: `get_health()` returned `settings.shadow_mode_enabled` and `settings.ghl_write_mode` from the `.env` file. System Controls writes to `app_config` (DB), not `.env`. The two sources diverged.
+
+**Fix applied (2026-04-18)**: `get_health()` now calls `get_mode_flags(session, settings)` (DB-first lookup) for these two fields, identical to how `GET /dashboard/mode` reads them.
+
+**Prevention**: Any endpoint that surfaces operational mode state must use `get_mode_flags()`, never `settings.*` directly for fields that are DB-backed.
+
+---
+
+### InvalidRegularExpression on /dashboard/recent-calls
+**Symptom**: `GET /dashboard/recent-calls` returns 500. Postgres log shows `ERROR: invalid regular expression: quantifier operand invalid`.
+
+**Root cause (1)**: The SQL regex was wrapped in `E'...'` (PostgreSQL escape string). PG strips unrecognised escape sequences — `E'^\+?...'` becomes `^+?...` in the regex engine. `+?` tries to quantify the zero-width anchor `^` → invalid.
+
+**Root cause (2)**: `{7,}` inside a Python f-string was written without doubling the braces. Python evaluates `{7,}` as the tuple `(7,)`, producing `(7,)` in the SQL string — not a valid regex quantifier.
+
+**Fix applied**: Use plain `'...'` string literals (not `E'...'`). Write `{{7,}}` in Python f-strings so the SQL receives `{7,}`.
+
+**Prevention**: See `spec/dashboard/03_constraints.md` — SQL authoring rules section.
 
 ---
 
