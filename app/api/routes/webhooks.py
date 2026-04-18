@@ -67,9 +67,28 @@ def normalize_synthflow_payload(body: dict[str, Any]) -> dict[str, Any]:
 
     # ── data envelope: Synthflow HTTP step wraps payload under {"data": {...}} ──
     # Unwrap one level so all downstream field access is flat.
-    if set(payload.keys()) == {"data"} and isinstance(payload.get("data"), dict):
-        logger.debug("normalize_synthflow_payload: unwrapping 'data' envelope")
-        payload = dict(payload["data"])
+    #
+    # Two cases:
+    #   Strict  — {"data": {...}} is the entire payload (successful call shape).
+    #             Replace payload with the inner dict entirely.
+    #   Relaxed — "data" is one key among others (failed/error call shape where
+    #             Synthflow adds top-level fields like call_status or error).
+    #             call_id may still be nested inside data; merge data fields up
+    #             so alias resolution can find it while preserving outer fields.
+    _inner = payload.get("data") if isinstance(payload.get("data"), dict) else None
+    if _inner is not None:
+        if set(payload.keys()) == {"data"}:
+            logger.debug("normalize_synthflow_payload: unwrapping 'data' envelope (strict)")
+            payload = dict(_inner)
+        elif not payload.get("call_id") and any(
+            _inner.get(alias) for alias in _CALL_ID_ALIASES
+        ):
+            logger.debug(
+                "normalize_synthflow_payload: merging 'data' envelope — "
+                "call_id found inside data alongside outer keys"
+            )
+            # Inner data fields win; outer fields (call_status, error, etc.) are preserved
+            payload = {**payload, **_inner}
 
     # ── call_id: case-insensitive resolution ──────────────────────────────────
     if not payload.get("call_id"):
