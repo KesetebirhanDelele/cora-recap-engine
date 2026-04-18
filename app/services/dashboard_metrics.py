@@ -38,6 +38,7 @@ def get_health(session: Session) -> dict[str, Any]:
     Returns a dict matching the GET /dashboard/health response schema.
     """
     from app.config import get_settings
+    from app.core.mode_flags import get_mode_flags
     settings = get_settings()
 
     now = datetime.now(tz=timezone.utc)
@@ -125,8 +126,8 @@ def get_health(session: Session) -> dict[str, Any]:
         "jobs_completed_last_5m": jobs_completed_5m,
         "jobs_failed_last_5m": jobs_failed_5m,
         "error_rate": error_rate,
-        "shadow_mode_enabled": settings.shadow_mode_enabled,
-        "ghl_write_mode": settings.ghl_write_mode,
+        "shadow_mode_enabled": get_mode_flags(session, settings).shadow_mode_enabled,
+        "ghl_write_mode": get_mode_flags(session, settings).ghl_write_mode,
         "app_env": settings.app_env,
         "recorded_at": now.isoformat(),
     }
