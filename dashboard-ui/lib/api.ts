@@ -38,7 +38,13 @@ import type {
   VoicePerformanceResponse,
 } from "@/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+// Server-side (SSR/RSC): use full internal URL to reach dashboard-api directly.
+// Browser (client components): use same origin so Next.js rewrites proxy the
+// request to dashboard-api — avoids CORS entirely and works at any server IP.
+const API_URL =
+  typeof window === "undefined"
+    ? (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001")
+    : window.location.origin;
 
 // ── Request helpers ───────────────────────────────────────────────────────────
 

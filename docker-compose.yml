@@ -97,7 +97,7 @@ services:
       context: ./dashboard-ui
       dockerfile: Dockerfile
       args:
-        DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://localhost:8001}
+        DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://dashboard-api:8001}
         WS_URL: ${WS_URL:-ws://localhost:8001}
     ports:
       - "3000:3000"
