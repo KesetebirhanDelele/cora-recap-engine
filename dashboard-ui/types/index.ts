@@ -392,7 +392,7 @@ export interface ContactExceptionRecord {
 
 export interface LeadDetailResponse {
   contact_id: string;
-  lead_state: LeadStateRecord;
+  lead_state: LeadStateRecord | null;
   call_events: CallEventRecord[];
   shadow_actions: ShadowActionRecord[];
   scheduled_jobs: ScheduledJobRecord[];

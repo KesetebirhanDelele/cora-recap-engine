@@ -949,27 +949,35 @@ def get_lead_detail(
         WHERE contact_id = :cid
     """), {"cid": contact_id}).fetchone()
 
-    if lead_row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No lead found for contact_id={contact_id}",
-        )
-
     def _iso(ts):
         if ts is None:
             return None
         return ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
 
-    lead_state = {
-        "contact_id": lead_row[0],
-        "campaign_name": lead_row[1],
-        "ai_campaign_value": lead_row[2],
-        "status": lead_row[3],
-        "do_not_call": lead_row[4],
-        "next_action_at": _iso(lead_row[5]),
-        "version": lead_row[6],
-        "updated_at": _iso(lead_row[7]),
-    }
+    if lead_row is not None:
+        lead_state = {
+            "contact_id": lead_row[0],
+            "campaign_name": lead_row[1],
+            "ai_campaign_value": lead_row[2],
+            "status": lead_row[3],
+            "do_not_call": lead_row[4],
+            "next_action_at": _iso(lead_row[5]),
+            "version": lead_row[6],
+            "updated_at": _iso(lead_row[7]),
+        }
+    else:
+        # No lead_state exists (e.g. telephony-failed call that never progressed
+        # to AI processing). Return call_events and other available data — 404
+        # only if there are truly no records for this contact at all.
+        has_any = session.execute(text("""
+            SELECT 1 FROM call_events WHERE contact_id = :cid LIMIT 1
+        """), {"cid": contact_id}).fetchone()
+        if has_any is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No lead found for contact_id={contact_id}",
+            )
+        lead_state = None
 
     call_rows = session.execute(text("""
         SELECT ce.call_id, ce.status, ce.duration_seconds,

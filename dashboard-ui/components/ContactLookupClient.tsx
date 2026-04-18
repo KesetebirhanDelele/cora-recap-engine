@@ -569,7 +569,16 @@ export default function ContactLookupClient({ contactId: externalContactId }: Co
             </div>
           )}
 
-          <LeadStateSection data={data.lead_state} />
+          {data.lead_state ? (
+            <LeadStateSection data={data.lead_state} />
+          ) : (
+            <div style={SECTION_STYLE}>
+              <div style={SECTION_HEAD}>Lead State</div>
+              <p style={{ ...EMPTY, color: "#f59e0b" }}>
+                No lead state — this contact has call events but never progressed past telephony (e.g. failed call before connection).
+              </p>
+            </div>
+          )}
           <CallEventsSection rows={data.call_events} />
           <ShadowActionsSection rows={data.shadow_actions} />
           <ScheduledJobsSection rows={data.scheduled_jobs} />
