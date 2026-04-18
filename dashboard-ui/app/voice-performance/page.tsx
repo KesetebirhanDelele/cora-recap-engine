@@ -72,7 +72,10 @@ export default function VoicePerformancePage() {
   const defaults = defaultDates();
   const [fromDate, setFromDate] = useState(defaults.from);
   const [toDate, setToDate] = useState(defaults.to);
+  // Filtered data — drives Trends Over Time and WoW waterfall
   const [data, setData] = useState<VoicePerformanceResponse | null>(null);
+  // Unfiltered (all-time) data — drives KPI sidebar and bubble chart
+  const [allData, setAllData] = useState<VoicePerformanceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -80,11 +83,15 @@ export default function VoicePerformancePage() {
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchVoicePerformance({
-        from_date: from ? `${from}T00:00:00Z` : undefined,
-        to_date:   to   ? `${to}T23:59:59Z`   : undefined,
-      });
-      setData(result);
+      const [filtered, all] = await Promise.all([
+        fetchVoicePerformance({
+          from_date: from ? `${from}T00:00:00Z` : undefined,
+          to_date:   to   ? `${to}T23:59:59Z`   : undefined,
+        }),
+        fetchVoicePerformance(), // no date filter — cumulative totals
+      ]);
+      setData(filtered);
+      setAllData(all);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -94,10 +101,12 @@ export default function VoicePerformancePage() {
 
   useEffect(() => { load(fromDate, toDate); }, [fromDate, toDate, load]);
 
-  const kpis             = data?.kpis               ?? EMPTY_KPIS;
-  const wowChanges       = data?.wow_changes         ?? {};
-  const timeSeries       = data?.time_series         ?? [];
-  const campaignBreakdown = data?.campaign_breakdown ?? [];
+  // KPI sidebar and bubble chart always use cumulative (all-time) data
+  const kpis              = allData?.kpis               ?? EMPTY_KPIS;
+  const campaignBreakdown = allData?.campaign_breakdown ?? [];
+  // Trends and WoW waterfall use the date-filtered data
+  const timeSeries        = data?.time_series           ?? [];
+  const wowChanges        = data?.wow_changes           ?? {};
 
   return (
     /*
@@ -177,6 +186,9 @@ export default function VoicePerformancePage() {
             overflow: "hidden",
           }}
         >
+          <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "0.35rem", fontStyle: "italic" }}>
+            All-time · cumulative
+          </div>
           <KpiSidebar kpis={kpis} wowChanges={wowChanges} />
         </div>
 
@@ -303,7 +315,7 @@ export default function VoicePerformancePage() {
               <div style={SECTION_LABEL}>
                 <span>🎯</span> Are we wasting calls?
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — pickup vs booking %, bubble = calls
+                  — pickup vs booking %, bubble = calls · all-time
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>
