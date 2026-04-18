@@ -100,7 +100,7 @@ const JOB_STATUS_COLORS: Record<string, string> = {
 
 // ── Lead State ────────────────────────────────────────────────────────────────
 
-function LeadStateSection({ data }: { data: LeadDetailResponse["lead_state"] }) {
+function LeadStateSection({ data }: { data: NonNullable<LeadDetailResponse["lead_state"]> }) {
   const fields: [string, unknown][] = [
     ["contact_id", data.contact_id],
     ["campaign_name", data.campaign_name ?? "—"],
