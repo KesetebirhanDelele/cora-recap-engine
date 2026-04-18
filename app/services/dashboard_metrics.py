@@ -1201,7 +1201,7 @@ def get_recent_calls(
             COALESCE(
                 -- Primary: raw_payload_json->>'Name' unless it looks like a phone number
                 CASE
-                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ E'^\+?[\d\s\-\(\)\.]{{7,}}$'
+                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ '^\+?[\d\s\-\(\)\.]{{7,}}$'
                       OR TRIM(ce.raw_payload_json->>'Name') = ''
                       OR ce.raw_payload_json->>'Name' IS NULL
                     THEN NULL
