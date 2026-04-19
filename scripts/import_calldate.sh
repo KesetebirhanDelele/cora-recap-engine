@@ -25,7 +25,7 @@ if [[ ! -f "$CSV_FILE" ]]; then
 fi
 
 echo "=== Step 1: Run Alembic migration (adds 3 columns) ==="
-docker compose exec -T migrate alembic upgrade head
+docker compose exec -T api alembic upgrade head
 
 echo ""
 echo "=== Step 2: Copy CSV into Postgres temp table ==="
