@@ -66,6 +66,11 @@ class CallEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # call_started_at: actual call start time in UTC — authoritative date for
+    # dashboard grouping. Populated from synthflow_start_ms (backfill) or
+    # raw_payload_json->>'start_time' at webhook ingestion time.
+    # Falls back to created_at in queries via COALESCE(call_started_at, created_at).
+    call_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
     def __repr__(self) -> str:
         return f"<CallEvent call_id={self.call_id!r} status={self.status!r}>"

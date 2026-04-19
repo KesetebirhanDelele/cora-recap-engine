@@ -241,6 +241,7 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
         dedupe_key=dedupe_key,
         raw_payload_json=payload,
         created_at=datetime.now(tz=timezone.utc),
+        call_started_at=start_time,
     )
     session.add(event)
     session.flush()
