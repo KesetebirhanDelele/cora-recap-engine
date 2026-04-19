@@ -20,17 +20,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "call_events",
-        sa.Column("call_started_at", sa.TIMESTAMP(timezone=True), nullable=True),
-    )
-    # Backfill from synthflow_start_ms (already imported for ~22k rows)
-    op.execute("""
+    conn = op.get_bind()
+    conn.execute(sa.text(
+        "ALTER TABLE call_events ADD COLUMN IF NOT EXISTS call_started_at TIMESTAMPTZ"
+    ))
+    conn.execute(sa.text("""
         UPDATE call_events
         SET call_started_at = to_timestamp(synthflow_start_ms / 1000.0)
         WHERE synthflow_start_ms IS NOT NULL
           AND call_started_at IS NULL
-    """)
+    """))
 
 
 def downgrade() -> None:

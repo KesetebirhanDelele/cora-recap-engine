@@ -14,18 +14,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "call_events",
-        sa.Column("synthflow_start_ms", sa.BigInteger(), nullable=True),
-    )
-    op.add_column(
-        "call_events",
-        sa.Column("call_timezone", sa.String(100), nullable=True),
-    )
-    op.add_column(
-        "call_events",
-        sa.Column("call_time_local", sa.String(50), nullable=True),
-    )
+    conn = op.get_bind()
+    conn.execute(sa.text(
+        "ALTER TABLE call_events ADD COLUMN IF NOT EXISTS synthflow_start_ms BIGINT"
+    ))
+    conn.execute(sa.text(
+        "ALTER TABLE call_events ADD COLUMN IF NOT EXISTS call_timezone VARCHAR(100)"
+    ))
+    conn.execute(sa.text(
+        "ALTER TABLE call_events ADD COLUMN IF NOT EXISTS call_time_local VARCHAR(50)"
+    ))
 
 
 def downgrade() -> None:
