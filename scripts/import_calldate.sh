@@ -39,7 +39,7 @@ BEGIN;
 
 CREATE TEMP TABLE _calldate_import (
     call_id            TEXT,
-    synthflow_start_ms NUMERIC,
+    synthflow_start_ms TEXT,
     call_timezone      TEXT,
     call_time_local    TEXT
 ) ON COMMIT DROP;
@@ -50,9 +50,9 @@ WITH (FORMAT csv, HEADER true, NULL '');
 
 UPDATE call_events ce
 SET
-    synthflow_start_ms = src.synthflow_start_ms::BIGINT,
-    call_timezone      = src.call_timezone,
-    call_time_local    = src.call_time_local
+    synthflow_start_ms = NULLIF(NULLIF(TRIM(src.synthflow_start_ms), ''), 'null')::NUMERIC::BIGINT,
+    call_timezone      = NULLIF(NULLIF(TRIM(src.call_timezone),      ''), 'null'),
+    call_time_local    = NULLIF(NULLIF(TRIM(src.call_time_local),    ''), 'null')
 FROM _calldate_import src
 WHERE ce.call_id = src.call_id;
 
