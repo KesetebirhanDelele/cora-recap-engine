@@ -37,6 +37,19 @@ function deriveStatus(h: HealthResponse): Status {
   return "ok";
 }
 
+function deriveReasons(h: HealthResponse): string[] {
+  const lag = h.queue_lag_seconds;
+  const rate = h.error_rate;
+  const reasons: string[] = [];
+  if (lag > 60)                             reasons.push(`queue lag ${lag}s`);
+  if (h.open_exception_count > 0)           reasons.push(`${h.open_exception_count} open exception${h.open_exception_count !== 1 ? "s" : ""}`);
+  if (h.stuck_job_count > 0)                reasons.push(`${h.stuck_job_count} stuck job${h.stuck_job_count !== 1 ? "s" : ""}`);
+  if (h.expired_lease_count > 0)            reasons.push(`${h.expired_lease_count} expired lease${h.expired_lease_count !== 1 ? "s" : ""}`);
+  if (h.jobs_failed_last_5m > 0)            reasons.push(`${h.jobs_failed_last_5m} failed (5 min)`);
+  if (rate !== null && rate > 0.05)         reasons.push(`${Math.round(rate * 100)}% error rate`);
+  return reasons;
+}
+
 const DIV: React.CSSProperties = { color: "#cbd5e1" };
 
 export default function SystemStatusBar({ health, healthError }: Props) {
@@ -50,6 +63,7 @@ export default function SystemStatusBar({ health, healthError }: Props) {
 
   const status: Status = health ? deriveStatus(health) : "unknown";
   const s = STATUS_META[status];
+  const reasons = health && status !== "ok" ? deriveReasons(health) : [];
 
   const recordedAt = health?.recorded_at
     ? new Date(health.recorded_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -75,8 +89,8 @@ export default function SystemStatusBar({ health, healthError }: Props) {
           fontSize: "0.78rem",
         }}
       >
-        {/* Status dot + label */}
-        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", flexShrink: 0 }}>
+        {/* Status dot + label + reasons */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.35rem", flexShrink: 0, flexWrap: "wrap" }}>
           <span
             style={{
               width: 7, height: 7, borderRadius: "50%",
@@ -86,6 +100,11 @@ export default function SystemStatusBar({ health, healthError }: Props) {
           <span style={{ fontWeight: 700, color: s.color, letterSpacing: "0.02em" }}>
             {s.label}
           </span>
+          {reasons.length > 0 && (
+            <span style={{ color: s.color, fontWeight: 500, opacity: 0.85 }}>
+              — {reasons.join(" · ")}
+            </span>
+          )}
         </div>
 
         <span style={DIV}>|</span>
