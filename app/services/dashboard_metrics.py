@@ -1076,7 +1076,16 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
 
     # ── active_leads ──────────────────────────────────────────────────────────
     active_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state WHERE status NOT IN ('closed', 'do_not_call') AND do_not_call = false"
+        "SELECT COUNT(*) FROM lead_state"
+        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
+        " AND do_not_call IS NOT TRUE"
+    ) or 0
+    prev_active_leads = _scalar(
+        "SELECT COUNT(*) FROM lead_state"
+        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
+        " AND do_not_call IS NOT TRUE"
+        " AND created_at >= :s",
+        {"s": w7d_start},
     ) or 0
 
     # ── sync_success_rate ─────────────────────────────────────────────────────
@@ -1140,7 +1149,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "pickup_rate":                _pt(pickup_curr,             pickup_prev),
         "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
         "booking_rate":               _pt(book_curr,               book_prev),
-        "active_leads":               _pt(active_leads,            None),
+        "active_leads":               _pt(active_leads,            prev_active_leads),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),
         "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
         "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),

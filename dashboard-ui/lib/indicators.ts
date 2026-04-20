@@ -93,6 +93,7 @@ const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
   "/voice-performance":  { key: "pickup_rate",                format: (v) => `${pct(v as number | null)} pickup`,      colorType: "positive" },
   "/engagement-analysis": { key: "meaningful_engagement_rate", format: (v) => `${pct(v as number | null)} engagement`,  colorType: "positive" },
   "/conversion-funnel":  { key: "urgent_leads_count",         format: (v) => `${v ?? "—"} urgent leads`,              colorType: "negative" },
+  "/lead-lifecycle":     { key: "active_leads",               format: (v) => `${fmtK(v as number | null)} active`,     colorType: "neutral"  },
   "/campaign-overview":  { key: "active_leads",               format: (v) => `${fmtK(v as number | null)} leads`,      colorType: "neutral"  },
   "/crm-health":         { key: "sync_success_rate",          format: (v) => `${pct(v as number | null)} sync`,        colorType: "positive" },
   "/system-anomalies":   { key: "anomaly_count",              format: (v) => `${v ?? "—"} anomalies`,     colorType: "negative" },
