@@ -391,9 +391,16 @@ def update_ghl_after_vm_message(job_id: str) -> None:
 
             ghl = GHLClient(settings=settings)
 
-            # Fetch GHL contact (read — always live) for field ID resolution
+            # Detect whether contact_id is a real GHL UUID or a phone string.
+            # Payloads from CSV-imported records carry phone numbers, not UUIDs.
+            def _looks_like_phone(s: str) -> bool:
+                stripped = s.replace(" ", "").replace("-", "").replace("+", "")
+                return bool(stripped) and stripped.isdigit()
+
+            # Fetch GHL contact (read — always live) for field ID resolution.
+            # If contact_id looks like a phone number, search by phone first.
             ghl_contact: dict = {}
-            if contact_id:
+            if contact_id and not _looks_like_phone(contact_id):
                 try:
                     ghl_contact = ghl.get_contact(contact_id)
                     logger.info(
@@ -404,6 +411,26 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     logger.warning(
                         "update_ghl_after_vm_message: GHL contact fetch failed (non-fatal) | "
                         "contact_id=%s: %s",
+                        contact_id, _read_exc,
+                    )
+            elif contact_id:
+                # contact_id is a phone number — resolve to real GHL UUID
+                try:
+                    found = ghl.search_contact_by_phone(contact_id)
+                    if found:
+                        ghl_contact = found
+                        resolved_id = found.get("id")
+                        if resolved_id:
+                            logger.info(
+                                "update_ghl_after_vm_message: GHL contact resolved by phone | "
+                                "phone=%s → contact_id=%s",
+                                contact_id, resolved_id,
+                            )
+                            contact_id = resolved_id
+                except Exception as _read_exc:
+                    logger.warning(
+                        "update_ghl_after_vm_message: GHL phone search failed (non-fatal) | "
+                        "phone=%s: %s",
                         contact_id, _read_exc,
                     )
 
