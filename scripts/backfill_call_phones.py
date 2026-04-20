@@ -201,8 +201,15 @@ def run_phase2(csv_path: str, dry_run: bool) -> int:
                 continue
 
             # Phone directly from CSV columns (most reliable)
-            phone_to   = row.get("phone_number_to", "").strip() or None
-            phone_from = row.get("phone_number_from", "").strip() or None
+            # Normalize: ensure + prefix so format matches recording_url extraction
+            def _norm(p: str) -> str | None:
+                p = p.strip()
+                if not p:
+                    return None
+                return p if p.startswith("+") else f"+{p}"
+
+            phone_to   = _norm(row.get("phone_number_to", ""))
+            phone_from = _norm(row.get("phone_number_from", ""))
 
             # Fallback: extract from recording_url
             if not phone_to or not phone_from:
