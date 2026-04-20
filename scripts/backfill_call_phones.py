@@ -197,22 +197,28 @@ def run_phase2(csv_path: str, dry_run: bool) -> int:
             if call_id not in needs_fix:
                 continue
 
-            # Phone from recording_url in CSV (most reliable)
-            _, phone_to_url = phones_from_url(row.get("recording_url"))
+            # Phone directly from CSV columns (most reliable)
+            phone_to   = row.get("phone_number_to", "").strip() or None
+            phone_from = row.get("phone_number_from", "").strip() or None
 
-            # Phone + contact_id from executed_actions
-            ea_data = parse_executed_actions(row.get("executed_actions"))
-            phone_to_ea  = ea_data.get("phone")
-            contact_id   = ea_data.get("contact_id")
+            # Fallback: extract from recording_url
+            if not phone_to or not phone_from:
+                url_from, url_to = phones_from_url(row.get("recording_url"))
+                phone_to   = phone_to   or url_to
+                phone_from = phone_from or url_from
 
-            phone_to = phone_to_url or phone_to_ea
-            name     = row.get("name") or row.get("lead_name")
+            # Fallback: extract from executed_actions (GHL contact)
+            ea_data    = parse_executed_actions(row.get("executed_actions"))
+            contact_id = ea_data.get("contact_id")
+            phone_to   = phone_to or ea_data.get("phone")
+
+            name = row.get("name") or row.get("lead_name")
 
             # Skip row if nothing useful
-            if not any([phone_to, contact_id, name]):
+            if not any([phone_to, phone_from, contact_id, name]):
                 continue
 
-            batch.append((phone_to, contact_id, name, call_id))
+            batch.append((phone_to, phone_from, contact_id, name, call_id))
 
     log.info("Phase 2: %d CSV rows matched call_events", len(batch))
     if dry_run:
