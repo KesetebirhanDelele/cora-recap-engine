@@ -258,20 +258,24 @@ def recover_expired_claims(
     batch_size: int = 50,
 ) -> list[str]:
     """
-    Find jobs with expired leases and reset them to 'pending'.
+    Find jobs with expired leases (claimed OR running) and reset them to 'pending'.
 
-    Called periodically by the worker recovery loop. This ensures that
-    jobs claimed by a crashed or stuck worker are eventually re-processed.
+    Called periodically by the scheduler loop. This ensures that jobs abandoned
+    by a crashed or stuck worker are eventually re-processed.
+
+    Covers two states:
+      - 'claimed': worker called claim_job but never advanced to running
+      - 'running': worker started execution but crashed before completing;
+                   the lease expired with no resolution
 
     Returns the list of job IDs that were recovered.
     """
     now = datetime.now(tz=timezone.utc)
-    # Fetch expired claimed jobs
     from sqlalchemy import select
     expired = session.scalars(
         select(ScheduledJob)
         .where(
-            ScheduledJob.status == "claimed",
+            ScheduledJob.status.in_(["claimed", "running"]),
             ScheduledJob.lease_expires_at < now,
         )
         .limit(batch_size)
@@ -294,9 +298,9 @@ def recover_expired_claims(
         if result.rowcount > 0:
             recovered_ids.append(job.id)
             logger.warning(
-                "recover_expired_claims: reset expired claim | job_id=%s "
+                "recover_expired_claims: reset expired %s | job_id=%s "
                 "original_worker=%s",
-                job.id, job.claimed_by,
+                job.status, job.id, job.claimed_by,
             )
     if recovered_ids:
         session.flush()

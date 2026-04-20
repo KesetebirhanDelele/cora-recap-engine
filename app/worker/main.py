@@ -106,6 +106,7 @@ def _run_scheduler_loop(
 
     from app.db import get_sync_session
     from app.models.scheduled_job import ScheduledJob
+    from app.worker.claim import get_worker_id
     from app.worker.scheduler import enqueue_now
 
     logger.info("scheduler_loop: started | interval=%ds", interval_seconds)
@@ -113,6 +114,13 @@ def _run_scheduler_loop(
     while True:
         try:
             with get_sync_session() as session:
+                # Recover jobs abandoned by crashed workers before scanning for
+                # due jobs — so recovered rows become immediately eligible.
+                from app.worker.claim import recover_expired_claims
+                recovered = recover_expired_claims(session, worker_id=get_worker_id())
+                if recovered:
+                    session.commit()
+
                 now = datetime.now(tz=timezone.utc)
                 due_jobs = session.scalars(
                     select(ScheduledJob)
