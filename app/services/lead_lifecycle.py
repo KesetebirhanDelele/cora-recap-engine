@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 _SUMMARY_SQL = """
 SELECT
     COUNT(*)
-        FILTER (WHERE ls.status NOT IN ('closed', 'terminal') AND ls.do_not_call IS NOT TRUE)
+        FILTER (WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE)
                                                         AS active,
     COUNT(*)
         FILTER (WHERE ls.ai_campaign_value IS NOT NULL
@@ -142,7 +142,7 @@ LEFT JOIN switch_count   sc  ON sc.contact_id  = ls.contact_id
 LEFT JOIN next_job       nj  ON nj.contact_id  = ls.contact_id
 LEFT JOIN finalization   fin ON fin.contact_id = ls.contact_id
 WHERE (:status_filter = 'all'
-       OR (:status_filter = 'active'    AND ls.status NOT IN ('closed', 'terminal') AND ls.do_not_call IS NOT TRUE)
+       OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE)
        OR (:status_filter = 'finalized' AND (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE))
        OR (:status_filter = 'vm'        AND ls.ai_campaign_value IS NOT NULL AND ls.ai_campaign_value != '3')
        OR (:status_filter = 'dnc'       AND ls.do_not_call IS TRUE))
@@ -156,7 +156,7 @@ _COUNT_SQL = """
 SELECT COUNT(*)
 FROM lead_state ls
 WHERE (:status_filter = 'all'
-       OR (:status_filter = 'active'    AND ls.status NOT IN ('closed', 'terminal') AND ls.do_not_call IS NOT TRUE)
+       OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE)
        OR (:status_filter = 'finalized' AND (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE))
        OR (:status_filter = 'vm'        AND ls.ai_campaign_value IS NOT NULL AND ls.ai_campaign_value != '3')
        OR (:status_filter = 'dnc'       AND ls.do_not_call IS TRUE))
