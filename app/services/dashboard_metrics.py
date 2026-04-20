@@ -658,7 +658,9 @@ def get_voice_performance(
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked
         FROM call_events ce
-        WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+        WHERE COALESCE(ce.call_started_at, ce.created_at)
+                  >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
