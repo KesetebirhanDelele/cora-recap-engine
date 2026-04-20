@@ -158,22 +158,23 @@ def _detect_orphan_calls(session: Any) -> None:
     max_age = now - timedelta(hours=25)     # don't scan further back
 
     orphans = session.execute(text("""
-        SELECT id, entity_id, entity_type, payload_json, run_at
-        FROM scheduled_jobs
-        WHERE job_type    = 'launch_outbound_call'
-          AND status      = 'completed'
-          AND updated_at <= :min_age
-          AND updated_at >= :max_age
+        SELECT sj.id, sj.entity_id, sj.entity_type, sj.payload_json, sj.run_at
+        FROM scheduled_jobs sj
+        WHERE sj.job_type    = 'launch_outbound_call'
+          AND sj.status      = 'completed'
+          AND sj.updated_at <= :min_age
+          AND sj.updated_at >= :max_age
           AND NOT EXISTS (
               SELECT 1 FROM call_events ce
-              WHERE ce.contact_id = entity_id
-                AND ce.created_at >= run_at
+              WHERE ce.contact_id = sj.entity_id
+                AND ce.created_at >= sj.run_at
           )
           AND NOT EXISTS (
               SELECT 1 FROM scheduled_jobs sj2
-              WHERE sj2.entity_id = entity_id
+              WHERE sj2.entity_id = sj.entity_id
                 AND sj2.job_type  = 'launch_outbound_call'
                 AND sj2.status    IN ('pending', 'claimed', 'running')
+                AND sj2.id       != sj.id
           )
     """), {"min_age": min_age, "max_age": max_age}).fetchall()
 
