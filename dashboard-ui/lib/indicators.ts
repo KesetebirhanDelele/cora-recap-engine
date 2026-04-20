@@ -79,8 +79,10 @@ type ColorType = "positive" | "negative" | "neutral" | "config";
 
 interface CardMetricConfig {
   key: keyof Omit<CardMetricsResponse, "computed_at">;
-  format: (v: number | string | null | undefined) => string;
+  format: (v: number | string | null | undefined, v2?: number | string | null | undefined) => string;
   colorType: ColorType;
+  /** Optional second metric appended to the label, e.g. pickup rate alongside call count. */
+  secondaryKey?: keyof Omit<CardMetricsResponse, "computed_at">;
 }
 
 const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
@@ -90,7 +92,7 @@ const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
   "/alerts":             { key: "active_alerts",              format: (v) => `${v ?? "—"} active alerts`, colorType: "negative" },
   "/contact-lookup":     { key: "lookup_rate",                format: (v) => `${v ?? "—"} calls/hr`,      colorType: "neutral"  },
   "/settings":           { key: "config_health",              format: (v) => `${v ?? "—"} config`,         colorType: "config"   },
-  "/voice-performance":  { key: "calls_today",                format: (v) => `${v ?? "—"} calls today`,               colorType: "neutral"  },
+  "/voice-performance":  { key: "calls_today", secondaryKey: "pickup_rate", format: (v, v2) => `${v ?? "—"} calls · ${pct(v2 as number | null)} pickup`, colorType: "positive" },
   "/engagement-analysis": { key: "meaningful_engagement_rate", format: (v) => `${pct(v as number | null)} engagement`,  colorType: "positive" },
   "/conversion-funnel":  { key: "urgent_leads_count",         format: (v) => `${v ?? "—"} urgent leads`,              colorType: "negative" },
   "/lead-lifecycle":     { key: "active_leads",               format: (v) => `${fmtK(v as number | null)} active`,     colorType: "neutral"  },
@@ -113,26 +115,34 @@ export function computeIndicator(
   if (!metric) return undefined;
 
   const { value, previous_value } = metric;
-  const text = config.format(value);
+
+  // Secondary metric value (optional — used for combined labels like "47 calls · 68% pickup")
+  const secondaryValue = config.secondaryKey
+    ? cardMetrics[config.secondaryKey]?.value
+    : undefined;
+
+  const text = config.format(value, secondaryValue);
 
   let trend: TrendArrow = "→";
   let color: IndicatorColor = "default";
 
   if (config.colorType === "config") {
     color = getConfigColor(value as string | null);
-    // No trend for config health (string enum)
   } else {
+    // For color+trend: prefer the secondary key when it carries the quality signal
+    const colorVal = config.secondaryKey
+      ? (typeof secondaryValue === "number" ? secondaryValue : null)
+      : (typeof value === "number" ? value : null);
     const numVal  = typeof value          === "number" ? value          : null;
     const numPrev = typeof previous_value === "number" ? previous_value : null;
 
     trend = getTrend(numVal, numPrev);
 
     if (config.colorType === "positive") {
-      color = getPositiveColor(numVal);
+      color = getPositiveColor(colorVal);
     } else if (config.colorType === "negative") {
-      color = getNegativeColor(numVal);
+      color = getNegativeColor(colorVal);
     }
-    // neutral: color stays "default"
   }
 
   return { text, trend, color };
