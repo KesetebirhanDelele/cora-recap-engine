@@ -224,23 +224,33 @@ def run_phase2(csv_path: str, dry_run: bool) -> int:
     if dry_run:
         log.info("Phase 2: dry-run — showing first 5 rows:")
         for row in batch[:5]:
-            log.info("  call_id=%s phone=%s contact_id=%s name=%s", row[3], row[0], row[1], row[2])
+            log.info("  call_id=%s phone_to=%s phone_from=%s contact_id=%s name=%s",
+                     row[4], row[0], row[1], row[2], row[3])
         cur.close(); conn.close()
         return len(batch)
 
-    for phone_to, contact_id, name, call_id in batch:
+    for phone_to, phone_from, contact_id, name, call_id in batch:
         # Build partial update — only overwrite NULL / empty fields
         sets = []
         params: list = []
 
+        phones_patch: dict = {}
         if phone_to:
-            sets.append("""
+            phones_patch["phone_number_to"] = phone_to
+        if phone_from:
+            phones_patch["phone_number_from"] = phone_from
+
+        if phones_patch:
+            patch_expr = " || ".join(
+                f"jsonb_build_object('{k}', %s)" for k in phones_patch
+            )
+            sets.append(f"""
                 raw_payload_json = (
-                    COALESCE(raw_payload_json::text, '{}')::jsonb
-                    || jsonb_build_object('phone_number_to', %s)
+                    COALESCE(raw_payload_json::text, '{{}}')::jsonb
+                    || {patch_expr}
                 )::json
             """)
-            params.append(phone_to)
+            params.extend(phones_patch.values())
 
         if contact_id:
             sets.append("contact_id = COALESCE(contact_id, %s)")
