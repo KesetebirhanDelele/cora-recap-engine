@@ -519,7 +519,8 @@ def get_voice_performance(
             COUNT(*) FILTER (WHERE {_BOOKED_COND})                            AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                             AS avg_duration
         FROM call_events ce
-        WHERE ce.call_started_at BETWEEN :from_dt AND :to_dt
+        WHERE ce.call_started_at >= date_trunc('week', :from_dt::timestamptz)
+          AND ce.call_started_at <= :to_dt
         GROUP BY date_trunc('week', ce.call_started_at), ce.voice_agent
         ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -531,7 +532,8 @@ def get_voice_performance(
             date_trunc('week', ce.call_started_at)  AS week_start,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts
         FROM call_events ce
-        WHERE ce.call_started_at BETWEEN :from_dt AND :to_dt
+        WHERE ce.call_started_at >= date_trunc('week', :from_dt::timestamptz)
+          AND ce.call_started_at <= :to_dt
         GROUP BY date_trunc('week', ce.call_started_at)
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
     # Build a week → true unique count lookup
