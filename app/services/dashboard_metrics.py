@@ -960,6 +960,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
       meaningful_engagement_rate — strong-intent calls / total calls
       booking_rate               — enrolled / unique contacts
       active_leads               — lead_state not closed/dnc
+      in_vm_sequence             — leads in active VM tier (tier 0–2, not finalized)
+      finalized_today            — leads finalized since midnight CST (closed/terminal/dnc)
       sync_success_rate          — task_events created / total
       anomaly_count              — exception types with spike (≥3 occurrences) in 24h
       urgent_leads_count         — calls in last 7 days with high-intent detected_intent
@@ -1107,6 +1109,36 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         {"s": w7d_start},
     ) or 0
 
+    # ── in_vm_sequence ────────────────────────────────────────────────────────
+    in_vm_sequence = _scalar("""
+        SELECT COUNT(*) FROM lead_state
+        WHERE ai_campaign_value IS NOT NULL
+          AND ai_campaign_value != '3'
+          AND (status IS NULL OR status NOT IN ('closed', 'terminal'))
+          AND do_not_call IS NOT TRUE
+    """) or 0
+    prev_in_vm_sequence = _scalar("""
+        SELECT COUNT(*) FROM lead_state
+        WHERE ai_campaign_value IS NOT NULL
+          AND ai_campaign_value != '3'
+          AND (status IS NULL OR status NOT IN ('closed', 'terminal'))
+          AND do_not_call IS NOT TRUE
+          AND created_at >= :s
+    """, {"s": w7d_start}) or 0
+
+    # ── finalized_today (resets at midnight America/Chicago) ──────────────────
+    finalized_today = int(_scalar(
+        f"SELECT COUNT(*) FROM lead_state"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f"   AND updated_at >= {_midnight_cst}"
+    ) or 0)
+    finalized_yesterday = int(_scalar(
+        f"SELECT COUNT(*) FROM lead_state"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f"   AND updated_at >= {_yesterday_start}"
+        f"   AND updated_at < {_midnight_cst}"
+    ) or 0)
+
     # ── sync_success_rate ─────────────────────────────────────────────────────
     sync_curr = _r(_scalar(
         "SELECT COUNT(*) FILTER (WHERE status = 'created')::float / NULLIF(COUNT(*), 0) FROM task_events WHERE created_at >= :s",
@@ -1170,6 +1202,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
         "booking_rate":               _pt(book_curr,               book_prev),
         "active_leads":               _pt(active_leads,            prev_active_leads),
+        "in_vm_sequence":             _pt(in_vm_sequence,          prev_in_vm_sequence),
+        "finalized_today":            _pt(finalized_today,         finalized_yesterday),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),
         "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
         "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),

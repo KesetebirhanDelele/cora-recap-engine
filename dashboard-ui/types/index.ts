@@ -483,6 +483,8 @@ export interface CardMetricsResponse {
   meaningful_engagement_rate: MetricPoint;
   booking_rate:               MetricPoint;
   active_leads:               MetricPoint;
+  in_vm_sequence:             MetricPoint;
+  finalized_today:            MetricPoint;
   sync_success_rate:          MetricPoint;
   anomaly_count:              MetricPoint;
   urgent_leads_count:         MetricPoint;
