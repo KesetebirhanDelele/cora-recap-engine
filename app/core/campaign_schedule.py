@@ -14,6 +14,10 @@ Window values are read from the app_config table first (runtime-editable via
 the dashboard Settings page), falling back to Settings fields (.env), then
 to the hard-coded defaults below.
 
+Rescheduled calls land _WINDOW_BUFFER_HOURS into the window (default: 1 hour)
+so they avoid the very start of the window when infrastructure may not yet be
+fully warmed up (e.g. Synthflow voice agent startup).
+
 Configured via dashboard Settings page or .env:
   NEW_LEAD_ACTIVE_DAYS        — comma-separated weekday numbers (default: all days)
   NEW_LEAD_ACTIVE_START_HOUR  — 24-hour start of window (default: 8)
@@ -31,6 +35,11 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+
+# How many hours past the window start rescheduled calls are placed.
+# Avoids the very edge of the window where Synthflow may silently drop
+# calls if the voice agent is not yet fully active.
+_WINDOW_BUFFER_HOURS = 1
 
 # Normalise all known campaign name variants to a canonical key
 _CAMPAIGN_KEY: dict[str, str] = {
@@ -190,20 +199,23 @@ def next_active_window_start(
     local_now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
     active_days, start_hour, end_hour = _get_window(campaign_name, settings, session)
 
-    # Already active — return unchanged
+    # Buffered start: land _WINDOW_BUFFER_HOURS into the window, capped at end_hour - 1.
+    buffered_start = min(start_hour + _WINDOW_BUFFER_HOURS, end_hour - 1)
+
+    # Already active — return unchanged (don't shift mid-window calls)
     if local_now.weekday() in active_days and start_hour <= local_now.hour < end_hour:
         return local_now
 
     # Same day, before the window opens
     if local_now.weekday() in active_days and local_now.hour < start_hour:
-        return local_now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        return local_now.replace(hour=buffered_start, minute=0, second=0, microsecond=0)
 
-    # Past end of window (or inactive day) — advance to next active day at start_hour
+    # Past end of window (or inactive day) — advance to next active day at buffered_start
     candidate = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
     for _ in range(8):
         candidate = candidate + timedelta(days=1)
         if candidate.weekday() in active_days:
-            return candidate.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+            return candidate.replace(hour=buffered_start, minute=0, second=0, microsecond=0)
 
     # Fallback: should not reach here when active_days is non-empty
     logger.error(
