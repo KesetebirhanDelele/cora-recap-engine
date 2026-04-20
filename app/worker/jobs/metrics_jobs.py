@@ -173,8 +173,9 @@ def _detect_orphan_calls(session: Any) -> None:
               SELECT 1 FROM scheduled_jobs sj2
               WHERE sj2.entity_id = sj.entity_id
                 AND sj2.job_type  = 'launch_outbound_call'
-                AND sj2.status    IN ('pending', 'claimed', 'running')
+                AND sj2.status    IN ('pending', 'claimed', 'running', 'failed')
                 AND sj2.id       != sj.id
+                AND (sj2.payload_json->>'_orphan_requeue')::boolean IS TRUE
           )
     """), {"min_age": min_age, "max_age": max_age}).fetchall()
 
