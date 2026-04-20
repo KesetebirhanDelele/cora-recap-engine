@@ -45,8 +45,6 @@ LEFT JOIN LATERAL (
     SELECT MIN(COALESCE(ce.call_started_at, ce.created_at)) AS first_contact
     FROM call_events ce
     WHERE ce.contact_id = ls.contact_id
-       OR (ls.normalized_phone IS NOT NULL
-           AND CAST(ce.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone)
 ) first_ce ON TRUE;
 """
 
@@ -64,20 +62,14 @@ WITH call_agg AS (
         (
             SELECT ce2.detected_intent
             FROM call_events ce2
-            WHERE (ce2.contact_id = ls.contact_id
-                   OR (ls.normalized_phone IS NOT NULL
-                       AND CAST(ce2.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone))
+            WHERE ce2.contact_id = ls.contact_id
               AND ce2.detected_intent IS NOT NULL
             ORDER BY COALESCE(ce2.call_started_at, ce2.created_at) DESC
             LIMIT 1
         )                                                                   AS last_intent
     FROM lead_state ls
-    LEFT JOIN call_events ce ON (
-        ce.contact_id = ls.contact_id
-        OR (ls.normalized_phone IS NOT NULL
-            AND CAST(ce.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone)
-    )
-    GROUP BY ls.contact_id, ls.normalized_phone
+    LEFT JOIN call_events ce ON ce.contact_id = ls.contact_id
+    GROUP BY ls.contact_id
 ),
 msg_agg AS (
     SELECT
