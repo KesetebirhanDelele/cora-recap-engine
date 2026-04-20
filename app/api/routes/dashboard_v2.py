@@ -172,6 +172,20 @@ def get_voice_performance(
     return _get_vp(session, from_date=from_date, to_date=to_date, all_time=all_time)
 
 
+@router.get("/lead-lifecycle")
+def get_lead_lifecycle(
+    status:   str = Query(default="all", description="all | active | finalized | vm | dnc"),
+    campaign: str = Query(default="all", description="all | Cold Lead | New Lead | Inbound"),
+    limit:    int = Query(default=100, le=500),
+    offset:   int = Query(default=0),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Lead lifecycle monitor — summary counts + per-lead journey rows."""
+    from app.services.lead_lifecycle import get_lead_lifecycle as _get_ll
+    return _get_ll(session, status_filter=status, campaign_filter=campaign,
+                   limit=limit, offset=offset)
+
+
 @router.get("/card-metrics")
 def get_card_metrics(
     session: Session = Depends(get_db),

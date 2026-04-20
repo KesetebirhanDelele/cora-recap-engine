@@ -26,6 +26,7 @@ import type {
   IgnoreRequest,
   IntentCallsResponse,
   LeadDetailResponse,
+  LeadLifecycleResponse,
   LeadTraceResponse,
   MetricsResponse,
   RecentCallsResponse,
@@ -341,4 +342,18 @@ export async function fetchIntentCalls(options: {
   if (options.direction)   params.direction   = options.direction;
   if (options.limit)       params.limit       = String(options.limit);
   return get<IntentCallsResponse>("/dashboard/intent-calls", params);
+}
+
+export async function fetchLeadLifecycle(options?: {
+  status?:   "all" | "active" | "finalized" | "vm" | "dnc";
+  campaign?: string;
+  limit?:    number;
+  offset?:   number;
+}): Promise<LeadLifecycleResponse> {
+  const params: Record<string, string> = {};
+  if (options?.status)   params.status   = options.status;
+  if (options?.campaign) params.campaign = options.campaign;
+  if (options?.limit)    params.limit    = String(options.limit);
+  if (options?.offset)   params.offset   = String(options.offset);
+  return get<LeadLifecycleResponse>("/dashboard/lead-lifecycle", params);
 }
