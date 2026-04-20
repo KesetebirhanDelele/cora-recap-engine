@@ -78,10 +78,12 @@ export default function VoicePerformancePage() {
   const defaults = defaultDates();
   const [fromDate, setFromDate] = useState(defaults.from);
   const [toDate, setToDate] = useState(defaults.to);
-  // Filtered data — drives Trends Over Time and WoW waterfall
+  // Filtered data — drives Trends Over Time
   const [data, setData] = useState<VoicePerformanceResponse | null>(null);
   // Unfiltered (all-time) data — drives KPI sidebar and bubble chart
   const [allData, setAllData] = useState<VoicePerformanceResponse | null>(null);
+  // Fixed last-7-days data — always drives WoW waterfall regardless of date picker
+  const [wowData, setWowData] = useState<VoicePerformanceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -89,15 +91,25 @@ export default function VoicePerformancePage() {
     setLoading(true);
     setError(null);
     try {
-      const [filtered, all] = await Promise.all([
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const wowFrom = sevenDaysAgo.toISOString().slice(0, 10);
+      const wowTo   = now.toISOString().slice(0, 10);
+
+      const [filtered, all, wow] = await Promise.all([
         fetchVoicePerformance({
           from_date: from ? `${from}T00:00:00Z` : undefined,
           to_date:   to   ? `${to}T23:59:59Z`   : undefined,
         }),
         fetchVoicePerformance({ all_time: true }), // no date filter — cumulative totals
+        fetchVoicePerformance({                    // fixed 7-day window — WoW only
+          from_date: `${wowFrom}T00:00:00Z`,
+          to_date:   `${wowTo}T23:59:59Z`,
+        }),
       ]);
       setData(filtered);
       setAllData(all);
+      setWowData(wow);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -110,9 +122,10 @@ export default function VoicePerformancePage() {
   // KPI sidebar and bubble chart always use cumulative (all-time) data
   const kpis              = allData?.kpis               ?? EMPTY_KPIS;
   const campaignBreakdown = allData?.campaign_breakdown ?? [];
-  // Trends and WoW waterfall use the date-filtered data
+  // Trends use the date-filtered data
   const timeSeries        = data?.time_series           ?? [];
-  const wowChanges        = data?.wow_changes           ?? {};
+  // WoW waterfall always uses the fixed last-7-days comparison
+  const wowChanges        = wowData?.wow_changes        ?? {};
 
   return (
     /*
@@ -300,6 +313,9 @@ export default function VoicePerformancePage() {
             >
               <div style={SECTION_LABEL}>
                 <span>📊</span> WoW % Performance
+                <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
+                  — last 7 days vs prior 7 days
+                </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>
                 <WowWaterfall wowChanges={wowChanges} height="100%" />
