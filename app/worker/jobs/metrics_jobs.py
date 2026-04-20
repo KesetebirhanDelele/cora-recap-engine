@@ -155,7 +155,7 @@ def _detect_orphan_calls(session: Any) -> None:
 
     now = datetime.now(tz=timezone.utc)
     min_age = now - timedelta(minutes=30)   # must be at least 30 min old
-    max_age = now - timedelta(hours=25)     # don't scan further back
+    max_age = now - timedelta(hours=3)      # only catch recent failures; historical recovery is manual
 
     orphans = session.execute(text("""
         SELECT sj.id, sj.entity_id, sj.entity_type, sj.payload_json, sj.run_at
