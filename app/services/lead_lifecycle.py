@@ -34,19 +34,19 @@ SELECT
     COUNT(*)
         FILTER (WHERE ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE)
                                                         AS finalized,
-    ROUND(AVG(
+    ROUND(CAST(AVG(
         CASE
             WHEN ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE
             THEN EXTRACT(EPOCH FROM (ls.updated_at - first_ce.first_contact)) / 86400.0
         END
-    )::numeric, 1)                                      AS avg_days_to_close
+    ) AS numeric), 1)                                   AS avg_days_to_close
 FROM lead_state ls
 LEFT JOIN LATERAL (
     SELECT MIN(COALESCE(ce.call_started_at, ce.created_at)) AS first_contact
     FROM call_events ce
     WHERE ce.contact_id = ls.contact_id
        OR (ls.normalized_phone IS NOT NULL
-           AND ce.raw_payload_json::jsonb->>'phone_number_to' = ls.normalized_phone)
+           AND CAST(ce.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone)
 ) first_ce ON TRUE;
 """
 
@@ -66,7 +66,7 @@ WITH call_agg AS (
             FROM call_events ce2
             WHERE (ce2.contact_id = ls.contact_id
                    OR (ls.normalized_phone IS NOT NULL
-                       AND ce2.raw_payload_json::jsonb->>'phone_number_to' = ls.normalized_phone))
+                       AND CAST(ce2.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone))
               AND ce2.detected_intent IS NOT NULL
             ORDER BY COALESCE(ce2.call_started_at, ce2.created_at) DESC
             LIMIT 1
@@ -75,7 +75,7 @@ WITH call_agg AS (
     LEFT JOIN call_events ce ON (
         ce.contact_id = ls.contact_id
         OR (ls.normalized_phone IS NOT NULL
-            AND ce.raw_payload_json::jsonb->>'phone_number_to' = ls.normalized_phone)
+            AND CAST(ce.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone)
     )
     GROUP BY ls.contact_id
 ),
@@ -90,7 +90,7 @@ msg_agg AS (
 initial_campaign AS (
     SELECT DISTINCT ON (entity_id)
         entity_id                               AS contact_id,
-        context::jsonb->>'from'                 AS campaign
+        CAST(context AS jsonb)->>'from'         AS campaign
     FROM audit_log
     WHERE action = 'campaign_switch'
     ORDER BY entity_id, created_at ASC
@@ -113,7 +113,7 @@ next_job AS (
 finalization AS (
     SELECT DISTINCT ON (entity_id)
         entity_id                               AS contact_id,
-        context::jsonb->>'reason'               AS reason,
+        CAST(context AS jsonb)->>'reason'       AS reason,
         created_at                              AS finalized_at
     FROM audit_log
     WHERE action IN ('finalize', 'cancel', 'campaign_off', 'do_not_call')
@@ -130,9 +130,9 @@ SELECT
     ls.do_not_call,
     ca.first_contact_at,
     ca.last_contact_at,
-    ROUND(
+    CAST(ROUND(
         EXTRACT(EPOCH FROM (NOW() - ca.first_contact_at)) / 86400.0
-    )::int                                          AS days_active,
+    ) AS int)                                       AS days_active,
     COALESCE(ca.total_calls, 0)                     AS total_calls,
     COALESCE(ma.total_sms, 0)                       AS total_sms,
     COALESCE(ma.total_email, 0)                     AS total_email,
