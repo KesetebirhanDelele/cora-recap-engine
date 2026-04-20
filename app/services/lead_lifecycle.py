@@ -90,7 +90,7 @@ msg_agg AS (
 initial_campaign AS (
     SELECT DISTINCT ON (entity_id)
         entity_id                               AS contact_id,
-        CAST(context AS jsonb)->>'from'         AS campaign
+        context_json->>'from'                  AS campaign
     FROM audit_log
     WHERE action = 'campaign_switch'
     ORDER BY entity_id, created_at ASC
@@ -113,7 +113,7 @@ next_job AS (
 finalization AS (
     SELECT DISTINCT ON (entity_id)
         entity_id                               AS contact_id,
-        CAST(context AS jsonb)->>'reason'       AS reason,
+        context_json->>'reason'                AS reason,
         created_at                              AS finalized_at
     FROM audit_log
     WHERE action IN ('finalize', 'cancel', 'campaign_off', 'do_not_call')
