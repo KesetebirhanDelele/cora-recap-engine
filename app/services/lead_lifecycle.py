@@ -82,8 +82,8 @@ WITH call_agg AS (
 msg_agg AS (
     SELECT
         contact_id,
-        COUNT(*) FILTER (WHERE action_type = 'send_sms')    AS total_sms,
-        COUNT(*) FILTER (WHERE action_type = 'send_email')  AS total_email
+        COUNT(*) FILTER (WHERE action_type = 'sms')    AS total_sms,
+        COUNT(*) FILTER (WHERE action_type = 'email')  AS total_email
     FROM shadow_actions
     GROUP BY contact_id
 ),
@@ -102,13 +102,13 @@ switch_count AS (
     GROUP BY entity_id
 ),
 next_job AS (
-    SELECT DISTINCT ON (contact_id)
-        contact_id,
+    SELECT DISTINCT ON (entity_id)
+        entity_id   AS contact_id,
         job_type    AS next_job_type,
         run_at      AS next_run_at
     FROM scheduled_jobs
     WHERE status = 'pending'
-    ORDER BY contact_id, run_at ASC
+    ORDER BY entity_id, run_at ASC
 ),
 finalization AS (
     SELECT DISTINCT ON (entity_id)
