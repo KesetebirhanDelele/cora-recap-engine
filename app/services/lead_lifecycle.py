@@ -77,7 +77,7 @@ WITH call_agg AS (
         OR (ls.normalized_phone IS NOT NULL
             AND CAST(ce.raw_payload_json AS jsonb)->>'phone_number_to' = ls.normalized_phone)
     )
-    GROUP BY ls.contact_id
+    GROUP BY ls.contact_id, ls.normalized_phone
 ),
 msg_agg AS (
     SELECT
