@@ -154,8 +154,9 @@ def launch_outbound_call_job(job_id: str) -> None:
                     "correlation_id": correlation_id,
                     "error": str(exc),
                 },
-                entity_type="test_call",
-                entity_id=correlation_id,
+                entity_type="lead",
+                entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise

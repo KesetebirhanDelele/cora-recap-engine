@@ -314,6 +314,7 @@ def run_call_analysis(job_id: str) -> None:
                 entity_id=call_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 

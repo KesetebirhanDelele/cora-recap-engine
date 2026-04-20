@@ -203,6 +203,7 @@ def send_sms_job(job_id: str) -> None:
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 
@@ -336,6 +337,7 @@ def send_email_job(job_id: str) -> None:
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 

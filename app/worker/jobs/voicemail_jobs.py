@@ -216,6 +216,7 @@ def process_voicemail_tier(job_id: str) -> None:
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 

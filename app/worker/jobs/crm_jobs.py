@@ -325,6 +325,7 @@ def create_crm_task(job_id: str) -> None:
                 entity_id=call_id or call_event_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
             # does not queue an additional automatic retry after the limit.
             if not flags.ghl_writes_enabled and attempt_count >= 2:
@@ -513,6 +514,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
             # does not queue an additional automatic retry after the limit.
             if not flags.ghl_writes_enabled and attempt_count >= 2:
@@ -710,6 +712,7 @@ def send_student_summary(job_id: str) -> None:
                 entity_id=call_id or call_event_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 
