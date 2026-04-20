@@ -262,27 +262,9 @@ class SynthflowClient:
 
                 resp.raise_for_status()
                 result = resp.json() if resp.content else {}
-
-                # Layer 1: surface silent failures — Synthflow occasionally
-                # returns HTTP 200 with an empty body when the voice agent is
-                # inactive, meaning the call was accepted but never placed.
-                if not result:
-                    logger.warning(
-                        "Synthflow launch_new_lead_call: empty response body "
-                        "(HTTP 200 but no payload) — voice agent may be inactive "
-                        "and call was likely NOT placed | campaign=%s",
-                        campaign_name,
-                    )
-                    raise SynthflowError(
-                        "Synthflow accepted the launch request (HTTP 200) but returned "
-                        "an empty response body — call was likely not placed. "
-                        "Check that the Synthflow voice agent is active.",
-                        status_code=200,
-                    )
-
                 logger.info(
-                    "Synthflow launch_new_lead_call: call accepted | campaign=%s response_keys=%s",
-                    campaign_name, list(result.keys()),
+                    "Synthflow launch_new_lead_call: call accepted | campaign=%s",
+                    campaign_name,
                 )
                 return result
 
