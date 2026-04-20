@@ -37,6 +37,9 @@ log = logging.getLogger(__name__)
 def _get_conn():
     import psycopg2
     url = os.environ.get("DATABASE_URL") or os.environ.get("SYNC_DATABASE_URL")
+    if url:
+        # Strip SQLAlchemy driver prefix so psycopg2 can parse it
+        url = url.replace("postgresql+psycopg2://", "postgresql://")
     if not url:
         # Build from parts
         host = os.environ.get("POSTGRES_HOST", "localhost")
