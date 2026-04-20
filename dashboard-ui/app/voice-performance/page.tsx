@@ -119,9 +119,10 @@ export default function VoicePerformancePage() {
 
   useEffect(() => { load(fromDate, toDate); }, [fromDate, toDate, load]);
 
-  // KPI sidebar and bubble chart always use cumulative (all-time) data
+  // KPI sidebar always uses cumulative (all-time) data
   const kpis              = allData?.kpis               ?? EMPTY_KPIS;
-  const campaignBreakdown = allData?.campaign_breakdown ?? [];
+  // Bubble chart uses the selected date range
+  const campaignBreakdown = data?.campaign_breakdown    ?? [];
   // Trends use the date-filtered data
   const timeSeries        = data?.time_series           ?? [];
   // WoW waterfall always uses the fixed last-7-days comparison
@@ -339,7 +340,7 @@ export default function VoicePerformancePage() {
               <div style={SECTION_LABEL}>
                 <span>🎯</span> Are we wasting calls?
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — pickup vs booking %, bubble = calls · all-time
+                  — pickup vs booking %, bubble = calls · selected range
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>
