@@ -121,11 +121,13 @@ def _run_cycle(session: Any, settings: Any) -> None:
     except Exception as exc:
         logger.error("collect_metrics: alert evaluation failed: %s", exc)
 
-    # 4. Detect and requeue orphaned outbound call jobs
-    try:
-        _detect_orphan_calls(session)
-    except Exception as exc:
-        logger.error("collect_metrics: orphan call detection failed: %s", exc)
+    # 4. Orphan call detection — disabled pending Synthflow stability confirmation
+    # Re-enable once Synthflow is verified working and the 138 leads are
+    # manually re-queued. See: _detect_orphan_calls()
+    # try:
+    #     _detect_orphan_calls(session)
+    # except Exception as exc:
+    #     logger.error("collect_metrics: orphan call detection failed: %s", exc)
 
     # 5. Prune expired rows
     try:
