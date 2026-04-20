@@ -1019,6 +1019,25 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     except Exception:
         config_health = "error"
 
+    # ── calls_today (resets at midnight America/Chicago) ─────────────────────
+    _midnight_cst = (
+        "DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Chicago')"
+        " AT TIME ZONE 'America/Chicago'"
+    )
+    _yesterday_start = (
+        "(DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Chicago') - INTERVAL '1 day')"
+        " AT TIME ZONE 'America/Chicago'"
+    )
+    calls_today = int(_scalar(
+        f"SELECT COUNT(*) FROM call_events"
+        f" WHERE COALESCE(call_started_at, created_at) >= {_midnight_cst}"
+    ) or 0)
+    calls_yesterday = int(_scalar(
+        f"SELECT COUNT(*) FROM call_events"
+        f" WHERE COALESCE(call_started_at, created_at) >= {_yesterday_start}"
+        f"   AND COALESCE(call_started_at, created_at) < {_midnight_cst}"
+    ) or 0)
+
     # ── pickup_rate ───────────────────────────────────────────────────────────
     pickup_curr = _r(_scalar(
         "SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at >= :s",
@@ -1146,6 +1165,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "active_alerts":              _pt(active_alerts,           None),
         "lookup_rate":                _pt(lookup_curr,             lookup_prev),
         "config_health":              _pt(config_health,           config_health),
+        "calls_today":                _pt(calls_today,             calls_yesterday),
         "pickup_rate":                _pt(pickup_curr,             pickup_prev),
         "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
         "booking_rate":               _pt(book_curr,               book_prev),

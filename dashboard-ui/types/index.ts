@@ -478,6 +478,7 @@ export interface CardMetricsResponse {
   active_alerts:              MetricPoint;
   lookup_rate:                MetricPoint;
   config_health:              MetricPoint;
+  calls_today:                MetricPoint;
   pickup_rate:                MetricPoint;
   meaningful_engagement_rate: MetricPoint;
   booking_rate:               MetricPoint;
