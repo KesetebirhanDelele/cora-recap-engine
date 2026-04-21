@@ -117,10 +117,8 @@ export default function VoicePerformancePage() {
   const campaignBreakdown = data?.campaign_breakdown    ?? [];
   // Trends use the date-filtered data
   const timeSeries        = data?.time_series           ?? [];
-  // WoW waterfall always uses the fixed last-7-days comparison
+  // Both WoW waterfall AND KPI sidebar use the same calendar-week WoW — single source of truth
   const wowChanges        = wowData?.wow_changes        ?? {};
-  // KPI sidebar uses the date-range wow_changes (not the 7-day window)
-  const kpiWowChanges     = data?.wow_changes           ?? {};
 
   return (
     /*
@@ -203,7 +201,7 @@ export default function VoicePerformancePage() {
           <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "0.35rem", fontStyle: "italic" }}>
             All-time · cumulative
           </div>
-          <KpiSidebar kpis={kpis} wowChanges={kpiWowChanges} />
+          <KpiSidebar kpis={kpis} wowChanges={wowChanges} />
         </div>
 
         {/*
