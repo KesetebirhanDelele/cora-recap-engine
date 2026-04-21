@@ -87,26 +87,32 @@ export default function VoicePerformancePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Date-sensitive fetches — re-run whenever the date picker changes
   const load = useCallback(async (from: string, to: string) => {
     setLoading(true);
     setError(null);
     try {
-      const [filtered, all, wow] = await Promise.all([
+      const [filtered, wow] = await Promise.all([
         fetchVoicePerformance({
           from_date: from ? `${from}T00:00:00Z` : undefined,
           to_date:   to   ? `${to}T23:59:59Z`   : undefined,
         }),
-        fetchVoicePerformance({ all_time: true }), // no date filter — cumulative totals
         fetchVoicePerformance({ wow_mode: true }), // calendar-week WoW: Mon–now vs Mon–Sun last week
       ]);
       setData(filtered);
-      setAllData(all);
       setWowData(wow);
     } catch (e) {
       setError(String(e));
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  // All-time fetch — runs once on mount, never re-runs on date picker changes
+  useEffect(() => {
+    fetchVoicePerformance({ all_time: true })
+      .then(setAllData)
+      .catch(() => {/* allData stays null; bubble chart shows empty state */});
   }, []);
 
   useEffect(() => { load(fromDate, toDate); }, [fromDate, toDate, load]);
