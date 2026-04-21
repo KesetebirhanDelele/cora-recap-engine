@@ -1431,8 +1431,10 @@ def update_mode(
         missing = []
         if not settings.synthflow_api_key:
             missing.append("SYNTHFLOW_API_KEY")
-        if not settings.synthflow_launch_workflow_url:
-            missing.append("SYNTHFLOW_LAUNCH_WORKFLOW_URL")
+        if not settings.synthflow_launch_workflow_url_new:
+            missing.append("SYNTHFLOW_LAUNCH_WORKFLOW_URL_New")
+        if not settings.synthflow_launch_workflow_url_cold:
+            missing.append("SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold")
         if missing:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

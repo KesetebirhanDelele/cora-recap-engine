@@ -206,10 +206,16 @@ def get_preflight_status(session: Session, settings: Settings) -> list[Preflight
         "SYNTHFLOW_API_KEY is missing — outbound calls will fail",
     )
     _check(
-        "synthflow_launch_url", "Synthflow Launch URL",
-        bool(settings.synthflow_launch_workflow_url),
+        "synthflow_launch_url_new", "Synthflow Launch URL (New Lead)",
+        bool(settings.synthflow_launch_workflow_url_new),
         "Configured",
-        "SYNTHFLOW_LAUNCH_WORKFLOW_URL is missing — outbound calls will fail",
+        "SYNTHFLOW_LAUNCH_WORKFLOW_URL_New is missing — New Lead outbound calls will fail",
+    )
+    _check(
+        "synthflow_launch_url_cold", "Synthflow Launch URL (Cold Lead)",
+        bool(settings.synthflow_launch_workflow_url_cold),
+        "Configured",
+        "SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold is missing — Cold Lead outbound calls will fail",
     )
 
     # ── GHL field mappings ────────────────────────────────────────────────────

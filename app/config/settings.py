@@ -128,8 +128,9 @@ class Settings(BaseSettings):
     synthflow_model_id: Optional[str] = None
     synthflow_timeout_seconds: int = 30
     synthflow_retry_max: int = 3
-    # URL of the Synthflow "Make Call" Catch Webhook — triggers initial outbound call
-    synthflow_launch_workflow_url: Optional[str] = None
+    # Per-campaign "Make Call" Catch Webhook URLs — selected based on lead campaign
+    synthflow_launch_workflow_url_new: Optional[str] = None   # New Lead campaign
+    synthflow_launch_workflow_url_cold: Optional[str] = None  # Cold Lead campaign
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None
@@ -360,12 +361,30 @@ class Settings(BaseSettings):
                 f"Synthflow integration requires: {', '.join(missing)}"
             )
 
-    def validate_for_synthflow_launch(self) -> None:
-        """Raise ConfigError if the Make Call workflow URL is not configured."""
-        if not self.synthflow_launch_workflow_url:
+    def get_synthflow_launch_url(self, campaign_name: str) -> str:
+        """
+        Return the Synthflow Make Call webhook URL for the given campaign.
+
+        Selects SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold for Cold Lead campaigns,
+        SYNTHFLOW_LAUNCH_WORKFLOW_URL_New for all others (New Lead, Inbound, etc.).
+        Raises ConfigError if the required URL is not configured.
+        """
+        is_cold = "cold" in (campaign_name or "").lower()
+        if is_cold:
+            url = self.synthflow_launch_workflow_url_cold
+            key = "SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold"
+        else:
+            url = self.synthflow_launch_workflow_url_new
+            key = "SYNTHFLOW_LAUNCH_WORKFLOW_URL_New"
+        if not url:
             raise ConfigError(
-                "Synthflow outbound call launch requires SYNTHFLOW_LAUNCH_WORKFLOW_URL"
+                f"Synthflow outbound call launch requires {key} (campaign={campaign_name!r})"
             )
+        return url
+
+    def validate_for_synthflow_launch(self, campaign_name: str = "") -> None:
+        """Raise ConfigError if the Make Call workflow URL for the campaign is not configured."""
+        self.get_synthflow_launch_url(campaign_name)
 
     def validate_for_sheets_sync(self) -> None:
         """Raise ConfigError if Google Sheets shadow sync cannot be initialized.

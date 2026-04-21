@@ -222,7 +222,7 @@ def test_same_day_before_window_returns_start_hour():
     now = _dt(weekday=0, hour=6)
     result = next_active_window_start("New Lead", now, _settings())
     assert result.weekday() == 0
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
     assert result.minute == 0
 
 
@@ -231,7 +231,7 @@ def test_past_window_on_active_day_returns_next_active_day():
     now = _dt(weekday=0, hour=23)
     result = next_active_window_start("New Lead", now, _settings())
     assert result.weekday() == 1  # Tuesday
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
 
 
 def test_cold_lead_friday_evening_returns_monday():
@@ -239,7 +239,7 @@ def test_cold_lead_friday_evening_returns_monday():
     now = _dt(weekday=4, hour=22, minute=30)
     result = next_active_window_start("Cold Lead", now, _settings())
     assert result.weekday() == 0  # Monday
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
     assert result.minute == 0
 
 
@@ -248,7 +248,7 @@ def test_cold_lead_saturday_returns_monday():
     now = _dt(weekday=5, hour=10)
     result = next_active_window_start("Cold Lead", now, _settings())
     assert result.weekday() == 0  # Monday
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
 
 
 def test_cold_lead_sunday_returns_monday():
@@ -256,7 +256,7 @@ def test_cold_lead_sunday_returns_monday():
     now = _dt(weekday=6, hour=15)
     result = next_active_window_start("Cold Lead", now, _settings())
     assert result.weekday() == 0
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
 
 
 def test_new_lead_saturday_past_window_returns_sunday():
@@ -264,7 +264,7 @@ def test_new_lead_saturday_past_window_returns_sunday():
     now = _dt(weekday=5, hour=23)
     result = next_active_window_start("New Lead", now, _settings())
     assert result.weekday() == 6  # Sunday
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
 
 
 def test_result_is_timezone_aware():
@@ -286,7 +286,7 @@ def test_contact_tz_used_for_reschedule():
     now = _dt(weekday=0, hour=22, minute=30, tz=CHICAGO)
     result = next_active_window_start("New Lead", now, _settings(), contact_tz="America/New_York")
     assert result.weekday() == 1  # Tuesday
-    assert result.hour == 8
+    assert result.hour == 9  # buffered 1h into window (start=8 + _WINDOW_BUFFER_HOURS=1)
     # Result should be in Eastern timezone
     eastern = ZoneInfo("America/New_York")
     assert result.tzinfo.key == eastern.key  # type: ignore[attr-defined]

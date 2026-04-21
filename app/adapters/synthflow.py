@@ -6,7 +6,7 @@ Auth: Bearer token (SYNTHFLOW_API_KEY).
 
 Stop conditions confirmed before implementation:
   - SYNTHFLOW_API_KEY: present in config ✓
-  - SYNTHFLOW_MODEL_ID: ebd5ad8c-64d6-4316-b3ad-b056c74ce973 ✓
+  - SYNTHFLOW_MODEL_ID:  ✓
   - Auth shape: Authorization: Bearer {api_key} ✓
   - Endpoint: POST SYNTHFLOW_BASE_URL (https://api.synthflow.ai/v2/calls) ✓
 
@@ -217,18 +217,17 @@ class SynthflowClient:
         _retry_delay: float = 1.0,
     ) -> dict:
         """
-        Trigger Synthflow's "Make Call" workflow for a New Lead outbound call.
+        Trigger Synthflow's "Make Call" workflow for an outbound call.
 
-        Posts to SYNTHFLOW_LAUNCH_WORKFLOW_URL (the Catch Webhook trigger),
-        NOT to the v2/calls API used by schedule_callback().
+        Selects the webhook URL based on campaign_name:
+          Cold Lead  → SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold
+          New Lead / others → SYNTHFLOW_LAUNCH_WORKFLOW_URL_New
 
         Returns the raw response dict from Synthflow.
         The caller must treat a successful response as "call requested",
         not "call completed" — completion arrives via the webhook callback.
         """
-        self.settings.validate_for_synthflow_launch()
-
-        url = self.settings.synthflow_launch_workflow_url
+        url = self.settings.get_synthflow_launch_url(campaign_name)
         payload: dict = {
             "phone": phone,
             "name": lead_name,
