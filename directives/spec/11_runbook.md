@@ -31,7 +31,18 @@ WS_URL=ws://<server-ip>:8001/ws
 ALLOW_ORIGINS=http://<server-ip>:3000
 SECRET_KEY=<strong-random-secret>
 WEBHOOK_SHARED_SECRET=<strong-random-secret>
+
+# Synthflow — per-campaign Make Call webhook URLs (required for outbound calls)
+SYNTHFLOW_API_KEY=<synthflow-api-key>
+SYNTHFLOW_LAUNCH_WORKFLOW_URL_New=https://workflow.synthflow.ai/api/v1/webhooks/<new-lead-webhook-id>
+SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold=https://workflow.synthflow.ai/api/v1/webhooks/<cold-lead-webhook-id>
 ```
+
+Synthflow routing rules:
+- `SYNTHFLOW_LAUNCH_WORKFLOW_URL_New` — triggers the New Lead Make Call workflow (`p6ihFj7HmplXM2WiuVsaC`)
+- `SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold` — triggers the Cold Lead Make Call workflow (`33J546NiXxUUIRCbywNVH`)
+- The single legacy `SYNTHFLOW_LAUNCH_WORKFLOW_URL` field no longer exists — both URLs are required
+- `JylDXjF8QB0Skr5cQzGGm` must never be used — it is a test workflow that silently drops calls
 
 Rules:
 - `DATABASE_URL` must use Docker service name `postgres:5432` (not `localhost` or `host.docker.internal`)

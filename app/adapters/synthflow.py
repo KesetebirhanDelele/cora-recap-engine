@@ -1,23 +1,25 @@
 """
-Synthflow adapter — Phase 7.
+Synthflow adapter.
 
-Schedules outbound AI callback calls for voicemail tier progression.
+Triggers outbound AI calls via per-campaign Make Call webhooks.
 Auth: Bearer token (SYNTHFLOW_API_KEY).
 
-Stop conditions confirmed before implementation:
-  - SYNTHFLOW_API_KEY: present in config ✓
-  - SYNTHFLOW_MODEL_ID:  ✓
-  - Auth shape: Authorization: Bearer {api_key} ✓
-  - Endpoint: POST SYNTHFLOW_BASE_URL (https://api.synthflow.ai/v2/calls) ✓
+Voice agent / webhook routing (campaign → webhook → voice agent):
+  New Lead  → SYNTHFLOW_LAUNCH_WORKFLOW_URL_New  (p6ihFj7HmplXM2WiuVsaC)
+              → model_id 2608601d-bce6-4bb8-bc0f-f7df9dbf5971
+  Cold Lead → SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold (33J546NiXxUUIRCbywNVH)
+              → model_id 95fd0659-7446-423c-bc51-764c3060c90f
+  Inbound   → no outbound Make Call (inbound only)
+              → model_id f98454c1-2cd4-476c-b6f2-c5c425689e61
 
-Duplicate callback prevention:
-  Callers MUST check for existing pending scheduled_jobs before calling
-  schedule_callback(). This adapter does not enforce idempotency itself —
-  that responsibility belongs to the voicemail_jobs service layer.
+  Do NOT use JylDXjF8QB0Skr5cQzGGm — test/Nexus workflow, silently drops calls.
 
-New Lead policy stop condition:
-  validate_for_new_lead_vm_policy() must pass before New Lead callbacks
-  are scheduled. New Lead tier delays are currently unresolved.
+URL selection: settings.get_synthflow_launch_url(campaign_name)
+  Raises ConfigError if the required URL is not configured.
+
+schedule_callback() / SYNTHFLOW_MODEL_ID / SYNTHFLOW_BASE_URL:
+  Dead config — schedule_callback() is never called in production.
+  All outbound calls use launch_new_lead_call() only.
 
 Retry policy:
   Retries on 429, 5xx, TimeoutException.
