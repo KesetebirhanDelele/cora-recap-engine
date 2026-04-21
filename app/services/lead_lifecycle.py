@@ -74,9 +74,9 @@ WITH call_agg AS (
 msg_agg AS (
     SELECT
         contact_id,
-        COUNT(*) FILTER (WHERE action_type = 'sms')    AS total_sms,
-        COUNT(*) FILTER (WHERE action_type = 'email')  AS total_email
-    FROM shadow_actions
+        COUNT(*) FILTER (WHERE channel = 'sms')        AS total_sms,
+        COUNT(*) FILTER (WHERE channel = 'email')      AS total_email
+    FROM outbound_messages
     GROUP BY contact_id
 ),
 initial_campaign AS (
