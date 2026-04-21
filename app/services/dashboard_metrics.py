@@ -676,14 +676,15 @@ def get_voice_performance(
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked,
-            COUNT(*) FILTER (WHERE ce.status IS NOT NULL AND ce.status <> '') AS known_status_calls
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked
         FROM call_events ce
         WHERE COALESCE(ce.call_started_at, ce.created_at)
                   >= date_trunc('week', CAST(:from_dt AS timestamptz))
           AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
           AND NOT ce.report_excluded
+          AND ce.status IS NOT NULL
+          AND ce.status <> ''
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -694,12 +695,11 @@ def get_voice_performance(
         u = int(r[2])
         c = int(r[3])
         b = int(r[4])
-        k = int(r[5])  # calls with known (non-null, non-empty) status — pickup rate denominator
         avg_cpd = round(t / max(1.0, days), 1)
         campaign_breakdown.append({
             "campaign": r[0],
             "total_calls": t,
-            "pickup_rate": round(c / k * 100, 1) if k else 0.0,
+            "pickup_rate": round(c / t * 100, 1) if t else 0.0,
             "booking_rate": round(b / u * 100, 1) if u else 0.0,
             "avg_calls_per_day": avg_cpd,
         })
