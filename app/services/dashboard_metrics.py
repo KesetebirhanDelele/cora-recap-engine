@@ -425,6 +425,7 @@ def _compute_voice_kpis(
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+          AND NOT ce.report_excluded
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchone()
 
     unique_contacts = int(row[0]) if row and row[0] else 0
@@ -521,6 +522,7 @@ def get_voice_performance(
         FROM call_events ce
         WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
           AND ce.call_started_at <= :to_dt
+          AND NOT ce.report_excluded
         GROUP BY date_trunc('week', ce.call_started_at), ce.voice_agent
         ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -534,6 +536,7 @@ def get_voice_performance(
         FROM call_events ce
         WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
           AND ce.call_started_at <= :to_dt
+          AND NOT ce.report_excluded
         GROUP BY date_trunc('week', ce.call_started_at)
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
     # Build a week → true unique count lookup
@@ -662,6 +665,7 @@ def get_voice_performance(
                   >= date_trunc('week', CAST(:from_dt AS timestamptz))
           AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
+          AND NOT ce.report_excluded
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -717,6 +721,7 @@ def get_ai_timeseries(
             )                                                                 AS unknown_count
         FROM call_events
         WHERE created_at BETWEEN :from_dt AND :to_dt
+          AND NOT report_excluded
         GROUP BY date_trunc('week', created_at)
         ORDER BY week_start ASC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -730,6 +735,7 @@ def get_ai_timeseries(
         FROM call_events
         WHERE created_at BETWEEN :from_dt AND :to_dt
           AND detected_intent IS NOT NULL
+          AND NOT report_excluded
         GROUP BY date_trunc('week', created_at), detected_intent
         ORDER BY week_start ASC, cnt DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
