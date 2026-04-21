@@ -91,21 +91,13 @@ export default function VoicePerformancePage() {
     setLoading(true);
     setError(null);
     try {
-      const now = new Date();
-      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      const wowFrom = sevenDaysAgo.toISOString().slice(0, 10);
-      const wowTo   = now.toISOString().slice(0, 10);
-
       const [filtered, all, wow] = await Promise.all([
         fetchVoicePerformance({
           from_date: from ? `${from}T00:00:00Z` : undefined,
           to_date:   to   ? `${to}T23:59:59Z`   : undefined,
         }),
         fetchVoicePerformance({ all_time: true }), // no date filter — cumulative totals
-        fetchVoicePerformance({                    // fixed 7-day window — WoW only
-          from_date: `${wowFrom}T00:00:00Z`,
-          to_date:   `${wowTo}T23:59:59Z`,
-        }),
+        fetchVoicePerformance({ wow_mode: true }), // calendar-week WoW: Mon–now vs Mon–Sun last week
       ]);
       setData(filtered);
       setAllData(all);
@@ -317,7 +309,7 @@ export default function VoicePerformancePage() {
               <div style={SECTION_LABEL}>
                 <span>📊</span> WoW % Performance
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — last 7 days vs prior 7 days
+                  — this week vs last week (full)
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>

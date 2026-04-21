@@ -182,11 +182,13 @@ export async function fetchVoicePerformance(options?: {
   from_date?: string;
   to_date?: string;
   all_time?: boolean;
+  wow_mode?: boolean;
 }): Promise<VoicePerformanceResponse> {
   const params: Record<string, string> = {};
   if (options?.from_date) params.from_date = options.from_date;
   if (options?.to_date) params.to_date = options.to_date;
   if (options?.all_time) params.all_time = "true";
+  if (options?.wow_mode) params.wow_mode = "true";
   return get<VoicePerformanceResponse>("/dashboard/voice-performance", params);
 }
 

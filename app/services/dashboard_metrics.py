@@ -456,6 +456,7 @@ def get_voice_performance(
     from_date: datetime | None = None,
     to_date: datetime | None = None,
     all_time: bool = False,
+    wow_mode: bool = False,
 ) -> dict[str, Any]:
     """
     Voice Call Performance analytics — feeds /voice-performance dashboard page.
@@ -467,6 +468,10 @@ def get_voice_performance(
 
     all_time=True: skips the default 28-day floor and queries from the earliest
     record, so KPIs and campaign_breakdown reflect cumulative totals.
+
+    wow_mode=True: wow_changes is computed as this calendar week (Mon–now) vs
+    last calendar week (Mon–Sun, complete), regardless of from_date/to_date.
+    All other response fields still reflect the requested date window.
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
@@ -504,7 +509,19 @@ def get_voice_performance(
             return None
         return round((curr - prev) / abs(prev) * 100, 1)
 
-    wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
+    if wow_mode:
+        # Calendar-week WoW: this week (Mon 00:00 UTC → now) vs last week (Mon–Sun)
+        weekday = now.weekday()  # Mon=0 … Sun=6
+        this_week_start = (now - timedelta(days=weekday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        last_week_start = this_week_start - timedelta(days=7)
+        days_this_week = max(1.0, (now - this_week_start).total_seconds() / 86400)
+        wow_curr = _compute_voice_kpis(session, this_week_start, now, days_this_week)
+        wow_prev = _compute_voice_kpis(session, last_week_start, this_week_start, 7.0)
+        wow_changes = {k: _wow(wow_curr.get(k), wow_prev.get(k)) for k in wow_keys}
+    else:
+        wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 
     # ── Weekly time series ────────────────────────────────────────────────────
     # Group by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
