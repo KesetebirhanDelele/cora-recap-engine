@@ -20,6 +20,7 @@ Covers:
   14. cancel_job: non-existent job → returns False
   15. recover_expired_claims: resets expired claimed jobs to pending
   16. recover_expired_claims: does not reset non-expired claimed jobs
+  17. recover_expired_claims: resets expired running jobs to pending
 """
 from __future__ import annotations
 
@@ -287,3 +288,26 @@ def test_recover_expired_claims_leaves_valid_claims(session):
     session.refresh(job)
     assert job.status == "claimed"
     assert job.claimed_by == "active-worker"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 17. recover_expired_claims: resets expired running jobs to pending
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_recover_expired_claims_resets_expired_running(session):
+    """Jobs that reached 'running' but whose lease expired (worker crashed mid-job)."""
+    past = datetime.now(tz=timezone.utc) - timedelta(minutes=10)
+    job = _make_job(
+        session,
+        status="running",
+        claimed_by="crashed-worker",
+        claimed_at=past,
+        lease_expires_at=past,
+    )
+    session.flush()
+
+    recovered = recover_expired_claims(session, worker_id="recovery-worker")
+    assert job.id in recovered
+    session.refresh(job)
+    assert job.status == "pending"
+    assert job.claimed_by is None

@@ -121,11 +121,113 @@ def _run_cycle(session: Any, settings: Any) -> None:
     except Exception as exc:
         logger.error("collect_metrics: alert evaluation failed: %s", exc)
 
-    # 4. Prune expired rows
+    # 4. Orphan call detection — disabled pending Synthflow stability confirmation
+    # Re-enable once Synthflow is verified working and the 138 leads are
+    # manually re-queued. See: _detect_orphan_calls()
+    # try:
+    #     _detect_orphan_calls(session)
+    # except Exception as exc:
+    #     logger.error("collect_metrics: orphan call detection failed: %s", exc)
+
+    # 5. Prune expired rows
     try:
         _prune_expired_rows(session, settings, now)
     except Exception as exc:
         logger.error("collect_metrics: pruning failed: %s", exc)
+
+
+def _detect_orphan_calls(session: Any) -> None:
+    """
+    Find launch_outbound_call jobs that completed but produced no call_event.
+
+    A completed job with no matching call_event after 30 minutes means
+    Synthflow accepted the HTTP request but silently dropped the call
+    (e.g. voice agent was inactive). Each orphan is re-queued immediately
+    (the active-window check in launch_outbound_call_job will defer it to
+    the next allowed window) and a warning exception is created.
+
+    Lookback window: 30 minutes to 25 hours old, so:
+      - Webhooks that are just slow are not prematurely flagged.
+      - The 25h cap avoids re-processing historical data on every cycle.
+    """
+    from sqlalchemy import text
+
+    from app.worker.exceptions import create_exception
+    from app.worker.scheduler import schedule_job
+
+    now = datetime.now(tz=timezone.utc)
+    min_age = now - timedelta(minutes=30)   # must be at least 30 min old
+    max_age = now - timedelta(hours=3)      # only catch recent failures; historical recovery is manual
+
+    orphans = session.execute(text("""
+        SELECT sj.id, sj.entity_id, sj.entity_type, sj.payload_json, sj.run_at
+        FROM scheduled_jobs sj
+        WHERE sj.job_type    = 'launch_outbound_call'
+          AND sj.status      = 'completed'
+          AND sj.updated_at <= :min_age
+          AND sj.updated_at >= :max_age
+          AND NOT EXISTS (
+              SELECT 1 FROM call_events ce
+              WHERE ce.contact_id = sj.entity_id
+                AND ce.created_at >= sj.run_at
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj2
+              WHERE sj2.entity_id = sj.entity_id
+                AND sj2.job_type  = 'launch_outbound_call'
+                AND sj2.status    IN ('pending', 'claimed', 'running', 'failed')
+                AND sj2.id       != sj.id
+                AND (sj2.payload_json->>'_orphan_requeue')::boolean IS TRUE
+          )
+    """), {"min_age": min_age, "max_age": max_age}).fetchall()
+
+    if not orphans:
+        return
+
+    logger.warning(
+        "_detect_orphan_calls: %d orphaned call job(s) found — requeueing",
+        len(orphans),
+    )
+
+    for row in orphans:
+        job_id, contact_id, entity_type, payload, run_at = row
+        try:
+            create_exception(
+                session,
+                type="call_not_placed",
+                severity="warning",
+                context={
+                    "original_job_id": job_id,
+                    "contact_id": contact_id,
+                    "original_run_at": run_at.isoformat() if run_at else None,
+                    "reason": (
+                        "launch_outbound_call completed but no call_event webhook "
+                        "received within 30 minutes — Synthflow may have silently "
+                        "dropped the call (e.g. voice agent was inactive)"
+                    ),
+                },
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            requeue_payload = dict(payload or {})
+            requeue_payload["_orphan_requeue"] = True
+            schedule_job(
+                session=session,
+                job_type="launch_outbound_call",
+                entity_type=entity_type,
+                entity_id=contact_id,
+                run_at=now,
+                payload=requeue_payload,
+            )
+            logger.info(
+                "_detect_orphan_calls: requeued | contact_id=%s original_job_id=%s",
+                contact_id, job_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "_detect_orphan_calls: failed to requeue contact_id=%s: %s",
+                contact_id, exc,
+            )
 
 
 def _prune_expired_rows(session: Any, settings: Any, now: datetime) -> None:
@@ -175,9 +277,11 @@ def start_metrics_scheduler() -> None:
     Enqueue the first metrics collection job.
     Call once from worker startup if no pending metrics job exists.
     """
+    from datetime import datetime, timezone
+
     from app.config import get_settings
     from app.db import get_sync_session
-    from app.worker.scheduler import enqueue_now
+    from app.worker.scheduler import schedule_job
 
     settings = get_settings()
 
@@ -196,11 +300,12 @@ def start_metrics_scheduler() -> None:
             )
             return
 
-        enqueue_now(
+        schedule_job(
             session=session,
             job_type="collect_metrics",
             entity_type="system",
             entity_id="metrics_collector",
+            run_at=datetime.now(tz=timezone.utc),
             payload={"_scheduled_by": "startup"},
         )
         session.commit()

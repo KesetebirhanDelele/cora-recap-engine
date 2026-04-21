@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
@@ -92,6 +92,15 @@ def run_call_analysis(job_id: str) -> None:
         job = claim_job(session, job_id, worker_id=worker_id)
         if job is None:
             logger.info("run_call_analysis: job already claimed | job_id=%s", job_id)
+            return
+
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info("run_call_analysis: system paused — releasing | job_id=%s", job_id)
+            release_job_to_pending(session, job)
+            session.commit()
             return
 
         mark_running(session, job)
@@ -305,6 +314,7 @@ def run_call_analysis(job_id: str) -> None:
                 entity_id=call_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 

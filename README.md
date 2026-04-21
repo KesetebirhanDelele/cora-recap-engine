@@ -98,8 +98,9 @@ cora-recap-engine/
 ├── execution/
 │   ├── dashboard.py          # Streamlit monitoring dashboard (read-only, legacy)
 │   └── test_scripts/
-│       ├── run_test_call.py  # CLI: trigger a live end-to-end test call
-│       └── watch_test_call.py# CLI: poll DB for test call result
+│       ├── run_test_call.py       # CLI: trigger a live end-to-end test call
+│       ├── watch_test_call.py     # CLI: poll DB for test call result
+│       └── test_ghl_writes.py     # Pre-go-live GHL write integration test
 ├── migrations/
 │   └── versions/
 │       ├── 0001_initial_schema.py               # 8 core tables
@@ -152,9 +153,8 @@ Docker Compose handles the startup order automatically. Redis is always ready be
 
 **First-time setup:**
 ```powershell
-# Copy environment template and fill in credentials
-cp .env.example .env
-# then edit .env
+# Create and fill in .env with your credentials
+# (see Mode Flags section and directives/spec/11_runbook.md for required variables)
 
 # Build and start
 docker compose up --build
@@ -199,10 +199,7 @@ pip install -e ".[dev]"
 
 ### Environment
 
-```bash
-cp .env.example .env
-# Edit .env — fill in credentials for your environment
-```
+Create `.env` in the project root and fill in credentials for your environment.
 
 > **Shadow mode is on by default.** `GHL_WRITE_MODE=shadow` and `GHL_WRITE_SHADOW_LOG_ONLY=true` are the safe defaults. Do not change to `live` without explicit approval.
 
@@ -455,24 +452,51 @@ INTEGRATION_TESTS=1 pytest tests/integration/
 |---|---|---|
 | `GHL_WRITE_MODE` | `shadow` | GHL writes are logged but not executed |
 | `GHL_WRITE_SHADOW_LOG_ONLY` | `true` | Shadow payloads are log-only |
+| `GHL_WRITE_CONTACT_FIELDS` | `false` | Enable field update writes |
+| `GHL_WRITE_TASKS` | `false` | Enable task creation writes |
+| `GHL_WRITE_SUMMARY` | `false` | Enable student summary delivery |
+| `GHL_WRITE_CAMPAIGN_STATE` | `false` | Enable campaign state field writes |
+| `GHL_WRITE_FINALIZATION` | `false` | Enable voicemail finalization writes |
 | `SHADOW_MODE_ENABLED` | `true` | Intercepts all outbound actions (calls, SMS, email); logs to `shadow_actions` instead of executing |
-| `GOOGLE_SHADOW_MODE_ENABLED` | `true` | Sheets in mirror-only mode |
 
-To enable real GHL writes: set `GHL_WRITE_MODE=live` and `GHL_WRITE_SHADOW_LOG_ONLY=false`. This requires explicit approval per the autonomous execution contract.
+All mode flags are DB-backed. Changes made on the **System Controls** dashboard page (`/system-controls`) take effect immediately on the next job — no `.env` edit or restart required.
+
+To go live: use the System Controls dashboard to set `GHL_WRITE_MODE=live`, `SHADOW_MODE_ENABLED=false`, and enable each write category. See `directives/spec/dashboard/11_runbook.md` for the full go-live procedure.
+
+---
+
+## GHL Private Integration Token
+
+`GHL_API_KEY` must be a **GHL Private Integration JWT token** — not a simple API key.
+
+Create one at: GHL → Settings → Integrations → Private Integrations.
+
+Required scopes:
+- `contacts.readonly` — search and fetch contacts
+- `contacts.write` — update custom fields, create tasks, append notes
+- `locations/tasks.write` — task creation
+- `locations/customFields.readonly` — field label→UUID resolution (required for all field writes)
+
+Tokens can expire or be revoked. If you receive 401 errors, regenerate the token, update `.env`, and restart the API and worker services.
+
+Run `execution/test_scripts/test_ghl_writes.py` to verify all GHL writes before going live:
+
+```bash
+python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+```
 
 ---
 
 ## Unresolved External IDs
 
-The following must be supplied before the corresponding write paths go live:
+The following are not yet configured and block those specific write paths:
 
-- `GHL_FIELD_VM_EMAIL_HTML`, `GHL_FIELD_VM_EMAIL_SUBJECT`, `GHL_FIELD_VM_SMS_TEXT`
-- `GHL_FIELD_LAST_CALL_STATUS`, `GHL_FIELD_MARK_AS_LEAD`, `GHL_FIELD_NOTES`
-- `GHL_TASK_PIPELINE_ID`, `GHL_TASK_DEFAULT_OWNER_ID`
-- `GOOGLE_SHEETS_CALL_LOG_ID`, `GOOGLE_SHEETS_CAMPAIGN_DATA_ID`, and all tab names
-- New Lead VM tier delays: `NEW_VM_TIER_*`
+- `GHL_FIELD_LAST_CALL_STATUS`, `GHL_FIELD_NOTES` — planned, not yet live
+- `GHL_TASK_PIPELINE_ID`, `GHL_TASK_DEFAULT_OWNER_ID` — planned, not yet live
 
-See `.env.example` for the full list.
+Note: `GHL_FIELD_MARK_AS_LEAD` — the `Mark as Lead` custom field does not currently exist in GHL. The write path is implemented but silently skips until the field is created in GHL and the label configured in `.env`.
+
+See `directives/spec/11_runbook.md` for the go-live procedure.
 
 ---
 
@@ -483,18 +507,193 @@ See [directives/spec/11_runbook.md](directives/spec/11_runbook.md).
 Full specifications: [directives/spec/](directives/spec/)
 Architecture decisions: [directives/adr/](directives/adr/)
 
-## Code to see Redus Queue:
-docker run -p 9181:9181 `
---network cora-recap-engine_default `
--e RQ_DASHBOARD_REDIS_URL=redis://redis:6379 `
-eoranged/rq-dashboard
+---
 
+## Production Deployment (Hetzner Cloud)
 
-## Flushing old Redis Queues
-docker exec -it cora-recap-engine-redis-1 redis-cli
-127.0.0.1:6379> flushall
-OK
-127.0.0.1:6379> 
+### Server requirements
+- Hetzner CX22 (2 vCPU, 4 GB RAM) or larger
+- Ubuntu 22.04
+- Docker CE + Docker Compose plugin installed
+
+### One-time server setup
+
+```bash
+# Install Docker CE on the Hetzner Ubuntu VM
+apt-get update
+apt-get install -y ca-certificates curl gnupg
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# Clone the repo (use a GitHub PAT for private repos)
+git clone https://github.com/<org>/cora-recap-engine /opt/cora-recap-engine
+cd /opt/cora-recap-engine
+```
+
+### .env on the server
+
+Copy your working local `.env` to the server, then adjust these values:
+
+```
+APP_ENV=production
+DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
+REDIS_HOST=redis
+DASHBOARD_API_URL=http://<server-ip>:8001
+WS_URL=ws://<server-ip>:8001/ws
+ALLOW_ORIGINS=http://<server-ip>:3000
+```
+
+**Critical rules:**
+- `DATABASE_URL` must use the Docker service name `postgres:5432`, NOT `localhost` or `host.docker.internal`
+- `DASHBOARD_API_URL` must be the **public server IP** (not localhost) — it is baked into the Next.js bundle at build time and used by the browser
+- `ALLOW_ORIGINS` must match the origin the browser uses to open the dashboard
+- Do NOT copy `docker-compose.override.yml` to the server — it is local dev only
+
+### Deploy
+
+```bash
+cd /opt/cora-recap-engine
+docker compose up -d --build
+docker compose logs migrate       # verify migrations ran (should exit 0)
+docker compose ps                 # all services should be healthy/running
+```
+
+### Open firewall ports (Hetzner Cloud Console)
+
+In Hetzner Cloud Console → your server → Firewalls, add inbound TCP rules for:
+- Port `8000` — Synthflow webhook intake
+- Port `8001` — Dashboard API (browser)
+- Port `3000` — Next.js frontend
+
+### Point Synthflow webhook
+
+In Synthflow → your workflow → HTTP step, set:
+```
+Method: POST
+URL: http://<server-ip>:8000/v1/webhooks/calls
+```
+
+Use `http://` not `https://` — TLS is not configured without a reverse proxy.
+
+### Verify end-to-end
+
+```bash
+# API healthy
+curl http://<server-ip>:8000/health
+# → {"status":"ok","service":"cora-recap-engine"}
+
+# Dashboard API healthy
+curl http://<server-ip>:8001/health
+# → {"status":"ok","service":"dashboard-api"}
+
+# After a Synthflow call completes
+docker compose logs api --tail=20
+# → INFO: Received call event | call_id=... job_id=... enqueued=True
+
+docker compose logs worker-default --tail=30
+docker compose logs worker-ai --tail=30
+```
+
+### Production troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `migrate` fails with `host.docker.internal` error | `docker-compose.override.yml` present on server, or `.env` has `DATABASE_URL=...localhost...` | Remove override file; set `DATABASE_URL` to use `postgres:5432` in `.env` |
+| `migrate` fails even after fix | Old image cached with wrong DATABASE_URL | `docker compose build --no-cache migrate && docker compose up migrate` |
+| frontend shows `Couldn't find pages or app directory` | Dev Dockerfile used instead of prod | `docker compose build --no-cache frontend && docker compose up -d frontend` |
+| `TypeError: Failed to fetch` on dashboard pages | `DASHBOARD_API_URL` was `localhost` when the image was built — baked wrong URL | Set correct server IP in `.env`, then `docker compose up -d --build frontend` |
+| `TypeError: Failed to fetch` persists after rebuild | Browser cached old JS bundle | Hard reload: `Ctrl+Shift+R` |
+| `TypeError: Failed to fetch` persists after hard reload | Port 8001 blocked by Hetzner firewall | Add inbound TCP 8001 rule in Hetzner Cloud Console → Firewalls |
+| Synthflow POST returns connection error | URL uses `https://` — server has no TLS cert | Change Synthflow HTTP step URL to `http://` |
+| Synthflow POST returns 422 `missing_call_id` | Payload wrapped under `{"data": {...}}` and wasn't unwrapped | Already fixed in normalizer — pull latest and rebuild `api` |
+| Dashboard shows CORS error in browser | `ALLOW_ORIGINS` set to `localhost:3000` but browser hits `<server-ip>:3000` | Set `ALLOW_ORIGINS=http://<server-ip>:3000` in `.env`, restart `dashboard-api` |
+| All data shows zeros / null | No call events in DB yet | Normal on fresh deploy — send real calls via Synthflow first |
+| Worker not processing jobs | Redis not healthy | `docker compose logs redis` — restart if needed; worker reconnects automatically |
+
+### Querying Postgres on the server
+
+All `docker compose` commands require you to be in the project directory first:
+
+```bash
+cd /opt/cora-recap-engine
+```
+
+**Interactive psql shell** (run arbitrary queries):
+```bash
+docker compose exec postgres psql -U postgres -d cora
+```
+Inside psql: `\dt` lists all tables, `\d <table>` describes a table, `\q` exits.
+
+**One-liner queries** (no interactive session):
+```bash
+# Row counts
+docker compose exec postgres psql -U postgres -d cora -c "SELECT COUNT(*) FROM call_events;"
+docker compose exec postgres psql -U postgres -d cora -c "SELECT COUNT(*) FROM scheduled_jobs;"
+
+# Stuck jobs right now
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, contact_id, run_at,
+         EXTRACT(EPOCH FROM (NOW() - run_at))::int AS lag_seconds
+  FROM scheduled_jobs
+  WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'
+  ORDER BY run_at;"
+
+# Recent exceptions
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT type, severity, status, created_at
+  FROM exceptions ORDER BY created_at DESC LIMIT 20;"
+
+# Active alerts
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT alert_type, severity, message, created_at
+  FROM alert_events WHERE status = 'active';"
+
+# Recent call events
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, status, duration_seconds, detected_intent, created_at
+  FROM call_events ORDER BY created_at DESC LIMIT 10;"
+
+# Lead state for a specific contact
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT * FROM lead_state WHERE contact_id = '<contact_id>';"
+```
+
+**Data persistence** — data is stored in a named Docker volume (`postgres_data`) on the host filesystem, independent of any image or container. It survives all rebuilds and restarts. The only commands that delete it are `docker compose down -v` (explicit volume removal flag) or `docker volume rm cora-recap-engine_postgres_data`. Never pass `-v` to `docker compose down` in production.
+
+### Useful server commands
+
+```bash
+# Tail all logs
+docker compose logs --follow
+
+# Check queue depths
+docker compose exec redis redis-cli llen rq:queue:default
+docker compose exec redis redis-cli llen rq:queue:ai
+
+# Restart a single service (no rebuild)
+docker compose restart dashboard-api
+
+# Rebuild and restart a single service
+docker compose up -d --build frontend
+
+# Check all service health
+docker compose ps
+
+# View RQ dashboard (browser at http://localhost:9181 via SSH tunnel)
+docker run -p 9181:9181 \
+  --network cora-recap-engine_default \
+  -e RQ_DASHBOARD_REDIS_URL=redis://redis:6379 \
+  eoranged/rq-dashboard
+
+# Flush Redis queues (removes all pending jobs — use with care)
+docker compose exec redis redis-cli flushall
+```
+
+---
 
 ## Dashboard v2
 
@@ -584,10 +783,22 @@ Open http://localhost:3000 in your browser.
 | `ALERT_QUEUE_LAG_THRESHOLD_SECONDS` | `300` | Queue lag threshold for `queue_lag_exceeded` alert |
 | `ALERT_ERROR_RATE_THRESHOLD` | `0.2` | Error rate threshold for `error_rate_spike` alert |
 | `ALERT_EXCEPTION_COUNT_THRESHOLD` | `10` | Open exception count threshold for `exception_spike` alert |
+| `SMTP_ENABLED` | `false` | Enable email delivery for threshold alerts |
+| `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
+| `SMTP_PORT` | `587` | SMTP port (587 for TLS/STARTTLS) |
+| `SMTP_USE_TLS` | `true` | Enable STARTTLS |
+| `SMTP_USERNAME` | — | SMTP login (Gmail: your email address) |
+| `SMTP_PASSWORD` | — | SMTP password — **Gmail requires an App Password**, not the account password. Create one at Google Account → Security → 2-Step Verification → App passwords. |
+| `ALERT_EMAIL_FROM` | — | Sender address for alert emails |
+| `ALERT_EMAIL_TO` | — | Recipient address for alert emails |
 
 ### Dashboard background workers
 
-The metrics collector (`collect_metrics_job`) runs every 60 seconds as a self-rescheduling RQ job. It is started automatically by the worker on startup via `start_metrics_scheduler()`. Each run inserts one row into `system_metrics` and evaluates all alert thresholds.
+The metrics collector (`collect_metrics_job`) runs every 60 seconds as a self-rescheduling RQ job on the `default` queue. It is started once at worker startup by `start_metrics_scheduler()` (only the `default`/`all` worker role calls this — not every worker process). Each run inserts one row per metric into `system_metrics`, evaluates all alert thresholds, and prunes expired `event_stream` and `system_metrics` rows.
+
+**Alert trigger metric:** `queue_lag_exceeded` fires on `queue_lag_seconds` — the age of the *oldest* overdue pending job — not on raw backlog count. A large backlog of future-dated jobs does not trigger the alert.
+
+See the Alerting / metrics collector troubleshooting section in `directives/spec/11_runbook.md` for common issues.
 
 ### Feature documentation
 

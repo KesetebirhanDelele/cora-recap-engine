@@ -25,7 +25,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     ghl_location_id: Optional[str] = None
     ghl_timeout_seconds: int = 30
     ghl_retry_max: int = 3
+    # When True, conversation_context fetches GHL SMS/email reply history before
+    # generating follow-up messages so the AI sees the full two-way thread.
+    ghl_fetch_conversation_history: bool = False
+    ghl_conversation_history_limit: int = 15
 
     # GHL field labels / identifiers — unresolved external IDs remain Optional
     ghl_field_ai_campaign: Optional[str] = None
@@ -124,8 +128,9 @@ class Settings(BaseSettings):
     synthflow_model_id: Optional[str] = None
     synthflow_timeout_seconds: int = 30
     synthflow_retry_max: int = 3
-    # URL of the Synthflow "Make Call" Catch Webhook — triggers initial outbound call
-    synthflow_launch_workflow_url: Optional[str] = None
+    # Per-campaign "Make Call" Catch Webhook URLs — selected based on lead campaign
+    synthflow_launch_workflow_url_new: Optional[str] = None   # New Lead campaign
+    synthflow_launch_workflow_url_cold: Optional[str] = None  # Cold Lead campaign
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None
@@ -249,6 +254,27 @@ class Settings(BaseSettings):
     # Field validators
     # ─────────────────────────────────────────────────────────────────────────
 
+    @model_validator(mode="after")
+    def reject_changeme_in_production(self) -> "Settings":
+        """Prevent silent misconfiguration: refuse to start in production with default secrets.
+
+        If SECRET_KEY or WEBHOOK_SHARED_SECRET are still 'changeme' and APP_ENV is
+        'production', the system would accept forged operator tokens and unauthenticated
+        webhooks. Fail fast at boot rather than silently compromising in production.
+        """
+        if self.app_env == "production":
+            bad = []
+            if self.secret_key == "changeme":
+                bad.append("SECRET_KEY")
+            if self.webhook_shared_secret == "changeme":
+                bad.append("WEBHOOK_SHARED_SECRET")
+            if bad:
+                raise ConfigError(
+                    f"Production startup blocked: {', '.join(bad)} must not be 'changeme'. "
+                    "Set real secret values in your production .env file."
+                )
+        return self
+
     @field_validator("ghl_write_mode")
     @classmethod
     def validate_write_mode(cls, v: str) -> str:
@@ -335,12 +361,30 @@ class Settings(BaseSettings):
                 f"Synthflow integration requires: {', '.join(missing)}"
             )
 
-    def validate_for_synthflow_launch(self) -> None:
-        """Raise ConfigError if the Make Call workflow URL is not configured."""
-        if not self.synthflow_launch_workflow_url:
+    def get_synthflow_launch_url(self, campaign_name: str) -> str:
+        """
+        Return the Synthflow Make Call webhook URL for the given campaign.
+
+        Selects SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold for Cold Lead campaigns,
+        SYNTHFLOW_LAUNCH_WORKFLOW_URL_New for all others (New Lead, Inbound, etc.).
+        Raises ConfigError if the required URL is not configured.
+        """
+        is_cold = "cold" in (campaign_name or "").lower()
+        if is_cold:
+            url = self.synthflow_launch_workflow_url_cold
+            key = "SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold"
+        else:
+            url = self.synthflow_launch_workflow_url_new
+            key = "SYNTHFLOW_LAUNCH_WORKFLOW_URL_New"
+        if not url:
             raise ConfigError(
-                "Synthflow outbound call launch requires SYNTHFLOW_LAUNCH_WORKFLOW_URL"
+                f"Synthflow outbound call launch requires {key} (campaign={campaign_name!r})"
             )
+        return url
+
+    def validate_for_synthflow_launch(self, campaign_name: str = "") -> None:
+        """Raise ConfigError if the Make Call workflow URL for the campaign is not configured."""
+        self.get_synthflow_launch_url(campaign_name)
 
     def validate_for_sheets_sync(self) -> None:
         """Raise ConfigError if Google Sheets shadow sync cannot be initialized.

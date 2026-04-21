@@ -26,6 +26,7 @@ import type {
   IgnoreRequest,
   IntentCallsResponse,
   LeadDetailResponse,
+  LeadLifecycleResponse,
   LeadTraceResponse,
   MetricsResponse,
   RecentCallsResponse,
@@ -38,7 +39,13 @@ import type {
   VoicePerformanceResponse,
 } from "@/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001";
+// Server-side (SSR/RSC): use full internal URL to reach dashboard-api directly.
+// Browser (client components): use same origin so Next.js rewrites proxy the
+// request to dashboard-api — avoids CORS entirely and works at any server IP.
+const API_URL =
+  typeof window === "undefined"
+    ? (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8001")
+    : window.location.origin;
 
 // ── Request helpers ───────────────────────────────────────────────────────────
 
@@ -174,10 +181,12 @@ export async function fetchAiTimeSeries(options?: {
 export async function fetchVoicePerformance(options?: {
   from_date?: string;
   to_date?: string;
+  all_time?: boolean;
 }): Promise<VoicePerformanceResponse> {
   const params: Record<string, string> = {};
   if (options?.from_date) params.from_date = options.from_date;
   if (options?.to_date) params.to_date = options.to_date;
+  if (options?.all_time) params.all_time = "true";
   return get<VoicePerformanceResponse>("/dashboard/voice-performance", params);
 }
 
@@ -207,6 +216,67 @@ export async function saveSettings(body: SaveSettingsRequest): Promise<SaveSetti
   return post<SaveSettingsResponse>("/dashboard/settings", body);
 }
 
+// ── Mode control ──────────────────────────────────────────────────────────────
+
+export interface ModeFlags {
+  shadow_mode_enabled: boolean;
+  ghl_write_mode: "shadow" | "live";
+  ghl_write_shadow_log_only: boolean;
+  ghl_write_contact_fields: boolean;
+  ghl_write_tasks: boolean;
+  ghl_write_summary: boolean;
+  ghl_write_campaign_state: boolean;
+  ghl_write_finalization: boolean;
+  system_paused: boolean;
+  ghl_writes_enabled: boolean;
+}
+
+export interface PreflightCheck {
+  key: string;
+  label: string;
+  status: "ok" | "warning" | "error";
+  detail: string;
+}
+
+export interface LastChanged {
+  operator_id: string;
+  at: string | null;
+  new_value: string;
+}
+
+export interface ModeResponse {
+  flags: ModeFlags;
+  last_changed: Record<string, LastChanged>;
+  preflight: PreflightCheck[];
+}
+
+export interface UpdateModeRequest {
+  flags: Record<string, string>;
+  reason?: string;
+}
+
+export interface UpdateModeResponse {
+  status: string;
+  keys_updated: string[];
+  flags: ModeFlags;
+}
+
+export async function fetchMode(): Promise<ModeResponse> {
+  return get<ModeResponse>("/dashboard/mode");
+}
+
+export async function updateMode(body: UpdateModeRequest): Promise<UpdateModeResponse> {
+  return post<UpdateModeResponse>("/dashboard/mode", body);
+}
+
+export async function pauseSystem(): Promise<{ status: string; system_paused: boolean }> {
+  return post("/dashboard/mode/pause", {});
+}
+
+export async function resumeSystem(): Promise<{ status: string; system_paused: boolean }> {
+  return post("/dashboard/mode/resume", {});
+}
+
 // ── Operator actions ──────────────────────────────────────────────────────────
 
 export async function retryException(body: RetryRequest): Promise<ActionResponse> {
@@ -231,6 +301,10 @@ export async function ignoreException(body: IgnoreRequest): Promise<ActionRespon
 
 export async function bulkIgnoreExceptions(body: BulkIgnoreRequest): Promise<ActionResponse & { ignored_count: number }> {
   return post<ActionResponse & { ignored_count: number }>("/dashboard/actions/bulk-ignore", body);
+}
+
+export async function acknowledgeAlert(alertId: string, note = ""): Promise<{ status: string; alert_id: string; audit_log_id: string | null }> {
+  return post("/dashboard/actions/acknowledge-alert", { alert_id: alertId, note });
 }
 
 export async function fetchCardMetrics(): Promise<CardMetricsResponse> {
@@ -268,4 +342,18 @@ export async function fetchIntentCalls(options: {
   if (options.direction)   params.direction   = options.direction;
   if (options.limit)       params.limit       = String(options.limit);
   return get<IntentCallsResponse>("/dashboard/intent-calls", params);
+}
+
+export async function fetchLeadLifecycle(options?: {
+  status?:   "all" | "active" | "finalized" | "vm" | "dnc";
+  campaign?: string;
+  limit?:    number;
+  offset?:   number;
+}): Promise<LeadLifecycleResponse> {
+  const params: Record<string, string> = {};
+  if (options?.status)   params.status   = options.status;
+  if (options?.campaign) params.campaign = options.campaign;
+  if (options?.limit)    params.limit    = String(options.limit);
+  if (options?.offset)   params.offset   = String(options.offset);
+  return get<LeadLifecycleResponse>("/dashboard/lead-lifecycle", params);
 }

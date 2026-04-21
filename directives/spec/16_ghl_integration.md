@@ -22,6 +22,10 @@
 | `_persist_ghl_analysis` → `classification_results` | IMPLEMENTED |
 | `LAST_CALL_STATUS` field write | PLANNED — not yet live |
 | `NOTES` field write (transcript/summary to notes) | PLANNED — not yet live |
+| `get_location_fields()` — label→UUID resolution via location API | IMPLEMENTED |
+| Field ID resolution at write time (`_resolve_to_field_ids`) | IMPLEMENTED |
+| GHL task API v2 payload fix (completed:false, no status/description) | IMPLEMENTED |
+| AI lead classification write (`AI Lead Classification` field) | IMPLEMENTED |
 
 ---
 
@@ -44,9 +48,20 @@ Content-Type: application/json
 Accept: application/json
 ```
 
-- `GHL_API_KEY` — per-location API key; never hard-coded; must come from `.env`
-- `GHL_LOCATION_ID` — required for contact search queries; sent as a query param
+- `GHL_API_KEY` — **GHL Private Integration JWT token** (not a simple API key). Created at GHL → Settings → Integrations → Private Integrations. Tokens can expire or be revoked — regenerate and update `.env` if you receive 401 responses.
+- `GHL_LOCATION_ID` — required for contact search queries and location field lookup; sent as a query param
 - Base URL: `https://services.leadconnectorhq.com` (configurable via `GHL_BASE_URL`)
+
+### Required Private Integration scopes
+
+| Scope | Used for |
+|---|---|
+| `contacts.readonly` | `search_contact_by_phone`, `get_contact` |
+| `contacts.write` | `update_contact_fields`, `create_task`, `append_note` |
+| `locations/tasks.write` | `create_task` |
+| `locations/customFields.readonly` | `get_location_fields` (field label→UUID resolution) |
+
+Missing scopes cause 401 on the specific operation. The `locations/customFields.readonly` scope is required for any live write to succeed, because field UUIDs are resolved from location definitions at runtime.
 
 Read operations require `validate_for_ghl_reads()` (checks `ghl_api_key` and `ghl_location_id`). **Reads are always active regardless of write-mode settings.**
 Write operations require `validate_for_ghl_writes()` — only reachable when `ghl_writes_enabled=True`.
@@ -122,23 +137,40 @@ Shadow mode is separate from `SHADOW_MODE_ENABLED` (which gates outbound calls/S
 
 ## Field resolution
 
-GHL custom fields do not have stable hard-coded IDs across locations. Field IDs are resolved at runtime from a fetched contact record.
+GHL custom fields do not have stable hard-coded IDs across locations. Field IDs are resolved at runtime.
+
+### GHL response structure (important)
+
+`GET /contacts/{id}` returns `customFields` as `[{id: uuid, value: "..."}]` — **field name and fieldKey are NOT included**. This means a contact-only lookup cannot resolve labels to UUIDs.
+
+`GET /locations/{id}/customFields` returns full definitions: `[{id: uuid, name: "...", fieldKey: "..."}]`. This is the authoritative source for label→UUID resolution.
+
+Additionally, `GET /contacts/{id}` only returns fields that already have a value on the contact. Fields that have never been written are absent from the contact's customFields array.
+
+### `get_location_fields() → list[dict]`
+
+Fetches all custom field definitions for the location. Returns `[{id, name, fieldKey, ...}]`. Required scope: `locations/customFields.readonly`.
+
+Called once per write batch in all write paths to resolve labels → UUIDs.
+
+### `resolve_field_id_from_location(field_label, location_fields) → str | None`
+
+Matches on `name` or `fieldKey`. Use this (not `resolve_field_id`) for all production writes.
 
 ### `resolve_field_id(field_label, contact) → str | None`
 
-Matches on:
-1. `field.name` (human-readable label)
-2. `field.fieldKey` (snake_case system key)
-
-Returns the field `id` used in write payloads. Returns None if not found.
+Legacy — searches contact-level customFields. Only works if the field already has a value on the contact AND the contact response includes name/fieldKey (it does not in GHL v2 contact responses). Retained for backward compatibility but not used in live write paths.
 
 ### `get_field_value(field_label, contact) → str | None`
 
-Same matching logic; returns the current `field.value` instead of the ID.
-
-Used to read:
-- `ai_campaign` — campaign name stored in GHL
+Reads the current value of a field from a contact record by ID match. Used to read:
 - `ai_campaign_value` — voicemail tier (None / "0" / "1" / "2" / "3")
+
+Note: multi-select GHL fields return their values as arrays (e.g., `["Yes"]`). Callers that need a scalar value must unwrap single-element lists.
+
+### `_resolve_to_field_ids(ghl, label_updates) → dict[str, str]`
+
+Module-level helper in `crm_jobs.py`. Converts `{field_label: value}` → `{field_uuid: value}`. Calls `get_location_fields()` once and resolves each label. Labels with no matching UUID are skipped with a warning. Used by all write paths before calling `update_contact_fields()`.
 
 ---
 
@@ -156,7 +188,8 @@ All write operations are implemented in `app/adapters/ghl.py` and are shadow-gat
 ### `create_task(contact_id, title, description="", assigned_to="", due_date="") → dict`
 
 - Endpoint: `POST /contacts/{contact_id}/tasks`
-- `assignedTo` and `dueDate` are omitted entirely from the payload when blank (not set to null) — prevents GHL from assigning to no-one
+- GHL v2 task API accepted fields: `title`, `dueDate`, `completed` (bool), `assignedTo`. The `status` and `description` fields are **not accepted** — GHL returns 422 if they are present.
+- `assignedTo` and `dueDate` are omitted from the payload when blank
 - `assigned_to` is populated from `GhlCallAnalysisResult.assign_to` (one of three staff GHL user IDs)
 - `due_date` is populated from `GhlCallAnalysisResult.task_due_date` (ISO 8601 string derived from call transcript, e.g. "follow up Thursday at 2pm")
 - Used for: follow-up task on completed call (via `create_crm_task` job)
@@ -308,7 +341,7 @@ All GHL field identifiers are config-driven. Field IDs are resolved at runtime v
 | `GHL_FIELD_AI_LEAD_ASSIGN_TO` | `"AI Lead Assign To"` | Path 1 | Active (shadow-gated) |
 | `GHL_FIELD_SUPPORT_TICKET_3` | `"Support Issue Ticket #3"` | Path 1 — task description | Active (shadow-gated) |
 | `GHL_FIELD_AI_LEAD_CLASSIFICATION` | `"AI Lead Classification"` | Path 1 | Active (shadow-gated) |
-| `GHL_FIELD_AI_CAMPAIGN` | `"Yes"` (value) | Path 1, 2, 3 | Active (shadow-gated) |
+| `GHL_FIELD_AI_CAMPAIGN` | `"AI Campaign"` (field name) | Path 1, 2, 3 | Active (shadow-gated) |
 | `GHL_FIELD_SUPPORT_TICKET_2` | `"Support Issue Ticket #2"` | Path 2 — brief identifier | Active (shadow-gated) |
 | `GHL_FIELD_MESSAGE` | `"Message"` | Path 2 — full message body | Active (shadow-gated) |
 | `GHL_FIELD_SUPPORT_TICKET_4` | `"Support Issue Ticket #4"` | Path 2 — classification tag | Active (shadow-gated) |

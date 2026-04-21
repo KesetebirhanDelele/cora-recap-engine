@@ -35,7 +35,8 @@ def _settings(**overrides) -> Settings:
         synthflow_api_key="sf-test-key",
         synthflow_model_id="model-id-001",
         synthflow_base_url="https://api.synthflow.ai/v2/calls",
-        synthflow_launch_workflow_url=_LAUNCH_URL,
+        synthflow_launch_workflow_url_new=_LAUNCH_URL,
+        synthflow_launch_workflow_url_cold=_LAUNCH_URL,
         synthflow_timeout_seconds=5,
         synthflow_retry_max=2,
     )
@@ -67,14 +68,14 @@ def _client(settings: Settings | None = None, mock_http: MagicMock | None = None
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_validate_for_synthflow_launch_raises_when_url_missing():
-    s = _settings(synthflow_launch_workflow_url=None)
-    with pytest.raises(ConfigError, match="SYNTHFLOW_LAUNCH_WORKFLOW_URL"):
-        s.validate_for_synthflow_launch()
+    s = _settings(synthflow_launch_workflow_url_new=None)
+    with pytest.raises(ConfigError, match="SYNTHFLOW_LAUNCH_WORKFLOW_URL_New"):
+        s.validate_for_synthflow_launch("New_Lead")
 
 
 def test_validate_for_synthflow_launch_passes_when_url_set():
-    s = _settings(synthflow_launch_workflow_url=_LAUNCH_URL)
-    s.validate_for_synthflow_launch()  # must not raise
+    s = _settings(synthflow_launch_workflow_url_new=_LAUNCH_URL)
+    s.validate_for_synthflow_launch("New_Lead")  # must not raise
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -132,9 +133,9 @@ def test_launch_includes_metadata_when_provided():
 
 
 def test_launch_raises_config_error_when_url_not_configured():
-    s = _settings(synthflow_launch_workflow_url=None)
+    s = _settings(synthflow_launch_workflow_url_new=None, synthflow_launch_workflow_url_cold=None)
     client = _client(settings=s)
-    with pytest.raises(ConfigError, match="SYNTHFLOW_LAUNCH_WORKFLOW_URL"):
+    with pytest.raises(ConfigError, match="SYNTHFLOW_LAUNCH_WORKFLOW_URL_New"):
         client.launch_new_lead_call(phone="+15551234567", lead_name="Jane")
 
 

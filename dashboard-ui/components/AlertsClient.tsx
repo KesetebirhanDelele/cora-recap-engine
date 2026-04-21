@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchAlerts } from "@/lib/api";
+import { fetchAlerts, acknowledgeAlert } from "@/lib/api";
 import type { Alert, AlertStatus } from "@/types";
 
 const SEV_COLOR: Record<string, string> = {
@@ -25,10 +25,25 @@ function timeAgo(iso: string): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function AlertRow({ alert }: { alert: Alert }) {
+function AlertRow({ alert, onAcknowledged }: { alert: Alert; onAcknowledged: (id: string) => void }) {
   const crit = alert.severity === "critical";
   const sevColor = SEV_COLOR[alert.severity] ?? "#64748b";
   const statusColor = STATUS_COLOR[alert.status] ?? "#64748b";
+  const [acking, setAcking] = useState(false);
+  const [ackError, setAckError] = useState<string | null>(null);
+
+  async function handleAcknowledge() {
+    setAcking(true);
+    setAckError(null);
+    try {
+      await acknowledgeAlert(alert.id);
+      onAcknowledged(alert.id);
+    } catch (e) {
+      setAckError(String(e));
+    } finally {
+      setAcking(false);
+    }
+  }
 
   return (
     <div
@@ -84,7 +99,32 @@ function AlertRow({ alert }: { alert: Alert }) {
             {alert.threshold !== null && <> · Threshold: {alert.threshold}</>}
           </div>
         )}
+        {ackError && (
+          <div style={{ marginTop: 4, fontSize: "0.72rem", color: "#dc2626" }}>{ackError}</div>
+        )}
       </div>
+
+      {alert.status === "active" && (
+        <button
+          onClick={handleAcknowledge}
+          disabled={acking}
+          style={{
+            flexShrink: 0,
+            padding: "0.25rem 0.65rem",
+            border: "1px solid #bfdbfe",
+            borderRadius: 5,
+            background: "#eff6ff",
+            color: "#1d4ed8",
+            fontSize: "0.72rem",
+            fontWeight: 600,
+            cursor: acking ? "not-allowed" : "pointer",
+            opacity: acking ? 0.6 : 1,
+            whiteSpace: "nowrap" as const,
+          }}
+        >
+          {acking ? "…" : "Acknowledge"}
+        </button>
+      )}
     </div>
   );
 }
@@ -107,6 +147,11 @@ export default function AlertsClient() {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [tab]);
+
+  function handleAcknowledged(id: string) {
+    // Optimistically remove from active list; user can switch to Acknowledged tab to see it
+    setAlerts((prev) => prev.filter((a) => a.id !== id));
+  }
 
   return (
     <div>
@@ -159,7 +204,7 @@ export default function AlertsClient() {
       )}
       {!loading && !error && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-          {alerts.map((a) => <AlertRow key={a.id} alert={a} />)}
+          {alerts.map((a) => <AlertRow key={a.id} alert={a} onAcknowledged={handleAcknowledged} />)}
         </div>
       )}
     </div>

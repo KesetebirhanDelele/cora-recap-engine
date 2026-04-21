@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Index, Integer, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Index, Integer, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON, String, Float
 
@@ -66,6 +66,15 @@ class CallEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # call_started_at: actual call start time in UTC — authoritative date for
+    # dashboard grouping. Populated from synthflow_start_ms (backfill) or
+    # raw_payload_json->>'start_time' at webhook ingestion time.
+    # Falls back to created_at in queries via COALESCE(call_started_at, created_at).
+    call_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # report_excluded: when TRUE, this row is silenced in voice performance and AI
+    # timeseries reporting. Used to remove spurious records (e.g. rows created by
+    # the JylDXjF8 webhook incident) without deleting underlying data.
+    report_excluded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="FALSE")
 
     def __repr__(self) -> str:
         return f"<CallEvent call_id={self.call_id!r} status={self.status!r}>"

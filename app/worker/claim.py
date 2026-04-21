@@ -214,26 +214,68 @@ def cancel_job(session: Session, job_id: str) -> bool:
     return cancelled
 
 
+def release_job_to_pending(session: Session, job: ScheduledJob) -> None:
+    """
+    Release a claimed job back to 'pending' without executing it.
+
+    Used by the system-pause check: when system_paused=true a worker claims
+    the job (to prevent other workers from double-claiming), then immediately
+    releases it back to pending so it will be re-picked up once the system
+    is resumed.
+
+    This is safe under concurrent workers — the version check ensures only
+    the worker that holds the claim can release it.
+    """
+    now = datetime.now(tz=timezone.utc)
+    result: CursorResult = session.execute(  # type: ignore[assignment]
+        update(ScheduledJob)
+        .where(ScheduledJob.id == job.id, ScheduledJob.version == job.version)
+        .values(
+            status="pending",
+            claimed_by=None,
+            claimed_at=None,
+            lease_expires_at=None,
+            version=job.version + 1,
+            updated_at=now,
+        )
+    )
+    session.flush()
+    if result.rowcount > 0:
+        logger.info(
+            "release_job_to_pending: released (system paused) | job_id=%s job_type=%s",
+            job.id, job.job_type,
+        )
+    else:
+        logger.warning(
+            "release_job_to_pending: version conflict, job may have been modified | job_id=%s",
+            job.id,
+        )
+
+
 def recover_expired_claims(
     session: Session,
     worker_id: str,
     batch_size: int = 50,
 ) -> list[str]:
     """
-    Find jobs with expired leases and reset them to 'pending'.
+    Find jobs with expired leases (claimed OR running) and reset them to 'pending'.
 
-    Called periodically by the worker recovery loop. This ensures that
-    jobs claimed by a crashed or stuck worker are eventually re-processed.
+    Called periodically by the scheduler loop. This ensures that jobs abandoned
+    by a crashed or stuck worker are eventually re-processed.
+
+    Covers two states:
+      - 'claimed': worker called claim_job but never advanced to running
+      - 'running': worker started execution but crashed before completing;
+                   the lease expired with no resolution
 
     Returns the list of job IDs that were recovered.
     """
     now = datetime.now(tz=timezone.utc)
-    # Fetch expired claimed jobs
     from sqlalchemy import select
     expired = session.scalars(
         select(ScheduledJob)
         .where(
-            ScheduledJob.status == "claimed",
+            ScheduledJob.status.in_(["claimed", "running"]),
             ScheduledJob.lease_expires_at < now,
         )
         .limit(batch_size)
@@ -256,9 +298,9 @@ def recover_expired_claims(
         if result.rowcount > 0:
             recovered_ids.append(job.id)
             logger.warning(
-                "recover_expired_claims: reset expired claim | job_id=%s "
+                "recover_expired_claims: reset expired %s | job_id=%s "
                 "original_worker=%s",
-                job.id, job.claimed_by,
+                job.status, job.id, job.claimed_by,
             )
     if recovered_ids:
         session.flush()

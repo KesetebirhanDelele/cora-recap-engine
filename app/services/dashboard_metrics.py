@@ -38,6 +38,7 @@ def get_health(session: Session) -> dict[str, Any]:
     Returns a dict matching the GET /dashboard/health response schema.
     """
     from app.config import get_settings
+    from app.core.mode_flags import get_mode_flags
     settings = get_settings()
 
     now = datetime.now(tz=timezone.utc)
@@ -125,8 +126,8 @@ def get_health(session: Session) -> dict[str, Any]:
         "jobs_completed_last_5m": jobs_completed_5m,
         "jobs_failed_last_5m": jobs_failed_5m,
         "error_rate": error_rate,
-        "shadow_mode_enabled": settings.shadow_mode_enabled,
-        "ghl_write_mode": settings.ghl_write_mode,
+        "shadow_mode_enabled": get_mode_flags(session, settings).shadow_mode_enabled,
+        "ghl_write_mode": get_mode_flags(session, settings).ghl_write_mode,
         "app_env": settings.app_env,
         "recorded_at": now.isoformat(),
     }
@@ -380,6 +381,31 @@ def get_metrics(
 
 _VM_IN = "('voicemail','hangup_on_voicemail','left_voicemail','voicemail_detected','machine_detected')"
 
+# Booking signal varies by campaign:
+#   All campaigns → GHL native booking action: action_ghl_create_booking with non-null booking_id
+#   Synthflow stores return_value in two formats depending on version:
+#     JSON:   {"booking_id": "...", "error_message": null, "status": "success"}
+#     Python: {'booking_id': '...', 'error_message': None, 'status': 'success'}
+#   Presence of action_ghl_create_booking + booking_id not null = successful booking.
+#   NewLead also fires extract_info action with {'appointment booked': True} as a secondary signal.
+_BOOKED_COND = """(
+    ce.detected_intent = 'enrolled'
+    OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+    OR (
+        ce.raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+        AND ce.raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
+        AND ce.raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
+    )
+)"""
+
+# Unique contact dedup: inbound callers are identified by phone_number_from (the number
+# they called from); outbound leads are identified by phone_number_to (the number dialled).
+_UNIQUE_PHONE = """CASE
+    WHEN lower(ce.direction) = 'inbound'
+    THEN ce.raw_payload_json->>'phone_number_from'
+    ELSE ce.raw_payload_json->>'phone_number_to'
+END"""
+
 
 def _compute_voice_kpis(
     session: Session,
@@ -390,15 +416,16 @@ def _compute_voice_kpis(
     """Aggregate voice KPIs for a given time window."""
     row = session.execute(text(f"""
         SELECT
-            COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*)                                                        AS total_calls,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
             COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
             COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
-            COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked,
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
         FROM call_events ce
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+          AND NOT ce.report_excluded
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchone()
 
     unique_contacts = int(row[0]) if row and row[0] else 0
@@ -428,6 +455,7 @@ def get_voice_performance(
     session: Session,
     from_date: datetime | None = None,
     to_date: datetime | None = None,
+    all_time: bool = False,
 ) -> dict[str, Any]:
     """
     Voice Call Performance analytics — feeds /voice-performance dashboard page.
@@ -436,10 +464,22 @@ def get_voice_performance(
       period, kpis (current), kpis_prev (prior equal-length period),
       wow_changes (% delta per KPI), time_series (weekly buckets),
       campaign_breakdown (per-campaign scatter aggregates).
+
+    all_time=True: skips the default 28-day floor and queries from the earliest
+    record, so KPIs and campaign_breakdown reflect cumulative totals.
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
-    from_dt = from_date or (now - timedelta(days=28))
+    if all_time and from_date is None:
+        # Find the earliest call_event timestamp so the window covers all records
+        from sqlalchemy import text as _text
+        row = session.execute(_text("SELECT MIN(created_at) FROM call_events")).fetchone()
+        earliest = row[0] if (row and row[0]) else None
+        if earliest is not None and earliest.tzinfo is None:
+            earliest = earliest.replace(tzinfo=timezone.utc)
+        from_dt = earliest or (now - timedelta(days=365))
+    else:
+        from_dt = from_date or (now - timedelta(days=28))
 
     days = max(1.0, (to_dt - from_dt).total_seconds() / 86400)
 
@@ -470,20 +510,40 @@ def get_voice_performance(
     # Group by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     ts_rows = session.execute(text(f"""
         SELECT
-            date_trunc('week', ce.created_at)                              AS week_start,
-            ce.voice_agent                                                  AS voice_agent,
-            COUNT(*)                                                        AS total_calls,
-            COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
-            COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                  AS voicemail,
-            COUNT(*) FILTER (WHERE ce.status = 'failed')                   AS failed,
-            COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked,
-            AVG(COALESCE(ce.duration_seconds, 0))                          AS avg_duration
+            date_trunc('week', ce.call_started_at)  AS week_start,
+            ce.voice_agent                                                     AS voice_agent,
+            COUNT(*)                                                           AS total_calls,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts,
+            COUNT(*) FILTER (WHERE ce.status = 'completed')                   AS completed,
+            COUNT(*) FILTER (WHERE ce.status IN {_VM_IN})                     AS voicemail,
+            COUNT(*) FILTER (WHERE ce.status = 'failed')                      AS failed,
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                            AS booked,
+            AVG(COALESCE(ce.duration_seconds, 0))                             AS avg_duration
         FROM call_events ce
-        WHERE ce.created_at BETWEEN :from_dt AND :to_dt
-        GROUP BY date_trunc('week', ce.created_at), ce.voice_agent
+        WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND ce.call_started_at <= :to_dt
+          AND NOT ce.report_excluded
+        GROUP BY date_trunc('week', ce.call_started_at), ce.voice_agent
         ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+
+    # Per-week true unique-contact count — NOT grouped by voice_agent to avoid
+    # double-counting contacts who received calls from multiple campaign types.
+    ts_unique_rows = session.execute(text(f"""
+        SELECT
+            date_trunc('week', ce.call_started_at)  AS week_start,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts
+        FROM call_events ce
+        WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND ce.call_started_at <= :to_dt
+          AND NOT ce.report_excluded
+        GROUP BY date_trunc('week', ce.call_started_at)
+    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+    # Build a week → true unique count lookup
+    week_unique: dict[str, int] = {}
+    for r in ts_unique_rows:
+        wk = r[0].date().isoformat() if hasattr(r[0], "date") else str(r[0])[:10]
+        week_unique[wk] = int(r[1]) if r[1] else 0
 
     # Pivot by week — keyed by voice_agent value
     weeks: dict[str, dict[str, Any]] = {}
@@ -524,7 +584,9 @@ def get_voice_performance(
             camp_key = "new_lead_s"
 
         w["total"] += t
-        w["unique"] += u
+        # w["unique"] is set from the deduplicated per-week query below; do not
+        # accumulate per-agent unique counts here (would double-count contacts
+        # who received calls from more than one campaign type in the same week).
         w["completed"] += c
         w["voicemail"] += v
         w["failed"] += f
@@ -563,12 +625,17 @@ def get_voice_performance(
     for wk_date in sorted(weeks):
         w = weeks[wk_date]
         t = w["total"]
-        u = w["unique"]
+        # Use the true per-week unique count (from the deduplicated query) so
+        # contacts who appeared in multiple campaign types are not double-counted.
+        u = week_unique.get(wk_date, w["unique"])
         time_series.append({
             "date": wk_date,
             "cold": w["cold"],
             "inbound": w["inbound"],
             "new_lead": w["new_lead"],
+            "cold_unique": w["cold_s"]["u"],
+            "inbound_unique": w["inbound_s"]["u"],
+            "new_lead_unique": w["new_lead_s"]["u"],
             "completion_rate": round(w["completed"] / t * 100, 1) if t else 0.0,
             "pickup_rate": round(w["completed"] / t * 100, 1) if t else 0.0,
             "voicemail_rate": round(w["voicemail"] / t * 100, 1) if t else 0.0,
@@ -590,12 +657,15 @@ def get_voice_performance(
         SELECT
             ce.voice_agent,
             COUNT(*)                                                        AS total_calls,
-            COUNT(DISTINCT ce.contact_id)                                  AS unique_contacts,
+            COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (WHERE ce.detected_intent = 'enrolled')        AS booked
+            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked
         FROM call_events ce
-        WHERE ce.created_at BETWEEN :from_dt AND :to_dt
+        WHERE COALESCE(ce.call_started_at, ce.created_at)
+                  >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
+          AND NOT ce.report_excluded
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -651,6 +721,7 @@ def get_ai_timeseries(
             )                                                                 AS unknown_count
         FROM call_events
         WHERE created_at BETWEEN :from_dt AND :to_dt
+          AND NOT report_excluded
         GROUP BY date_trunc('week', created_at)
         ORDER BY week_start ASC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -664,6 +735,7 @@ def get_ai_timeseries(
         FROM call_events
         WHERE created_at BETWEEN :from_dt AND :to_dt
           AND detected_intent IS NOT NULL
+          AND NOT report_excluded
         GROUP BY date_trunc('week', created_at), detected_intent
         ORDER BY week_start ASC, cnt DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -894,6 +966,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
       meaningful_engagement_rate — strong-intent calls / total calls
       booking_rate               — enrolled / unique contacts
       active_leads               — lead_state not closed/dnc
+      in_vm_sequence             — leads in active VM tier (tier 0–2, not finalized)
+      finalized_today            — leads finalized since midnight CST (closed/terminal/dnc)
       sync_success_rate          — task_events created / total
       anomaly_count              — exception types with spike (≥3 occurrences) in 24h
       urgent_leads_count         — calls in last 7 days with high-intent detected_intent
@@ -953,6 +1027,25 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     except Exception:
         config_health = "error"
 
+    # ── calls_today (resets at midnight America/Chicago) ─────────────────────
+    _midnight_cst = (
+        "DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Chicago')"
+        " AT TIME ZONE 'America/Chicago'"
+    )
+    _yesterday_start = (
+        "(DATE_TRUNC('day', NOW() AT TIME ZONE 'America/Chicago') - INTERVAL '1 day')"
+        " AT TIME ZONE 'America/Chicago'"
+    )
+    calls_today = int(_scalar(
+        f"SELECT COUNT(*) FROM call_events"
+        f" WHERE COALESCE(call_started_at, created_at) >= {_midnight_cst}"
+    ) or 0)
+    calls_yesterday = int(_scalar(
+        f"SELECT COUNT(*) FROM call_events"
+        f" WHERE COALESCE(call_started_at, created_at) >= {_yesterday_start}"
+        f"   AND COALESCE(call_started_at, created_at) < {_midnight_cst}"
+    ) or 0)
+
     # ── pickup_rate ───────────────────────────────────────────────────────────
     pickup_curr = _r(_scalar(
         "SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at >= :s",
@@ -974,20 +1067,83 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         {"a": w48_start, "b": w24_start},
     ))
 
-    # ── booking_rate (enrolled / unique contacts) ─────────────────────────────
+    # ── booking_rate (booked / unique phones) ────────────────────────────────
     book_curr = _r(_scalar(
-        "SELECT COUNT(DISTINCT contact_id) FILTER (WHERE detected_intent = 'enrolled')::float / NULLIF(COUNT(DISTINCT contact_id), 0) FROM call_events WHERE created_at >= :s",
+        """SELECT COUNT(*) FILTER (WHERE
+                detected_intent = 'enrolled'
+                OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+                OR (
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
+                )
+           )::float / NULLIF(COUNT(DISTINCT CASE
+                WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
+                ELSE raw_payload_json->>'phone_number_to'
+           END), 0)
+           FROM call_events WHERE created_at >= :s""",
         {"s": w24_start},
     ))
     book_prev = _r(_scalar(
-        "SELECT COUNT(DISTINCT contact_id) FILTER (WHERE detected_intent = 'enrolled')::float / NULLIF(COUNT(DISTINCT contact_id), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
+        """SELECT COUNT(*) FILTER (WHERE
+                detected_intent = 'enrolled'
+                OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
+                OR (
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
+                    AND raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
+                )
+           )::float / NULLIF(COUNT(DISTINCT CASE
+                WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
+                ELSE raw_payload_json->>'phone_number_to'
+           END), 0)
+           FROM call_events WHERE created_at BETWEEN :a AND :b""",
         {"a": w48_start, "b": w24_start},
     ))
 
     # ── active_leads ──────────────────────────────────────────────────────────
     active_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state WHERE status NOT IN ('closed', 'do_not_call') AND do_not_call = false"
+        "SELECT COUNT(*) FROM lead_state"
+        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
+        " AND do_not_call IS NOT TRUE"
     ) or 0
+    prev_active_leads = _scalar(
+        "SELECT COUNT(*) FROM lead_state"
+        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
+        " AND do_not_call IS NOT TRUE"
+        " AND created_at >= :s",
+        {"s": w7d_start},
+    ) or 0
+
+    # ── in_vm_sequence ────────────────────────────────────────────────────────
+    in_vm_sequence = _scalar("""
+        SELECT COUNT(*) FROM lead_state
+        WHERE ai_campaign_value IS NOT NULL
+          AND ai_campaign_value != '3'
+          AND (status IS NULL OR status NOT IN ('closed', 'terminal'))
+          AND do_not_call IS NOT TRUE
+    """) or 0
+    prev_in_vm_sequence = _scalar("""
+        SELECT COUNT(*) FROM lead_state
+        WHERE ai_campaign_value IS NOT NULL
+          AND ai_campaign_value != '3'
+          AND (status IS NULL OR status NOT IN ('closed', 'terminal'))
+          AND do_not_call IS NOT TRUE
+          AND created_at >= :s
+    """, {"s": w7d_start}) or 0
+
+    # ── finalized_today (resets at midnight America/Chicago) ──────────────────
+    finalized_today = int(_scalar(
+        f"SELECT COUNT(*) FROM lead_state"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f"   AND updated_at >= {_midnight_cst}"
+    ) or 0)
+    finalized_yesterday = int(_scalar(
+        f"SELECT COUNT(*) FROM lead_state"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f"   AND updated_at >= {_yesterday_start}"
+        f"   AND updated_at < {_midnight_cst}"
+    ) or 0)
 
     # ── sync_success_rate ─────────────────────────────────────────────────────
     sync_curr = _r(_scalar(
@@ -1047,10 +1203,13 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "active_alerts":              _pt(active_alerts,           None),
         "lookup_rate":                _pt(lookup_curr,             lookup_prev),
         "config_health":              _pt(config_health,           config_health),
+        "calls_today":                _pt(calls_today,             calls_yesterday),
         "pickup_rate":                _pt(pickup_curr,             pickup_prev),
         "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
         "booking_rate":               _pt(book_curr,               book_prev),
-        "active_leads":               _pt(active_leads,            None),
+        "active_leads":               _pt(active_leads,            prev_active_leads),
+        "in_vm_sequence":             _pt(in_vm_sequence,          prev_in_vm_sequence),
+        "finalized_today":            _pt(finalized_today,         finalized_yesterday),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),
         "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
         "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),
@@ -1149,7 +1308,7 @@ def get_recent_calls(
             COALESCE(
                 -- Primary: raw_payload_json->>'Name' unless it looks like a phone number
                 CASE
-                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ '^\+?[\d\s\-\(\)\.]{7,}$'
+                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ '^\+?[\d\s\-\(\)\.]{{7,}}$'
                       OR TRIM(ce.raw_payload_json->>'Name') = ''
                       OR ce.raw_payload_json->>'Name' IS NULL
                     THEN NULL

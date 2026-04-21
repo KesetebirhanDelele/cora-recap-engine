@@ -237,6 +237,7 @@ tmp/
 *.sql.dump
 *.pg_dump
 db_dumps/
+call_events_export.csv
 
 # Migration lock / generated artifacts
 migrations/__pycache__/

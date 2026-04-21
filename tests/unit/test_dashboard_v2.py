@@ -475,3 +475,78 @@ class TestPipelineTraceService:
         assert sms_step["is_shadow"] is True
         assert sms_step["shadow_payload"] is not None
         assert "message_body" in sms_step["shadow_payload"]
+
+
+# ── SQL rendering tests for dashboard_metrics ─────────────────────────────────
+#
+# These tests do NOT need a real database. They intercept session.execute(),
+# capture the SQL string, and assert it is well-formed before it ever reaches
+# Postgres. This catches both classes of bug that hit production:
+#
+#   1. F-string brace escaping: {7,} inside f"""...""" evaluates to (7,)
+#      because Python treats {7,} as the expression `7,` (a tuple).
+#      Fix: {{7,}} → produces literal {7,} in the SQL string.
+#
+#   2. PostgreSQL E-string backslash stripping: E'\+' → '+' (backslash
+#      dropped for unrecognized escape sequences), turning ^+? into a
+#      quantifier on the ^ anchor → "quantifier operand invalid".
+#      Fix: use plain '...' literal (standard_conforming_strings=on default).
+
+class TestGetRecentCallsSql:
+    """Validate the SQL rendered by get_recent_calls without hitting Postgres."""
+
+    def _capture_sql(self) -> str:
+        """Call get_recent_calls with a mock session and return the SQL string."""
+        from app.services.dashboard_metrics import get_recent_calls
+
+        captured: list[str] = []
+
+        class _CapturingSession:
+            def execute(self, stmt, params=None):
+                captured.append(str(stmt.text) if hasattr(stmt, "text") else str(stmt))
+                raise StopIteration("captured")
+
+        try:
+            get_recent_calls(_CapturingSession())  # type: ignore[arg-type]
+        except StopIteration:
+            pass
+
+        assert captured, "session.execute was never called"
+        return captured[0]
+
+    def test_phone_regex_no_e_string_prefix(self):
+        """Regex must NOT use E'...' — PostgreSQL drops \\+ to + making ^+? invalid."""
+        sql = self._capture_sql()
+        # The phone pattern line must not start with E' before the regex
+        assert "~ E'" not in sql, (
+            "Phone regex uses E-string prefix; PostgreSQL will strip \\+ → + "
+            "making the quantifier operand invalid (^+? quantifies a zero-width anchor)"
+        )
+
+    def test_phone_regex_has_valid_quantifier(self):
+        """Regex must contain the literal {7,} quantifier, not (7,) from f-string evaluation."""
+        sql = self._capture_sql()
+        assert "{7,}" in sql, (
+            "Phone regex quantifier {7,} missing from SQL — likely rendered as (7,) "
+            "due to unescaped f-string braces ({7,} should be {{7,}} in the source)"
+        )
+        assert "(7,)" not in sql, (
+            "SQL contains (7,) — f-string evaluated {7,} as the tuple expression `7,`. "
+            "Use {{7,}} in the f-string source to produce the literal {7,}."
+        )
+
+    def test_phone_regex_anchors_intact(self):
+        """Regex must start with ^ and end with $ to be a full-string match."""
+        sql = self._capture_sql()
+        # Find the phone pattern substring
+        assert "^\\+?" in sql or "^+" not in sql, (
+            "Phone regex anchor structure unexpected"
+        )
+        assert "{7,}$" in sql, "Regex must be anchored with $ at the end"
+
+    def test_params_use_sqlalchemy_style(self):
+        """SQL must use :param style, not %(param)s — the latter bypasses SQLAlchemy binding."""
+        sql = self._capture_sql()
+        assert ":from_dt" in sql, "Expected :from_dt bound parameter"
+        assert ":to_dt" in sql, "Expected :to_dt bound parameter"
+        assert ":limit" in sql, "Expected :limit bound parameter"

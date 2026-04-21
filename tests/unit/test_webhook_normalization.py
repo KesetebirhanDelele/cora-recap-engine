@@ -24,6 +24,8 @@ Covers:
   20. Agent inference overrides an incorrect payload campaign_name
   21. campaign_name falls back to payload value when Agent has no campaign keyword
   22. campaign_name defaults to 'New Lead' when both Agent and payload are absent
+  23. data envelope (strict): {"data": {...}} with single key → full unwrap
+  24. data envelope (relaxed): call_id inside data alongside outer keys (failed call shape)
 """
 from __future__ import annotations
 
@@ -218,6 +220,41 @@ def test_campaign_name_defaults_to_new_lead_when_both_absent():
     payload = {"call_id": "x", "status": "completed"}
     result = normalize_synthflow_payload(payload)
     assert result["campaign_name"] == "New Lead"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 23–24: data envelope normalization
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_data_envelope_strict_unwrap():
+    """Successful call shape: {"data": {...}} with a single key → full unwrap."""
+    payload = {"data": {"call_id": "sf-strict-001", "call_status": "completed", "duration": 90}}
+    result = normalize_synthflow_payload(payload)
+    assert result["call_id"] == "sf-strict-001"
+    assert result["call_status"] == "completed"
+    # After strict unwrap there is no "data" wrapper key
+    assert "data" not in result
+
+
+def test_data_envelope_relaxed_merge_for_failed_call():
+    """Failed call shape: call_id is inside data but outer keys also present.
+
+    Synthflow adds top-level fields (call_status, error, etc.) for telephony
+    failures while still nesting the call record under 'data'.  The relaxed
+    merge path must surface call_id so the webhook returns 202, not 422.
+    """
+    payload = {
+        "data": {"call_id": "sf-failed-001", "phone_number_to": "+15550009999"},
+        "call_status": "failed",
+        "error": "Telephony - 403 - Caller ID is unauthorized",
+    }
+    result = normalize_synthflow_payload(payload)
+    assert result["call_id"] == "sf-failed-001"
+    # Outer fields must be preserved
+    assert result["call_status"] == "failed"
+    assert result["error"] == "Telephony - 403 - Caller ID is unauthorized"
+    # Inner phone field surfaced
+    assert result["phone_number_to"] == "+15550009999"
 
 
 def test_webhook_422_logs_original_keys(caplog):

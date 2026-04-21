@@ -146,15 +146,18 @@ Contacts or entities that have accumulated 2 or more failures in the last 7 days
 **Question answered:** Are there jobs stuck in the pipeline that will never run?
 
 Shows two lists:
-- **Stuck jobs** — jobs whose `run_at` time has passed but that have not been claimed by a worker. Fields: job_id, job_type, contact_id, run_at, lag in seconds.
-- **Expired leases** — jobs that were claimed by a worker but whose lease expired before completion (worker crashed or timed out). Fields: job_id, job_type, worker_id, lease age in seconds.
+- **Stuck jobs** — jobs whose `run_at` time has passed but that have not been claimed by a worker. Fields: job_id, job_type, contact_id, run_at, lag in seconds. If the row has a `contact_id`, a **Cancel jobs** button appears — clicking it calls `POST /dashboard/actions/cancel` for that contact and re-fetches the page.
+- **Expired leases** — jobs that were claimed by a worker but whose lease expired before completion (worker crashed or timed out). Fields: job_id, job_type, worker_id, lease age in seconds. No action button — expired leases are auto-recovered by the worker's `recover_expired_claims` routine; a note to this effect is displayed.
 
 The home page badge on this card shows `stuck_job_count + expired_lease_count`.
+
+The page fetches data client-side on mount and automatically re-fetches after a successful cancel action.
 
 **Use cases:**
 - After a worker restart: check whether any leases are in an expired state and whether they have been auto-recovered.
 - When queue lag is elevated (visible on the status bar): open Queue Health to see which specific jobs are causing the lag.
 - Periodic audit: confirm no jobs are silently stuck behind a dead worker.
+- Manually cancel a stuck contact whose jobs will never clear (e.g. incorrect enrollment, terminal state reached outside the pipeline).
 
 ---
 
@@ -176,10 +179,12 @@ Each alert record has a severity (critical / warning), a status (active / resolv
 
 The page has three tabs: **Active**, **Resolved**, **Acknowledged**.
 
+Active alert rows show an **Acknowledge** button. Clicking it calls `POST /dashboard/actions/acknowledge-alert`, immediately removes the row from the Active tab (optimistic UI), and moves it to the Acknowledged tab. This requires the Dashboard Token to be set in Settings (see `/settings`).
+
 **Use cases:**
-- **Active tab** — the queue to action. Critical alerts (red) require immediate attention. Warning alerts (amber) should be investigated.
+- **Active tab** — the queue to action. Critical alerts (red) require immediate attention. Warning alerts (amber) should be investigated. Use Acknowledge to move a known incident off this list while it is being worked.
 - **Resolved tab** — audit trail; confirms alerts self-resolved after the underlying metric recovered.
-- **Acknowledged tab** — alerts that have been noted but not yet resolved. Useful when a known incident is being worked.
+- **Acknowledged tab** — alerts that have been noted but not yet resolved. Useful when a known incident is being worked and the operator does not want it cluttering the Active view.
 
 ---
 
@@ -404,9 +409,17 @@ A cross-filter analytics view over the same KPI and AI distribution dataset used
 
 Displays the active `app_config` values loaded from the database. These are runtime settings (brand name, messaging templates, alert thresholds, tier delays) that can be updated without a code deploy.
 
-Write actions require `Authorization: Bearer {SECRET_KEY}`. The settings page uses the same auth flow as the operator action endpoints.
+Write actions require `Authorization: Bearer {SECRET_KEY}`. The settings page uses the same auth flow as all other operator action endpoints.
 
-**Use case:** Update the voicemail SMS message template or adjust an alert threshold during a live incident without restarting any service.
+### Dashboard Token
+
+The Settings page has a **Dashboard Token** card at the top. This is where operators store the `SECRET_KEY` value in their browser's `localStorage`. Without this token set, all write actions (Acknowledge alert, Cancel jobs, Submit sales outcome, etc.) will return 403.
+
+**First-time setup**: paste the `SECRET_KEY` value (from the server `.env`) into the password field and click **Save token**. A green "Token is set" badge confirms it is stored. The token persists across browser sessions until explicitly cleared.
+
+**Use cases:**
+- Update the voicemail SMS message template or adjust an alert threshold during a live incident without restarting any service.
+- Store the operator auth token after a new deployment or `SECRET_KEY` rotation.
 
 ---
 
@@ -450,11 +463,12 @@ All read endpoints are optionally auth-gated by `DASHBOARD_READ_AUTH_REQUIRED`. 
 | `GET` | `/dashboard/settings` | Settings page (read) |
 | `POST` | `/dashboard/settings` | Settings page (write, auth required) |
 | `POST` | `/dashboard/actions/retry` | Exceptions Monitor → Retry |
-| `POST` | `/dashboard/actions/cancel` | Lead trace / operator action |
+| `POST` | `/dashboard/actions/cancel` | Lead trace / operator action; Queue Health → Cancel jobs |
 | `POST` | `/dashboard/actions/finalize` | Lead trace / operator action |
 | `POST` | `/dashboard/actions/resolve` | Exceptions Monitor → Resolve |
 | `POST` | `/dashboard/actions/ignore` | Exceptions Monitor → Ignore |
 | `POST` | `/dashboard/actions/bulk-ignore` | Exceptions Monitor → Bulk Ignore |
+| `POST` | `/dashboard/actions/acknowledge-alert` | Alerts page → Acknowledge |
 
 ---
 

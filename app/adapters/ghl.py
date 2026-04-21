@@ -168,6 +168,44 @@ class GHLClient:
         contacts = result.get("contacts", [])
         return contacts[0] if contacts else None
 
+    def get_conversations_by_contact(self, contact_id: str, limit: int = 20) -> list[dict]:
+        """
+        Return the list of GHL conversations for a contact (newest first).
+
+        Used to find the active conversation ID before fetching message history.
+        Returns an empty list on any error so callers can degrade gracefully.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL get_conversations_by_contact | contact_id=%s", contact_id)
+        result = self._request(
+            "GET",
+            "/conversations/search",
+            params={
+                "locationId": self.settings.ghl_location_id,
+                "contactId": contact_id,
+                "limit": limit,
+            },
+        )
+        return result.get("conversations", [])
+
+    def get_conversation_messages(self, conversation_id: str, limit: int = 20) -> list[dict]:
+        """
+        Return messages for a conversation (newest first).
+
+        Each message dict from GHL includes: id, direction, messageType, body,
+        dateAdded, status.  direction is 'inbound' | 'outbound'.
+        messageType is 'SMS' | 'Email' | 'Activity' | etc.
+        Returns an empty list on any error so callers can degrade gracefully.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL get_conversation_messages | conversation_id=%s", conversation_id)
+        result = self._request(
+            "GET",
+            f"/conversations/{conversation_id}/messages",
+            params={"limit": limit},
+        )
+        return result.get("messages", [])
+
     def get_contact(self, contact_id: str) -> dict:
         """
         Fetch a full GHL contact record by contact ID.
@@ -181,17 +219,64 @@ class GHLClient:
 
     # ── Field resolution helpers ──────────────────────────────────────────────
 
+    def get_location_fields(self) -> list[dict]:
+        """
+        Fetch all custom field definitions for the GHL location.
+
+        Returns a list of {id, name, fieldKey, ...} objects — one per field
+        defined in the location, regardless of whether any contact has a value.
+
+        This is required for reliable label→ID resolution because
+        GET /contacts/{id} only returns customFields that already have a value
+        on that specific contact. New contacts or contacts that have never had
+        a particular field written will have an empty customFields array.
+
+        Requires `locations/customFields.readonly` scope on the Private
+        Integration token.
+
+        Use resolve_field_id_from_location() with the result to map
+        field labels to UUIDs before any live write call.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL get_location_fields | location_id=%s", self.settings.ghl_location_id)
+        result = self._request(
+            "GET",
+            f"/locations/{self.settings.ghl_location_id}/customFields",
+        )
+        return result.get("customFields", [])
+
+    @staticmethod
+    def resolve_field_id_from_location(field_label: str, location_fields: list[dict]) -> str | None:
+        """
+        Find a custom field UUID from location-level field definitions.
+
+        Preferred over resolve_field_id() when the contact may not yet have
+        a value for the target field (new contact, first write to that field).
+
+        location_fields: result of get_location_fields().
+        Matches on `name` (human label) or `fieldKey` (snake_case).
+        """
+        for field in location_fields:
+            if field.get("name") == field_label or field.get("fieldKey") == field_label:
+                return field.get("id")
+        return None
+
     @staticmethod
     def resolve_field_id(field_label: str, contact: dict) -> str | None:
         """
         Find a custom field ID from a fetched contact record by label or key.
 
-        GHL custom field objects: {id, name, fieldKey, value}.
-        Matches on `name` (human label) first, then `fieldKey` (snake_case).
+        IMPORTANT: GHL only returns customFields entries that already have a
+        value on this contact. If a field has never been written, it will not
+        appear here and this method will return None. Use
+        resolve_field_id_from_location() with get_location_fields() when the
+        contact may be new or when a field has never been set.
+
+        GHL custom field objects in contact record: {id, value} only — the
+        `name` and `fieldKey` are NOT returned by GET /contacts/{id}.
+        (They ARE returned by GET /locations/{id}/customFields.)
 
         Returns the field `id` string used for write payloads, or None.
-        This resolves unresolved external field IDs at runtime without
-        hard-coding production values.
         """
         for field in contact.get("customFields", []):
             if field.get("name") == field_label or field.get("fieldKey") == field_label:
@@ -236,17 +321,19 @@ class GHLClient:
         due_date: str = "",
     ) -> dict:
         """
-        Build the request body for a GHL task creation.
+        Build the request body for a GHL task creation (v2 API).
+
+        GHL v2 task API accepts: title, dueDate, completed (bool), assignedTo.
+        It does NOT accept `status` or `description` — sending those fields
+        causes a 422 response. description is accepted by the UI but not the API.
 
         assigned_to: GHL user ID string — omitted when blank.
         due_date: ISO 8601 string — omitted when blank.
         """
         payload: dict[str, Any] = {
             "title": title,
-            "status": "incompleted",
+            "completed": False,
         }
-        if description:
-            payload["description"] = description
         if assigned_to:
             payload["assignedTo"] = assigned_to
         if due_date:
@@ -258,20 +345,40 @@ class GHLClient:
         return {"body": content}
 
     # ── Write operations (shadow-gated) ───────────────────────────────────────
+    #
+    # All three write methods accept an optional `mode_flags` parameter.
+    # When provided (from a worker that has a DB session), mode_flags takes
+    # precedence over self.settings for the shadow/live gate check. This
+    # allows dashboard changes to propagate immediately without a restart.
+    # When mode_flags is None, falls back to the original settings-based check.
 
     def update_contact_fields(
-        self, contact_id: str, field_updates: dict[str, str]
+        self,
+        contact_id: str,
+        field_updates: dict[str, str],
+        *,
+        mode_flags: Any = None,
     ) -> dict:
         """
         Write custom field values to a GHL contact.
 
         Shadow mode (default): logs payload, returns shadow response dict.
         Live mode: calls GHL PUT /contacts/{id} with the field update payload.
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
+                    When supplied, overrides settings.ghl_writes_enabled.
         """
         payload = self.build_field_update_payload(field_updates)
-        if not self.settings.ghl_writes_enabled:
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
             return self._shadow_write("update_contact_fields", contact_id, payload)
-        self.settings.validate_for_ghl_writes()
+        # When mode_flags provided the DB already authorized live writes — only
+        # validate credentials (not the settings-level mode gate, which may lag
+        # behind the DB state).  Fall back to full settings validation otherwise.
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
         logger.info("GHL update_contact_fields | contact_id=%s", contact_id)
         return self._request("PUT", f"/contacts/{contact_id}", json=payload)
 
@@ -282,6 +389,8 @@ class GHLClient:
         description: str = "",
         assigned_to: str = "",
         due_date: str = "",
+        *,
+        mode_flags: Any = None,
     ) -> dict:
         """
         Create a GHL task for a contact.
@@ -291,26 +400,44 @@ class GHLClient:
 
         Idempotency: callers must check task_events for an existing 'created'
         record before invoking (enforced by the dedupe service, Phase 3+).
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
         """
         payload = self.build_task_payload(title, description, assigned_to, due_date)
-        if not self.settings.ghl_writes_enabled:
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
             return self._shadow_write("create_task", contact_id, payload)
-        self.settings.validate_for_ghl_writes()
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
         logger.info("GHL create_task | contact_id=%s title=%r", contact_id, title)
         return self._request("POST", f"/contacts/{contact_id}/tasks", json=payload)
 
-    def append_note(self, contact_id: str, content: str) -> dict:
+    def append_note(
+        self,
+        contact_id: str,
+        content: str,
+        *,
+        mode_flags: Any = None,
+    ) -> dict:
         """
         Append a note to a GHL contact.
 
         Shadow mode (default): logs payload, returns shadow response dict.
         Live mode: calls GHL POST /contacts/{id}/notes.
         Note content is NOT logged (may contain transcript excerpts).
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
         """
         payload = self.build_note_payload(content)
-        if not self.settings.ghl_writes_enabled:
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
             return self._shadow_write("append_note", contact_id, payload)
-        self.settings.validate_for_ghl_writes()
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
         logger.info("GHL append_note | contact_id=%s", contact_id)
         return self._request("POST", f"/contacts/{contact_id}/notes", json=payload)
 

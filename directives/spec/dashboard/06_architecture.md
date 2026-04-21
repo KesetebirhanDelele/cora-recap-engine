@@ -11,8 +11,9 @@ The system shares Postgres and Redis with the existing worker and API but introd
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│  Browser (Next.js)                                             │
-│   ├── HTTP polling   →  Dashboard API  (port 8001)            │
+│  Browser                                                       │
+│   ├── HTTP polling   →  Next.js server (port 3000)            │
+│   │                      └── rewrite → Dashboard API (8001)   │
 │   └── WebSocket      →  Dashboard API  (ws://host:8001/ws)    │
 └────────────────────────────────────────────────────────────────┘
                               │
@@ -161,12 +162,15 @@ All thresholds are settings-driven (`ALERT_*` env vars). See `spec/dashboard/09_
 ## Frontend structure (Next.js)
 
 **Key constraints**:
-- All data fetching goes through `lib/api.ts` typed wrappers pointing to `NEXT_PUBLIC_API_URL=http://localhost:8001`. No direct `fetch` calls in component files.
+- All data fetching goes through `lib/api.ts` typed wrappers. No direct `fetch` calls in component files.
+- **Browser API routing (production-hardened)**: `lib/api.ts` uses `window.location.origin` as the base URL when running in the browser. All `/dashboard/*` and `/health` requests therefore go to port 3000 (same origin) and are transparently proxied by `next.config.js` rewrites to the dashboard-api container via Docker-internal hostname (`http://dashboard-api:8001`). This eliminates CORS entirely and means port 8001 does not need to be reachable from the user's browser.
+- **Server-side (SSR/RSC)**: `lib/api.ts` uses `NEXT_PUBLIC_API_URL` (baked at build time from `DASHBOARD_API_URL`) to reach the dashboard-api directly from the Next.js container.
+- **`DASHBOARD_API_URL` in Docker**: must be the Docker-internal hostname `http://dashboard-api:8001`, not `http://localhost:8001`. Set this in `.env` or rely on the compose default. `localhost:8001` inside the Next.js container refers to the container itself, not the dashboard-api container.
 - Charts use Recharts. No chart library with a paid tier.
 - Analytics pages (Voice Performance, AI Performance, Conversion Funnel) are `"use client"` components with local date state.
 - Date filter state is managed client-side (not URL params) via `useState` + `DateRangePicker` component.
 - All timestamps rendered in the browser use local JS `Date` APIs.
-- CORS: dashboard API accepts requests from `ALLOW_ORIGINS=http://localhost:3000` only.
+- CORS: dashboard API accepts requests from `ALLOW_ORIGINS` env var. In production, set this to the Next.js origin (e.g. `http://server-ip:3000`). Browser calls proxied through Next.js rewrites never need CORS — only direct browser-to-8001 calls (e.g. WebSocket) require it.
 
 ### Analytics page separation (enforced)
 

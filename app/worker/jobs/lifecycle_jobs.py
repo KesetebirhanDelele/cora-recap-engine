@@ -192,4 +192,5 @@ def update_lead_state(job_id: str) -> None:
                 entity_id=call_id or call_event_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise

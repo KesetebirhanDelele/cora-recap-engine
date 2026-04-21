@@ -249,6 +249,9 @@ export interface VoiceTimeSeriesPoint {
   cold: number;
   inbound: number;
   new_lead: number;
+  cold_unique: number;
+  inbound_unique: number;
+  new_lead_unique: number;
   completion_rate: number;
   pickup_rate: number;
   voicemail_rate: number;
@@ -389,7 +392,7 @@ export interface ContactExceptionRecord {
 
 export interface LeadDetailResponse {
   contact_id: string;
-  lead_state: LeadStateRecord;
+  lead_state: LeadStateRecord | null;
   call_events: CallEventRecord[];
   shadow_actions: ShadowActionRecord[];
   scheduled_jobs: ScheduledJobRecord[];
@@ -475,10 +478,13 @@ export interface CardMetricsResponse {
   active_alerts:              MetricPoint;
   lookup_rate:                MetricPoint;
   config_health:              MetricPoint;
+  calls_today:                MetricPoint;
   pickup_rate:                MetricPoint;
   meaningful_engagement_rate: MetricPoint;
   booking_rate:               MetricPoint;
   active_leads:               MetricPoint;
+  in_vm_sequence:             MetricPoint;
+  finalized_today:            MetricPoint;
   sync_success_rate:          MetricPoint;
   anomaly_count:              MetricPoint;
   urgent_leads_count:         MetricPoint;
@@ -534,6 +540,46 @@ export interface IntentCallsResponse {
   campaign_filter: string | null;
   total: number;
   calls: IntentCallRow[];
+}
+
+// ── Lead Lifecycle Monitor ────────────────────────────────────────────────────
+
+export interface LeadLifecycleSummary {
+  active:            number;
+  in_vm_sequence:    number;
+  campaign_switched: number;
+  finalized:         number;
+  avg_days_to_close: number | null;
+}
+
+export interface LeadLifecycleRow {
+  contact_id:          string;
+  lead_name:           string;
+  phone:               string | null;
+  current_campaign:    string | null;
+  initial_campaign:    string | null;
+  vm_tier:             string | null;  // null | "0" | "1" | "2" | "3"
+  status:              string | null;
+  do_not_call:         boolean;
+  first_contact_at:    string | null;
+  last_contact_at:     string | null;
+  days_active:         number | null;
+  total_calls:         number;
+  total_sms:           number;
+  total_email:         number;
+  last_intent:         string | null;
+  campaign_switches:   number;
+  next_job_type:       string | null;
+  next_run_at:         string | null;
+  finalization_reason: string | null;
+  finalized_at:        string | null;
+}
+
+export interface LeadLifecycleResponse {
+  summary: LeadLifecycleSummary;
+  total:   number;
+  rows:    LeadLifecycleRow[];
+  filters: { status: string; campaign: string };
 }
 
 // ── WebSocket messages ────────────────────────────────────────────────────────

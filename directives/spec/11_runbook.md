@@ -11,6 +11,74 @@
 
 Note: Google Sheets shadow sync is out of scope. No Sheets setup required.
 
+---
+
+## Production Deployment (Hetzner Cloud)
+
+### Infrastructure
+- Hetzner CX22 (2 vCPU, 4 GB RAM, Ubuntu 22.04)
+- Docker CE + Docker Compose plugin
+- All services run in Docker Compose: postgres, redis, migrate, api, dashboard-api, frontend, worker-default, worker-ai, worker-callbacks, worker-retries
+
+### Key .env values for production
+
+```
+APP_ENV=production
+DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
+REDIS_HOST=redis
+DASHBOARD_API_URL=http://<server-ip>:8001
+WS_URL=ws://<server-ip>:8001/ws
+ALLOW_ORIGINS=http://<server-ip>:3000
+SECRET_KEY=<strong-random-secret>
+WEBHOOK_SHARED_SECRET=<strong-random-secret>
+
+# Synthflow — per-campaign Make Call webhook URLs (required for outbound calls)
+SYNTHFLOW_API_KEY=<synthflow-api-key>
+SYNTHFLOW_LAUNCH_WORKFLOW_URL_New=https://workflow.synthflow.ai/api/v1/webhooks/<new-lead-webhook-id>
+SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold=https://workflow.synthflow.ai/api/v1/webhooks/<cold-lead-webhook-id>
+```
+
+Synthflow routing rules:
+- `SYNTHFLOW_LAUNCH_WORKFLOW_URL_New` — triggers the New Lead Make Call workflow (`p6ihFj7HmplXM2WiuVsaC`)
+- `SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold` — triggers the Cold Lead Make Call workflow (`33J546NiXxUUIRCbywNVH`)
+- The single legacy `SYNTHFLOW_LAUNCH_WORKFLOW_URL` field no longer exists — both URLs are required
+- `JylDXjF8QB0Skr5cQzGGm` must never be used — it is a test workflow that silently drops calls
+
+Rules:
+- `DATABASE_URL` must use Docker service name `postgres:5432` (not `localhost` or `host.docker.internal`)
+- `DASHBOARD_API_URL` must be the public server IP — baked into Next.js bundle at build time
+- `docker-compose.override.yml` must NOT be present on the server — it is local dev only
+- Settings validator blocks boot if `SECRET_KEY` or `WEBHOOK_SHARED_SECRET` is `changeme` when `APP_ENV=production`
+
+### Deploy commands
+
+```bash
+cd /opt/cora-recap-engine
+git pull origin main
+docker compose up -d --build
+docker compose logs migrate       # verify exits 0
+docker compose ps                 # all services healthy/running
+```
+
+### Synthflow webhook URL
+
+```
+http://<server-ip>:8000/v1/webhooks/calls
+```
+
+Use `http://` not `https://` unless a reverse proxy with TLS is in place.
+
+Payload note: Synthflow HTTP step wraps the payload under `{"data": {...}}`. The normalizer at `app/api/routes/webhooks.py` unwraps this automatically.
+
+### Hetzner firewall ports (required)
+
+Open inbound TCP in Hetzner Cloud Console → Firewalls:
+- `8000` — Synthflow webhook + main API
+- `8001` — Dashboard API (browser)
+- `3000` — Next.js frontend
+
+---
+
 ## Local run
 
 ### Core pipeline (port 8000)
@@ -159,6 +227,18 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - If no `run_nurture_scheduler` job is pending, the worker may have been restarted without running `ensure_scheduled()` — restart the worker or manually insert a job
 
 ## Troubleshooting
+
+### Production / Docker Compose issues
+- `migrate` fails with `host.docker.internal` → `docker-compose.override.yml` is present on server or `.env` has `DATABASE_URL` pointing to localhost; remove override file, fix `DATABASE_URL` to use `postgres:5432`
+- frontend shows `Couldn't find pages or app directory` → dev Dockerfile used; `docker compose build --no-cache frontend && docker compose up -d frontend`
+- `TypeError: Failed to fetch` on all dashboard pages → `DASHBOARD_API_URL` baked as localhost at build time; set correct server IP in `.env` then rebuild frontend with `--no-cache`
+- `TypeError: Failed to fetch` persists after rebuild → port 8001 blocked by Hetzner firewall; add inbound TCP 8001 rule in Hetzner Cloud Console
+- CORS errors in browser → `ALLOW_ORIGINS` doesn't match browser origin; set `ALLOW_ORIGINS=http://<server-ip>:3000` in `.env`, restart `dashboard-api`
+- Synthflow POST returns connection error → URL uses `https://`; change to `http://`
+- Synthflow POST returns 422 `missing_call_id` → payload wrapped under `data` key and not unwrapped; ensure latest code is deployed (normalizer unwraps `{"data": {...}}` envelope automatically)
+- all dashboard data shows zeros → no call events in DB yet; normal on fresh deploy
+
+### Application issues
 - duplicate task → inspect `dedupe_key` in `call_events` and `task_events`
 - missing summary → inspect `summary_results.summary_consent` and transcript length
 - lost callback → inspect `scheduled_jobs` where `job_type='process_voicemail_tier'`
@@ -176,6 +256,26 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - lead not visible in Lead Journey by phone number → `lead_state.normalized_phone` may be null (lead created by `update_lead_state` before the normalised_phone fix on 2026-03-31); Lead Journey will fall back to `call_events.raw_payload_json` phone match, but if no call_events exist the lead won't resolve
 - voicemail tier not advancing after shadow mode was on → shadow mode intercepted `launch_outbound_call` without placing a real call; Synthflow never sent a callback; re-trigger from tier 0 once shadow mode is disabled
 - Lead Journey shows only 1 event despite multiple outreach attempts → SMS and outbound calls in shadow mode are in `shadow_actions`, not `outbound_messages`; they are not currently displayed in Lead Journey timeline
+
+### Alerting / metrics collector issues
+
+- **No rows in `system_metrics`, dashboard shows 0 active alerts** → `collect_metrics_job` never ran. Check worker-default startup logs for: `Could not ensure metrics scheduler on startup`. If present, confirm the `collect_metrics` job exists in `scheduled_jobs` with `status='pending'`; if missing, restart `worker-default` (it calls `start_metrics_scheduler()` on boot).
+
+- **Dashboard shows large backlog in Queue Health but 0 active alerts** → The `queue_lag_exceeded` alert fires on `queue_lag_seconds` (age of the oldest overdue pending job), **not** on backlog count. If all pending jobs are future-dated (e.g. voicemail retries scheduled minutes ahead), `queue_lag_seconds` = 0 and no alert fires. Use the diagnostic query below to confirm:
+  ```sql
+  SELECT EXTRACT(EPOCH FROM (NOW() - MIN(run_at)))::int AS lag_s
+  FROM scheduled_jobs WHERE status = 'pending' AND run_at <= NOW();
+  ```
+
+- **Scheduler loop logs only `no handler for job_type=...` warnings and nothing else processes** → A job type exists in DB (`scheduled_jobs`) but is missing from `_JOB_QUEUE_ATTRS` or `get_job_registry()` in `app/worker/main.py`. The scheduler loop's 100-job batch is consumed by unhandled jobs, starving other job types. Add the missing job type to both maps and redeploy `worker-default`.
+
+- **Alert fires on dashboard but no email received** → Check worker-default logs for `SMTP send failed`. Most common cause: Gmail rejects `SMTP_PASSWORD` with `535 Username and Password not accepted` when the value is the account password instead of an App Password. Fix:
+  1. Go to Google Account → Security → 2-Step Verification → App passwords
+  2. Generate a new App Password ("Mail" / "Other")
+  3. Update `SMTP_PASSWORD` in `/opt/cora-recap-engine/.env` with the 16-character App Password (no spaces)
+  4. `docker compose restart worker-default`
+
+- **Alert email delivered but alert not cleared** → Alerts auto-resolve on the next metrics cycle (≤60 s) when the metric drops below threshold. If the metric remains above threshold, the alert stays active — this is correct behavior. The dashboard Alerts page shows current status and last-seen time.
 
 ## Migration commands
 ```bash

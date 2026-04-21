@@ -154,9 +154,18 @@ def _parse_datetime(value: Any) -> datetime | None:
         if value > 1e11:
             value = value / 1000.0
         return datetime.fromtimestamp(value, tz=timezone.utc)
+    # String value: try ISO format first, then numeric epoch
+    s = str(value).strip()
     try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        pass
+    try:
+        numeric = float(s)
+        if numeric > 1e11:
+            numeric /= 1000.0
+        return datetime.fromtimestamp(numeric, tz=timezone.utc)
     except (ValueError, TypeError):
         return None
 
@@ -241,6 +250,7 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
         dedupe_key=dedupe_key,
         raw_payload_json=payload,
         created_at=datetime.now(tz=timezone.utc),
+        call_started_at=start_time,
     )
     session.add(event)
     session.flush()
@@ -394,6 +404,7 @@ def process_call_event(job_id: str) -> None:
                 entity_id=call_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 

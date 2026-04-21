@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
 from app.worker.exceptions import create_exception
 from app.worker.scheduler import schedule_job
 
@@ -58,6 +58,17 @@ def process_voicemail_tier(job_id: str) -> None:
         job = claim_job(session, job_id, worker_id=worker_id)
         if job is None:
             logger.info("process_voicemail_tier: job already claimed | job_id=%s", job_id)
+            return
+
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info(
+                "process_voicemail_tier: system paused — releasing | job_id=%s", job_id
+            )
+            release_job_to_pending(session, job)
+            session.commit()
             return
 
         mark_running(session, job)
@@ -205,6 +216,7 @@ def process_voicemail_tier(job_id: str) -> None:
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 
@@ -269,16 +281,20 @@ def _finalize_campaign(session, lead, settings) -> None:
     )
     ghl = GHLClient(settings=settings)
 
-    field_updates: dict[str, str] = {}
+    # Build with label keys, then resolve → UUIDs before live write.
+    from app.worker.jobs.crm_jobs import _resolve_to_field_ids
+    label_updates: dict[str, str] = {}
     if settings.ghl_field_mark_as_lead:
-        field_updates[settings.ghl_field_mark_as_lead] = "Yes"
-    ai_campaign_field = settings.ghl_field_ai_campaign or "AI Campaign"
-    field_updates[ai_campaign_field] = "No"
+        label_updates[settings.ghl_field_mark_as_lead] = "Yes"
+    ai_campaign_label = settings.ghl_field_ai_campaign or "AI Campaign"
+    label_updates[ai_campaign_label] = "No"
 
-    ghl.update_contact_fields(
-        contact_id=lead.contact_id,
-        field_updates=field_updates,
-    )
+    field_updates = _resolve_to_field_ids(ghl, label_updates)
+    if field_updates:
+        ghl.update_contact_fields(
+            contact_id=lead.contact_id,
+            field_updates=field_updates,
+        )
 
 
 def _make_default_queue(settings):

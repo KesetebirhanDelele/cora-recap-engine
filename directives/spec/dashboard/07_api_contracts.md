@@ -487,6 +487,39 @@ Bulk-ignore all open exceptions of a given type. Used to clear noise from the ex
 
 ---
 
+## POST /dashboard/actions/acknowledge-alert
+
+Mark an active alert as acknowledged. Acknowledged alerts appear in the **Acknowledged** tab on the Alerts page and are removed from the **Active** tab.
+
+**Auth**: Required
+
+**Request body**
+```json
+{
+  "alert_id": "uuid",
+  "note": "Investigating — known incident in progress"
+}
+```
+- `alert_id`: required; the `id` of the `alert_events` row to acknowledge.
+- `note`: optional free-text note written to the audit log. Max not enforced server-side; keep under 500 characters.
+
+**Response 200**
+```json
+{
+  "status": "ok",
+  "alert_id": "uuid",
+  "audit_log_id": "audit-uuid"
+}
+```
+
+**Response 409**: alert not found or not in `active` status (already resolved or acknowledged).
+**Response 422**: missing `alert_id`.
+**Response 403**: missing or invalid Bearer token.
+
+**Behavior**: `UPDATE alert_events SET status='acknowledged', resolved_at=now() WHERE id=:alert_id AND status='active'`. If `rowcount == 0` the API returns 409. One `audit_log` row is written with `action='acknowledge_alert'`, `entity_type='alert'`, `entity_id=alert_id`.
+
+---
+
 ## GET /dashboard/card-metrics
 
 Returns compact current + previous metric pairs for every navigation card indicator on the home page.

@@ -1,6 +1,6 @@
 # spec/14_synthflow_integration_addendum.md
 
-## Implementation status — COMPLETE (updated 2026-03-31)
+## Implementation status — COMPLETE (updated 2026-04-21)
 
 All requirements in this spec are implemented:
 
@@ -17,17 +17,49 @@ All requirements in this spec are implemented:
 | `executed_actions` logging | `_log_executed_actions()` — logs failures ≥ 400 as warnings |
 | Webhook field normalisation | `normalize_synthflow_payload()` in `webhooks.py`: resolves `call_id` from `Call_id`/`callId`/`call_id`; maps `duration` → `duration_seconds`; derives `contact_id` from phone fields; infers `campaign_name` from `Agent` field |
 | `Agent`-field campaign inference | `Agent` containing `coldlead`/`cold lead` → `"Cold Lead"`; `newlead`/`new lead` → `"New Lead"`; overrides payload's always-`"New Lead"` default |
-| `SYNTHFLOW_LAUNCH_WORKFLOW_URL` config | `settings.synthflow_launch_workflow_url` with `validate_for_synthflow_launch()` |
+| Per-campaign Make Call webhook URL | `settings.get_synthflow_launch_url(campaign_name)` — selects Cold Lead or New Lead URL; raises `ConfigError` if missing |
 | Make Call worker job | `launch_outbound_call_job` — `app/worker/jobs/outbound_jobs.py` |
 
 ---
 
 ## Purpose
-Define the Synthflow integration contract for outbound New Lead calling based on the observed live workflows:
-- **Cora Outbound NewLeads - Make Call**
-- **Cora Outbound NewLeads - Call Completed**
+Define the Synthflow integration contract for outbound calling across all campaigns based on the live workflows:
+- **Cora Outbound NewLeads - Make Call** (New Lead campaign)
+- **Cora Outbound ColdLead - Make Call** (Cold Lead campaign)
+- **Cora Outbound NewLeads - Call Completed** (completion webhook, both campaigns)
 
-This document clarifies how Synthflow is used in the system, what payloads matter, how the same voice agent participates in both workflows, and what the Python app must treat as authoritative.
+This document clarifies how Synthflow is used in the system, what payloads matter, how voice agents map to campaigns, and what the Python app must treat as authoritative.
+
+---
+
+## Voice Agents
+
+Each campaign uses a dedicated Synthflow voice agent. The `model_id` in `call_events` identifies which agent handled the call.
+
+| Campaign  | Voice Agent Name                          | model_id                               |
+|-----------|-------------------------------------------|----------------------------------------|
+| Cold Lead | Cora Outbound ColdLead Agent              | `95fd0659-7446-423c-bc51-764c3060c90f` |
+| New Lead  | Cora - Outbound Admissions Agent - New L  | `2608601d-bce6-4bb8-bc0f-f7df9dbf5971` |
+| Inbound   | Cora Inbound Agent                        | `f98454c1-2cd4-476c-b6f2-c5c425689e61` |
+
+**Rule:** VM-tier retry calls must use the same voice agent as the lead's current campaign.
+`launch_outbound_call_job` passes `campaign_name` to `launch_new_lead_call()`, which routes to the correct webhook — Synthflow selects the voice agent based on the workflow triggered.
+
+---
+
+## Make Call Webhook URLs (per campaign)
+
+The app selects the webhook URL based on the lead's `campaign_name` at call time.
+Routing logic: `settings.get_synthflow_launch_url(campaign_name)` in `app/config/settings.py`.
+
+| Campaign  | Env var                              | Webhook ID              |
+|-----------|--------------------------------------|-------------------------|
+| New Lead  | `SYNTHFLOW_LAUNCH_WORKFLOW_URL_New`  | `p6ihFj7HmplXM2WiuVsaC` |
+| Cold Lead | `SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold` | `33J546NiXxUUIRCbywNVH` |
+
+**Do not use:** `JylDXjF8QB0Skr5cQzGGm` — this was a test/Nexus workflow that does not place calls. All historical calls that hit this URL were silently dropped by Synthflow.
+
+Config health checks in `app/core/mode_flags.py` will flag missing URLs on the dashboard System Controls page.
 
 ---
 

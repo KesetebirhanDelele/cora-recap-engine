@@ -44,10 +44,119 @@ ALERT_EMAIL_TO=<recipient>
 ```
 
 ### Production
-```bash
-# docker-compose.yml additions (see spec/dashboard/06_architecture.md)
-docker-compose up dashboard-api dashboard-ui
+
+**Required `.env` settings before building the frontend:**
 ```
+# Internal Docker hostname — must NOT be localhost (that resolves to the frontend container itself)
+DASHBOARD_API_URL=http://dashboard-api:8001
+WS_URL=ws://<server-ip>:8001
+
+# Allow the Next.js origin so WebSocket connections aren't blocked by CORS
+ALLOW_ORIGINS=http://<server-ip>:3000
+```
+
+`DASHBOARD_API_URL` is baked into the Next.js image at build time via `next.config.js`. If it is wrong, all server-side data fetches (SSR) will fail silently and browser POSTs will never reach the server.
+
+```bash
+cd /opt/cora-recap-engine
+# Pull latest code
+git pull
+
+# Rebuild and restart — only dashboard-api and frontend need rebuilding for most changes
+docker compose up -d --build dashboard-api frontend
+
+# Rebuild only dashboard-api (no frontend code changes)
+docker compose up -d --build dashboard-api
+```
+
+---
+
+## Querying Postgres directly on the server
+
+All `docker compose` commands must be run from the project directory:
+
+```bash
+cd /opt/cora-recap-engine
+```
+
+Running them from any other directory produces: `no configuration file provided: not found`.
+
+### Interactive shell
+
+```bash
+docker compose exec postgres psql -U postgres -d cora
+```
+
+Useful psql meta-commands:
+
+| Command | What it does |
+|---|---|
+| `\dt` | List all tables |
+| `\d <table>` | Describe a table (columns, types, indexes) |
+| `\q` | Exit |
+
+### One-liner queries
+
+```bash
+# Stuck jobs (pending past run_at by more than 10 minutes)
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, contact_id, run_at,
+         EXTRACT(EPOCH FROM (NOW() - run_at))::int AS lag_seconds
+  FROM scheduled_jobs
+  WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'
+  ORDER BY run_at;"
+
+# Expired leases (running jobs with expired lease)
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, claimed_by,
+         EXTRACT(EPOCH FROM (NOW() - lease_expires_at))::int AS age_seconds
+  FROM scheduled_jobs
+  WHERE status = 'running' AND lease_expires_at < NOW();"
+
+# Active alerts
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT alert_type, severity, message, created_at
+  FROM alert_events WHERE status = 'active';"
+
+# Open exceptions
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT type, severity, status, created_at
+  FROM exceptions WHERE status = 'open'
+  ORDER BY created_at DESC LIMIT 20;"
+
+# Recent call events
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, status, duration_seconds, detected_intent, created_at
+  FROM call_events ORDER BY created_at DESC LIMIT 10;"
+
+# All scheduled jobs for a specific contact
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT id, job_type, status, run_at, claimed_by
+  FROM scheduled_jobs WHERE contact_id = '<contact_id>'
+  ORDER BY created_at DESC;"
+
+# Lead state for a specific contact
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT * FROM lead_state WHERE contact_id = '<contact_id>';"
+
+# Recent audit log (operator actions)
+docker compose exec postgres psql -U postgres -d cora -c "
+  SELECT entity_type, entity_id, action, operator_id, created_at
+  FROM audit_log ORDER BY created_at DESC LIMIT 20;"
+```
+
+### Data persistence
+
+Postgres data lives in a named Docker volume (`postgres_data`), stored on the host at `/var/lib/docker/volumes/cora-recap-engine_postgres_data`. It is **independent of any container or image**. Rebuilding services, pulling new code, or restarting containers never touches it.
+
+**The only destructive commands are:**
+- `docker compose down -v` — the `-v` flag explicitly removes volumes. **Never run this in production.**
+- `docker volume rm cora-recap-engine_postgres_data` — same effect.
+
+Safe commands (data is always preserved):
+- `docker compose up -d --build <service>` — rebuilds and restarts a service
+- `docker compose restart <service>` — restarts without rebuild
+- `docker compose down` — stops and removes containers, volumes untouched
 
 ---
 
@@ -97,11 +206,20 @@ streamlit run execution/dashboard.py --server.headless true
 
 **Symptoms**: Email received; Exceptions section shows `ghl_auth_failed` exceptions.
 
-1. Check `GHL_API_KEY` in environment: confirm it has not expired (GHL API keys can rotate).
-2. Check `GHL_LOCATION_ID`: confirm it matches the active GHL location.
-3. In GHL dashboard: Settings → Integrations → API Keys → verify key is active.
-4. If key expired: generate a new key, update `GHL_API_KEY` in environment, restart API and worker.
-5. After fix: retry affected exceptions via the Exceptions action button.
+1. Check `GHL_API_KEY` in environment — it is a **Private Integration JWT token**, not a simple key. These expire or can be revoked.
+2. In GHL: Settings → Integrations → Private Integrations → verify the integration is active and the token has not been revoked.
+3. Check `GHL_LOCATION_ID` matches the active GHL location.
+4. Verify the token has all required scopes: `contacts.readonly`, `contacts.write`, `locations/tasks.write`, `locations/customFields.readonly`.
+5. If expired/revoked: regenerate the token, update `GHL_API_KEY` in `/opt/cora-recap-engine/.env`, then restart API and worker:
+   ```bash
+   cd /opt/cora-recap-engine
+   docker compose restart api worker-default worker-ai
+   ```
+6. After fix: retry affected exceptions via the Exceptions action button.
+7. Verify fix:
+   ```bash
+   python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+   ```
 
 ---
 
@@ -131,6 +249,103 @@ streamlit run execution/dashboard.py --server.headless true
 
 ---
 
+## Go-Live Procedure (shadow → live)
+
+All mode flags are DB-backed and can be toggled from the **System Controls** page (`/system-controls`) without any `.env` edit or container restart. Changes take effect on the next job execution.
+
+### Pre-flight checklist
+
+1. Verify `test_ghl_writes.py` passes against the production contact:
+   ```bash
+   cd /opt/cora-recap-engine
+   python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+   # Expected: ALL CHECKS PASSED
+   ```
+2. Check System Controls → Pre-flight status panel: all items green or yellow (no red).
+3. Confirm no active `ghl_auth_failure` alerts in the Alerts page.
+4. Confirm Zapier enrollment is stopped / no new leads being enrolled.
+5. Wait for any in-flight Zapier-triggered calls to complete (check Live Activity for idle state).
+
+### Cutover sequence (from System Controls dashboard)
+
+1. Navigate to `http://<server-ip>:3000/system-controls`.
+2. Set **GHL Write Mode** → `live`.
+3. Enable **GHL Write: Contact Fields** → on.
+4. Enable **GHL Write: Tasks** → on.
+5. Enable **GHL Write: Summary** → on.
+6. Enable **GHL Write: Campaign State** → on.
+7. Enable **GHL Write: Finalization** → on.
+8. Set **Shadow Mode** → off (enables outbound calls / SMS / email).
+9. Confirm each toggle shows the updated state.
+
+### Verify after cutover
+
+```bash
+# Watch worker logs for live write confirmations
+docker compose logs -f worker-default
+
+# Expected log lines on next call processed:
+# INFO GHL update_contact_fields | contact_id=...
+# INFO GHL create_task | contact_id=...
+```
+
+Check GHL contact for the test lead — fields should have real values, not stale test data.
+
+### Rollback
+
+Return to System Controls and set **GHL Write Mode** → `shadow` and **Shadow Mode** → on. No restart required.
+
+---
+
+## Pre-Live GHL Write Integration Test
+
+Before go-live, run `test_ghl_writes.py` to verify all field writes against a real GHL contact:
+
+```bash
+cd /opt/cora-recap-engine
+python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+# or by contact ID:
+python execution/test_scripts/test_ghl_writes.py --contact-id <GHL_CONTACT_ID>
+```
+
+The script:
+1. Looks up the contact in GHL
+2. Fetches all field definitions from the location (`GET /locations/{id}/customFields`)
+3. Writes test values to every field Cora uses
+4. Reads back and verifies each write
+5. Creates a test task (delete it from GHL afterwards)
+6. Restores original field values
+
+**Required Private Integration scopes:** `contacts.readonly`, `contacts.write`, `locations/tasks.write`, `locations/customFields.readonly`
+
+---
+
+## Setting up the Dashboard Token (required for all write actions)
+
+All operator action endpoints (`/dashboard/actions/*` and `POST /dashboard/settings`) require `Authorization: Bearer <SECRET_KEY>`. The frontend reads this token from `localStorage["dashboard_token"]`.
+
+**First-time setup (or after a `SECRET_KEY` rotation):**
+1. Navigate to `http://<host>:3000/settings`.
+2. Find the **Dashboard Token** card at the top of the page.
+3. Paste the value of `SECRET_KEY` from the server's `.env` file into the password input.
+4. Click **Save token**. The green "Token is set" indicator confirms it is stored.
+5. The token persists in the browser's `localStorage` until the browser storage is cleared or the token is explicitly deleted from that field.
+
+**Verifying the token is working:**
+```bash
+# On the server, extract the key:
+SECRET=$(grep '^SECRET_KEY=' /opt/cora-recap-engine/.env | cut -d= -f2)
+
+# Confirm the endpoint accepts it (expect 422, not 403):
+curl -s -w "\n%{http_code}" -X POST http://localhost:8001/dashboard/actions/acknowledge-alert \
+  -H "Authorization: Bearer $SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# Expected: {"detail": ...} with HTTP 422 (body validation error, not auth error)
+```
+
+---
+
 ## Operator action procedures
 
 ### Retry a failed job
@@ -149,6 +364,27 @@ Use when a lead must be removed from all automated follow-up immediately (e.g., 
 3. All `pending` jobs for the lead are marked `cancelled`.
 4. No new outbound calls, SMS, or emails will be scheduled.
 5. Confirm in Queue section: all jobs for that contact_id show `cancelled`.
+
+### Acknowledge an alert
+Use when an alert is active but the underlying issue is already known and being worked. Acknowledging moves the alert off the Active tab so it does not distract from new signals, without suppressing the audit record.
+
+1. Navigate to `http://<host>:3000/alerts`.
+2. Open the **Active** tab.
+3. Locate the alert and click **Acknowledge**.
+4. The alert is immediately removed from the Active tab (optimistic UI).
+5. Confirm: switch to the **Acknowledged** tab — the alert row appears there.
+6. Backend: `PUT alert_events SET status='acknowledged'`; one `audit_log` row written.
+7. **Note**: acknowledging does not suppress the next alert email if the same threshold is breached again after the dedup window.
+
+### Cancel a stuck job from Queue Health
+Use when the Queue Health page (`/queue`) shows a stuck pending job and the associated contact should no longer be processed (e.g. incorrect enrollment, manual resolution, or a job that will never clear without intervention).
+
+1. Navigate to `http://<host>:3000/queue`.
+2. In the **Stuck Jobs** table, locate the job. If the **Contact** column shows a contact ID, a **Cancel jobs** button appears in the **Action** column.
+3. Click **Cancel jobs**.
+4. Backend: `POST /dashboard/actions/cancel` with `contact_id` and `reason="operator_cancelled_from_queue_health"`. All `pending` jobs for that contact are marked `cancelled`.
+5. The page re-fetches automatically. The cancelled contact's jobs should no longer appear in the stuck list.
+6. **No action is available** for rows without a contact ID, or for entries in the **Expired Leases** table — expired leases are auto-recovered by the worker's `recover_expired_claims` routine.
 
 ### Force finalize a lead
 Use when a lead has reached a terminal state outside the automated system (enrolled, withdrawn, wrong number resolved manually).
@@ -180,6 +416,54 @@ No database migrations are required for frontend-only changes.
 3. Restart both services.
 4. All existing Bearer tokens are immediately invalidated. Operators must re-authenticate.
 5. The existing Streamlit dashboard also uses `SECRET_KEY` — restart it or it will reject tokens until restarted.
+
+---
+
+## Known production bug patterns (resolved — documented for future reference)
+
+### "Failed to fetch" on write actions from the browser
+**Symptom**: System Controls / operator action buttons show `Failed: TypeError: Failed to fetch`. Read pages (health, metrics) work fine.
+
+**Root cause**: `NEXT_PUBLIC_API_URL` was baked in as `http://localhost:8001` at build time. Browser-side calls sent requests to the user's local machine (not the server), which has no port 8001.
+
+**Fix applied (2026-04-18)**: Added Next.js rewrites in `next.config.js` so all `/dashboard/*` calls from the browser go to port 3000 (same origin) and are proxied server-side to `http://dashboard-api:8001`. `lib/api.ts` now uses `window.location.origin` in the browser. `docker-compose.yml` default `DASHBOARD_API_URL` changed to `http://dashboard-api:8001`.
+
+**If this recurs**: Check `DASHBOARD_API_URL` in `.env` is `http://dashboard-api:8001` (not `localhost`). Rebuild the frontend image.
+
+---
+
+### "Internal Server Error" on POST /dashboard/mode (Go Live button)
+**Symptom**: Clicking "Go Live" in System Controls shows `Failed: Internal Server Error`.
+
+**Root cause**: `psycopg2` fails to translate named parameters when `::` cast follows immediately. `:ctx::jsonb` was left untranslated in the SQL → `syntax error at ":"`.
+
+**Fix applied (2026-04-18)**: Changed `:ctx::jsonb` to `CAST(:ctx AS jsonb)` in the `audit_log` INSERT in `dashboard_v2.py`.
+
+**Prevention**: Never write `:param::type` in SQLAlchemy `text()` blocks. Always use `CAST(:param AS type)`.
+
+---
+
+### Status bar shows "◉ Shadow" after going live
+**Symptom**: System Controls shows LIVE, but the home page header still shows `◉ Shadow | GHL: shadow`.
+
+**Root cause**: `get_health()` returned `settings.shadow_mode_enabled` and `settings.ghl_write_mode` from the `.env` file. System Controls writes to `app_config` (DB), not `.env`. The two sources diverged.
+
+**Fix applied (2026-04-18)**: `get_health()` now calls `get_mode_flags(session, settings)` (DB-first lookup) for these two fields, identical to how `GET /dashboard/mode` reads them.
+
+**Prevention**: Any endpoint that surfaces operational mode state must use `get_mode_flags()`, never `settings.*` directly for fields that are DB-backed.
+
+---
+
+### InvalidRegularExpression on /dashboard/recent-calls
+**Symptom**: `GET /dashboard/recent-calls` returns 500. Postgres log shows `ERROR: invalid regular expression: quantifier operand invalid`.
+
+**Root cause (1)**: The SQL regex was wrapped in `E'...'` (PostgreSQL escape string). PG strips unrecognised escape sequences — `E'^\+?...'` becomes `^+?...` in the regex engine. `+?` tries to quantify the zero-width anchor `^` → invalid.
+
+**Root cause (2)**: `{7,}` inside a Python f-string was written without doubling the braces. Python evaluates `{7,}` as the tuple `(7,)`, producing `(7,)` in the SQL string — not a valid regex quantifier.
+
+**Fix applied**: Use plain `'...'` string literals (not `E'...'`). Write `{{7,}}` in Python f-strings so the SQL receives `{7,}`.
+
+**Prevention**: See `spec/dashboard/03_constraints.md` — SQL authoring rules section.
 
 ---
 

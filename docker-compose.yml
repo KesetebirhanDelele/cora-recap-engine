@@ -1,124 +1,178 @@
 services:
 
+  # ── Postgres ─────────────────────────────────────────────────────────────────
+  # Persistent storage. Named volume survives container restarts and upgrades.
+  # Credentials come from .env via compose variable substitution — never hardcoded.
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DATABASE:-cora}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USERNAME:-postgres} -d ${POSTGRES_DATABASE:-cora}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis ─────────────────────────────────────────────────────────────────────
+  # Ephemeral queue broker. No persistence needed — job state lives in Postgres.
   redis:
     image: redis:7
-    ports:
-      - "6379:6379"
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # ── One-shot migration runner ────────────────────────────────────────────────
-  # Runs alembic upgrade head before any API or worker starts.
-  # `restart: no` ensures it exits cleanly after migrations complete.
-  # All other services depend on it via `service_completed_successfully`.
+  # ── Migration runner ──────────────────────────────────────────────────────────
+  # One-shot: runs alembic upgrade head then exits cleanly.
+  # All services that touch the DB depend on this completing successfully.
   migrate:
     build: .
     command: alembic upgrade head
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: "no"
 
+  # ── Webhook + operator API (port 8000) ───────────────────────────────────────
+  # Publicly accessible: POST /v1/webhooks/calls must be reachable from Synthflow.
+  # --workers 2 matches a 2-vCPU Hetzner CX22. Adjust for larger VMs.
+  # No --reload in production. Source code is baked into the image.
   api:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
       - "8000:8000"
     env_file:
       - .env
     environment:
-      # Containers reach Redis and Postgres by host name, not localhost
-      - REDIS_HOST=redis
-      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
-      # API handles async concurrent requests — allow more connections
-      - POSTGRES_POOL_SIZE=10
-      - POSTGRES_MAX_OVERFLOW=5
-    volumes:
-      # Mount source for --reload to pick up code changes without rebuilding
-      - ./app:/app/app
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "10"
+      POSTGRES_MAX_OVERFLOW: "5"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker: default queue ───────────────────────────────────────────────────
+  # ── Dashboard API (port 8001) ─────────────────────────────────────────────────
+  # Read-heavy + operator actions. Isolated from webhook ingestion on port 8000.
+  # CORS origin is controlled by ALLOW_ORIGINS in .env.
+  dashboard-api:
+    build: .
+    command: uvicorn app.api.dashboard_main:app --host 0.0.0.0 --port 8001 --workers 2
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "5"
+      POSTGRES_MAX_OVERFLOW: "3"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Frontend (port 3000) ──────────────────────────────────────────────────────
+  # Next.js production build. DASHBOARD_API_URL and WS_URL baked in at build time
+  # via next.config.js env block — set these in .env before building.
+  frontend:
+    build:
+      context: ./dashboard-ui
+      dockerfile: Dockerfile
+      args:
+        DASHBOARD_API_URL: ${DASHBOARD_API_URL:-http://dashboard-api:8001}
+        WS_URL: ${WS_URL:-ws://localhost:8001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - dashboard-api
+    restart: unless-stopped
+
+  # ── Worker: default queue ─────────────────────────────────────────────────────
   # Handles: process_call_event, process_voicemail_tier, update_lead_state,
   #          run_nurture_scheduler, send_sms, send_email, collect_metrics.
-  # Owns the Postgres scheduler loop and startup tasks (nurture + metrics).
-  # Only this role runs the scheduler loop — avoids duplicate job enqueues.
-  # Run 3 replicas: docker compose up --scale worker-default=3
+  # Owns the Postgres scheduler loop — only this role runs it (no duplicate enqueues).
+  # Scale: docker compose up --scale worker-default=3
   worker-default:
     build: .
     command: python -m app.worker.main
     env_file:
       - .env
     environment:
-      - WORKER_ROLE=default
-      - REDIS_HOST=redis
-      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
-      # Each worker process handles one job at a time; 2 connections is sufficient
-      - POSTGRES_POOL_SIZE=2
-      - POSTGRES_MAX_OVERFLOW=2
-    volumes:
-      - ./app:/app/app
+      WORKER_ROLE: default
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "2"
+      POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker: ai queue ────────────────────────────────────────────────────────
+  # ── Worker: ai queue ──────────────────────────────────────────────────────────
   # Handles: classify_call_event (3 sequential OpenAI calls per job).
-  # Isolated so slow OpenAI latency never blocks voicemail tier scheduling.
-  # Run 3 replicas: docker compose up --scale worker-ai=3
+  # Isolated so OpenAI latency never blocks voicemail tier scheduling.
+  # Scale: docker compose up --scale worker-ai=3
   worker-ai:
     build: .
     command: python -m app.worker.main
     env_file:
       - .env
     environment:
-      - WORKER_ROLE=ai
-      - REDIS_HOST=redis
-      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
-      - POSTGRES_POOL_SIZE=2
-      - POSTGRES_MAX_OVERFLOW=2
-    volumes:
-      - ./app:/app/app
+      WORKER_ROLE: ai
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "2"
+      POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker: callbacks queue ──────────────────────────────────────────────────
+  # ── Worker: callbacks queue ───────────────────────────────────────────────────
   # Handles: create_crm_task, send_student_summary, launch_outbound_call.
   # GHL and Synthflow API calls. 2 replicas matches practical GHL rate limits.
-  # Run 2 replicas: docker compose up --scale worker-callbacks=2
+  # Scale: docker compose up --scale worker-callbacks=2
   worker-callbacks:
     build: .
     command: python -m app.worker.main
     env_file:
       - .env
     environment:
-      - WORKER_ROLE=callbacks
-      - REDIS_HOST=redis
-      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
-      - POSTGRES_POOL_SIZE=2
-      - POSTGRES_MAX_OVERFLOW=2
-    volumes:
-      - ./app:/app/app
+      WORKER_ROLE: callbacks
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "2"
+      POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
 
-  # ── Worker: retries queue ────────────────────────────────────────────────────
+  # ── Worker: retries queue ─────────────────────────────────────────────────────
   # Handles failed job retries in isolation — retry storms never crowd out
   # live traffic on the default or callbacks queues.
   worker-retries:
@@ -127,16 +181,20 @@ services:
     env_file:
       - .env
     environment:
-      - WORKER_ROLE=retries
-      - REDIS_HOST=redis
-      - DATABASE_URL=postgresql+psycopg2://postgres:Target123@host.docker.internal:5433/cora
-      - POSTGRES_POOL_SIZE=2
-      - POSTGRES_MAX_OVERFLOW=2
-    volumes:
-      - ./app:/app/app
+      WORKER_ROLE: retries
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "2"
+      POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+    # Named volume — persists across container restarts and image upgrades.
+    # Data is stored on the host at /var/lib/docker/volumes/cora-recap-engine_postgres_data
+    # Back this up before destructive operations.

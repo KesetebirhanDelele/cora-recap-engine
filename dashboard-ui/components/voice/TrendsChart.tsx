@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid,
   Tooltip, Legend, ResponsiveContainer, ReferenceLine,
@@ -14,6 +14,13 @@ interface Props {
   height?: number | string;
 }
 
+// Augmented point with per-campaign calls-per-day fields for the Y-axis
+type ChartPoint = VoiceTimeSeriesPoint & {
+  cold_cpd: number;
+  inbound_cpd: number;
+  new_lead_cpd: number;
+};
+
 const AXIS_STYLE = { fill: "#64748b", fontSize: 13 };
 const LABEL_STYLE: React.CSSProperties = { fill: "#94a3b8", fontSize: 13, fontWeight: 600 };
 
@@ -26,20 +33,31 @@ function fmtWeek(dateStr: string): string {
   return `${f(start)}-${f(end)}`;
 }
 
-// Extra prop injected by us; Recharts also injects active/payload/label via element clone.
 interface CustomTooltipProps extends TooltipProps<number, string> {
   activeSeries?: string | null;
 }
 
 function CustomTooltip({ active, payload, label, activeSeries }: CustomTooltipProps) {
   if (!active || !payload?.length) return null;
-  const point = payload[0]?.payload as VoiceTimeSeriesPoint;
+  const point = payload[0]?.payload as ChartPoint;
   if (!point) return null;
   return <TooltipKpiTable point={point} label={label as string} focusSeries={activeSeries ?? null} />;
 }
 
 export default function TrendsChart({ data, height = "100%" }: Props) {
   const [activeSeries, setActiveSeries] = useState<string | null>(null);
+
+  // Derive avg-calls-per-day bars per campaign from weekly totals ÷ 7
+  const chartData: ChartPoint[] = useMemo(
+    () =>
+      data.map((p) => ({
+        ...p,
+        cold_cpd:     +(p.cold     / 7).toFixed(1),
+        inbound_cpd:  +(p.inbound  / 7).toFixed(1),
+        new_lead_cpd: +(p.new_lead / 7).toFixed(1),
+      })),
+    [data]
+  );
 
   if (data.length === 0) {
     return (
@@ -51,7 +69,6 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
 
   const clearSeries = () => setActiveSeries(null);
 
-  // activeDot factory — preserves r/strokeWidth and adds hover tracking per line key.
   function activeDot(seriesKey: string, stroke: string) {
     return {
       r: 5,
@@ -64,7 +81,7 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
 
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <ComposedChart data={data} margin={{ top: 4, right: 20, left: 4, bottom: 20 }}>
+      <ComposedChart data={chartData} margin={{ top: 4, right: 20, left: 4, bottom: 20 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
 
         <YAxis
@@ -72,7 +89,7 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
           orientation="left"
           stroke="#e2e8f0"
           tick={AXIS_STYLE}
-          label={{ value: "Total Calls", angle: -90, position: "insideLeft", offset: 12, style: LABEL_STYLE }}
+          label={{ value: "Calls / Day", angle: -90, position: "insideLeft", offset: 12, style: LABEL_STYLE }}
         />
         <YAxis
           yAxisId="pct"
@@ -91,20 +108,18 @@ export default function TrendsChart({ data, height = "100%" }: Props) {
           label={{ value: "Week", position: "insideBottom", offset: -16, style: LABEL_STYLE }}
         />
 
-        {/* activeSeries passed as extra prop; Recharts clones and injects active/payload/label */}
         <Tooltip content={<CustomTooltip activeSeries={activeSeries} />} />
-
         <Legend verticalAlign="top" height={28} wrapperStyle={{ fontSize: "0.85rem" }} />
 
-        {/* Stacked bars — onMouseEnter/Leave tracks the hovered segment */}
-        <Bar yAxisId="calls" dataKey="cold"     stackId="calls" name="Cold Lead" fill="#2563eb" radius={[0,0,0,0]}
-          onMouseEnter={() => setActiveSeries("cold")}    onMouseLeave={clearSeries} />
-        <Bar yAxisId="calls" dataKey="inbound"  stackId="calls" name="Inbound"  fill="#eab308" radius={[0,0,0,0]}
-          onMouseEnter={() => setActiveSeries("inbound")} onMouseLeave={clearSeries} />
-        <Bar yAxisId="calls" dataKey="new_lead" stackId="calls" name="New Lead" fill="#16a34a" radius={[2,2,0,0]}
+        {/* Stacked bars — avg calls per day per campaign */}
+        <Bar yAxisId="calls" dataKey="cold_cpd"     stackId="calls" name="Cold Lead" fill="#2563eb" radius={[0,0,0,0]}
+          onMouseEnter={() => setActiveSeries("cold")}     onMouseLeave={clearSeries} />
+        <Bar yAxisId="calls" dataKey="inbound_cpd"  stackId="calls" name="Inbound"   fill="#eab308" radius={[0,0,0,0]}
+          onMouseEnter={() => setActiveSeries("inbound")}  onMouseLeave={clearSeries} />
+        <Bar yAxisId="calls" dataKey="new_lead_cpd" stackId="calls" name="New Lead"  fill="#16a34a" radius={[2,2,0,0]}
           onMouseEnter={() => setActiveSeries("new_lead")} onMouseLeave={clearSeries} />
 
-        {/* Lines — activeDot carries hover tracking per metric key */}
+        {/* Rate lines */}
         <Line yAxisId="pct" type="monotone" dataKey="completion_rate" name="Completion %"   stroke="#0ea5e9" strokeWidth={2} dot={false} activeDot={activeDot("completion_rate", "#0ea5e9")} />
         <Line yAxisId="pct" type="monotone" dataKey="pickup_rate"     name="Pickup %"       stroke="#10b981" strokeWidth={2} dot={false} activeDot={activeDot("pickup_rate",     "#10b981")} />
         <Line yAxisId="pct" type="monotone" dataKey="voicemail_rate"  name="Voicemail %"    stroke="#8b5cf6" strokeWidth={2} dot={false} activeDot={activeDot("voicemail_rate",  "#8b5cf6")} />

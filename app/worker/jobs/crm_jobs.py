@@ -18,10 +18,53 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running
+from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
+
+
+# ── Field ID resolution helper ────────────────────────────────────────────────
+
+def _resolve_to_field_ids(
+    ghl: "GHLClient",  # noqa: F821  (forward ref — imported inside job functions)
+    field_updates: dict[str, str],
+) -> dict[str, str]:
+    """
+    Convert a {field_label: value} dict to {field_uuid: value} for GHL writes.
+
+    GHL's PUT /contacts/{id} requires the field UUID as the "id" key, not the
+    human-readable label.  This fetches location-level field definitions
+    (GET /locations/{id}/customFields) and resolves each label to its UUID.
+
+    Fields whose labels cannot be matched are skipped with a warning so a
+    single unmapped field never blocks the rest of the write batch.
+
+    Requires the `locations/customFields.readonly` scope on the GHL Private
+    Integration token.  If the fetch fails, returns an empty dict (the entire
+    write call is safely skipped with a logged warning).
+    """
+    try:
+        location_fields = ghl.get_location_fields()
+    except Exception as exc:
+        logger.warning(
+            "_resolve_to_field_ids: location fields fetch failed — GHL writes skipped: %s",
+            exc,
+        )
+        return {}
+
+    resolved: dict[str, str] = {}
+    for label, value in field_updates.items():
+        from app.adapters.ghl import GHLClient  # local import avoids circular
+        fid = GHLClient.resolve_field_id_from_location(label, location_fields)
+        if fid:
+            resolved[fid] = value
+        else:
+            logger.warning(
+                "_resolve_to_field_ids: no field UUID found for label=%r — skipped",
+                label,
+            )
+    return resolved
 
 
 # ── Feature 2: CRM Task Creation ─────────────────────────────────────────────
@@ -54,6 +97,15 @@ def create_crm_task(job_id: str) -> None:
         job = claim_job(session, job_id, worker_id=worker_id)
         if job is None:
             logger.info("create_crm_task: job already claimed | job_id=%s", job_id)
+            return
+
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info("create_crm_task: system paused — releasing | job_id=%s", job_id)
+            release_job_to_pending(session, job)
+            session.commit()
             return
 
         mark_running(session, job)
@@ -195,25 +247,30 @@ def create_crm_task(job_id: str) -> None:
                         )
 
             # ── GHL contact field updates ────────────────────────────────────
-            field_updates: dict[str, str] = {}
+            # Build with label keys first, then resolve labels → UUIDs.
+            # GHL's PUT /contacts/{id} requires field UUIDs, not label strings.
+            label_updates: dict[str, str] = {}
             if settings.ghl_field_mark_as_lead:
-                field_updates[settings.ghl_field_mark_as_lead] = (
+                label_updates[settings.ghl_field_mark_as_lead] = (
                     "Yes" if analysis.is_lead_classification else "No"
                 )
             if settings.ghl_field_ai_lead_assign_to and analysis.assign_to:
-                field_updates[settings.ghl_field_ai_lead_assign_to] = analysis.assign_to
+                label_updates[settings.ghl_field_ai_lead_assign_to] = analysis.assign_to
             if settings.ghl_field_support_ticket_3 and analysis.task_description:
-                field_updates[settings.ghl_field_support_ticket_3] = analysis.task_description
+                label_updates[settings.ghl_field_support_ticket_3] = analysis.task_description
             if settings.ghl_field_ai_lead_classification and analysis.lead_classification:
-                field_updates[settings.ghl_field_ai_lead_classification] = analysis.lead_classification
+                label_updates[settings.ghl_field_ai_lead_classification] = analysis.lead_classification
             if settings.ghl_field_ai_campaign:
-                field_updates[settings.ghl_field_ai_campaign] = analysis.ai_campaign
+                label_updates[settings.ghl_field_ai_campaign] = analysis.ai_campaign
 
-            if field_updates:
-                ghl.update_contact_fields(
-                    contact_id=effective_contact_id or "unknown",
-                    field_updates=field_updates,
-                )
+            if label_updates:
+                field_updates = _resolve_to_field_ids(ghl, label_updates)
+                if field_updates:
+                    ghl.update_contact_fields(
+                        contact_id=effective_contact_id or "unknown",
+                        field_updates=field_updates,
+                        mode_flags=flags,
+                    )
 
             # ── GHL task creation ────────────────────────────────────────────
             task_result: dict = {"shadow": True}
@@ -224,6 +281,7 @@ def create_crm_task(job_id: str) -> None:
                     description=analysis.task_description,
                     assigned_to=analysis.assign_to,
                     due_date=analysis.task_due_date,
+                    mode_flags=flags,
                 )
 
             provider_task_id = task_result.get("id") if not task_result.get("shadow") else None
@@ -267,9 +325,10 @@ def create_crm_task(job_id: str) -> None:
                 entity_id=call_id or call_event_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
             # does not queue an additional automatic retry after the limit.
-            if settings.is_shadow_mode and attempt_count >= 2:
+            if not flags.ghl_writes_enabled and attempt_count >= 2:
                 logger.warning(
                     "create_crm_task: shadow mode attempt limit reached (%d), not re-raising",
                     attempt_count,
@@ -304,6 +363,17 @@ def update_ghl_after_vm_message(job_id: str) -> None:
             logger.info("update_ghl_after_vm_message: already claimed | job_id=%s", job_id)
             return
 
+        # ── System pause check ────────────────────────────────────────────────
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.system_paused:
+            logger.info(
+                "update_ghl_after_vm_message: system paused — releasing | job_id=%s", job_id
+            )
+            release_job_to_pending(session, job)
+            session.commit()
+            return
+
         mark_running(session, job)
         payload = job.payload_json or {}
         contact_id = payload.get("contact_id", "")
@@ -322,9 +392,16 @@ def update_ghl_after_vm_message(job_id: str) -> None:
 
             ghl = GHLClient(settings=settings)
 
-            # Fetch GHL contact (read — always live) for field ID resolution
+            # Detect whether contact_id is a real GHL UUID or a phone string.
+            # Payloads from CSV-imported records carry phone numbers, not UUIDs.
+            def _looks_like_phone(s: str) -> bool:
+                stripped = s.replace(" ", "").replace("-", "").replace("+", "")
+                return bool(stripped) and stripped.isdigit()
+
+            # Fetch GHL contact (read — always live) for field ID resolution.
+            # If contact_id looks like a phone number, search by phone first.
             ghl_contact: dict = {}
-            if contact_id:
+            if contact_id and not _looks_like_phone(contact_id):
                 try:
                     ghl_contact = ghl.get_contact(contact_id)
                     logger.info(
@@ -337,30 +414,53 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                         "contact_id=%s: %s",
                         contact_id, _read_exc,
                     )
+            elif contact_id:
+                # contact_id is a phone number — resolve to real GHL UUID
+                try:
+                    found = ghl.search_contact_by_phone(contact_id)
+                    if found:
+                        ghl_contact = found
+                        resolved_id = found.get("id")
+                        if resolved_id:
+                            logger.info(
+                                "update_ghl_after_vm_message: GHL contact resolved by phone | "
+                                "phone=%s → contact_id=%s",
+                                contact_id, resolved_id,
+                            )
+                            contact_id = resolved_id
+                except Exception as _read_exc:
+                    logger.warning(
+                        "update_ghl_after_vm_message: GHL phone search failed (non-fatal) | "
+                        "phone=%s: %s",
+                        contact_id, _read_exc,
+                    )
 
             # Ticket #2 carries a brief identifier; Message carries the full body
             ticket_2_value = message_subject if channel == "email" else message_body[:200]
 
-            field_updates: dict[str, str] = {}
+            # Build with label keys first, then resolve labels → UUIDs.
+            label_updates: dict[str, str] = {}
             if settings.ghl_field_mark_as_lead:
-                field_updates[settings.ghl_field_mark_as_lead] = "Yes"
+                label_updates[settings.ghl_field_mark_as_lead] = "Yes"
             if settings.ghl_field_support_ticket_2 and ticket_2_value:
-                field_updates[settings.ghl_field_support_ticket_2] = ticket_2_value
+                label_updates[settings.ghl_field_support_ticket_2] = ticket_2_value
             if settings.ghl_field_message and message_body:
-                field_updates[settings.ghl_field_message] = message_body
+                label_updates[settings.ghl_field_message] = message_body
             if settings.ghl_field_ai_campaign:
-                field_updates[settings.ghl_field_ai_campaign] = "Yes"
+                label_updates[settings.ghl_field_ai_campaign] = "Yes"
 
             # Support Ticket #4: most recent lead classification from classification_results
             if settings.ghl_field_support_ticket_4:
                 classification = _get_latest_classification(session, contact_id)
                 if classification:
-                    field_updates[settings.ghl_field_support_ticket_4] = classification
+                    label_updates[settings.ghl_field_support_ticket_4] = classification
 
+            field_updates = _resolve_to_field_ids(ghl, label_updates) if label_updates else {}
             if field_updates:
                 write_result = ghl.update_contact_fields(
                     contact_id=contact_id or "unknown",
                     field_updates=field_updates,
+                    mode_flags=flags,
                 )
                 # Shadow mode: log what would have been written to GHL so
                 # operators can inspect the exact fields via Lead Journey.
@@ -414,9 +514,10 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                 entity_id=contact_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             # In shadow mode cap at 2 total attempts — suppress re-raise so RQ
             # does not queue an additional automatic retry after the limit.
-            if settings.is_shadow_mode and attempt_count >= 2:
+            if not flags.ghl_writes_enabled and attempt_count >= 2:
                 logger.warning(
                     "update_ghl_after_vm_message: shadow mode attempt limit reached (%d), not re-raising",
                     attempt_count,
@@ -611,6 +712,7 @@ def send_student_summary(job_id: str) -> None:
                 entity_id=call_id or call_event_id,
             )
             fail_job(session, job, reason=str(exc))
+            session.commit()
             raise
 
 

@@ -119,6 +119,9 @@ export default function SettingsClient() {
 
   // ── Form state ──
   const [operatorId, setOperatorId] = useState("dashboard");
+  const [dashboardToken, setDashboardToken] = useState(() =>
+    typeof window !== "undefined" ? localStorage.getItem("dashboard_token") ?? "" : ""
+  );
 
   const [nlDays, setNlDays] = useState<string[]>(DAY_LABELS);
   const [nlStart, setNlStart] = useState(8);
@@ -194,6 +197,17 @@ export default function SettingsClient() {
   if (!brandName.trim()) errors.push("Brand name cannot be empty.");
   if (!senderName.trim()) errors.push("Sender name cannot be empty.");
 
+  function handleSaveToken() {
+    if (typeof window !== "undefined") {
+      if (dashboardToken.trim()) {
+        localStorage.setItem("dashboard_token", dashboardToken.trim());
+      } else {
+        localStorage.removeItem("dashboard_token");
+      }
+    }
+    setSaveMsg({ ok: true, text: "Token saved to browser. Write actions will now include it." });
+  }
+
   async function handleSave() {
     if (errors.length > 0 || !operatorId.trim()) return;
     setSaving(true);
@@ -250,6 +264,42 @@ export default function SettingsClient() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+
+      {/* ── Dashboard Token ── */}
+      <div style={SECTION_CARD}>
+        <div>
+          <p style={SECTION_TITLE}>Dashboard Token</p>
+          <p style={SECTION_CAPTION}>
+            Required for all write actions (save outcome, retry, resolve, acknowledge alert, etc.).
+            Stored in your browser only — never sent to the server on read requests.
+            Value is your <code style={{ fontFamily: "monospace", fontSize: "0.78rem" }}>SECRET_KEY</code> from the backend .env.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", maxWidth: 480 }}>
+          <input
+            type="password"
+            value={dashboardToken}
+            onChange={(e) => setDashboardToken(e.target.value)}
+            placeholder="Paste your dashboard secret key…"
+            style={{ ...INPUT, flex: 1 }}
+          />
+          <button
+            onClick={handleSaveToken}
+            style={{
+              padding: "0.4rem 1rem",
+              background: "#1e293b", color: "#fff", border: "none", borderRadius: 6,
+              fontSize: "0.85rem", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const,
+            }}
+          >
+            Save token
+          </button>
+        </div>
+        {dashboardToken && (
+          <p style={{ margin: 0, fontSize: "0.72rem", color: "#16a34a" }}>
+            Token is set in this browser.
+          </p>
+        )}
+      </div>
 
       {/* ── Operator ID ── */}
       <div style={SECTION_CARD}>
