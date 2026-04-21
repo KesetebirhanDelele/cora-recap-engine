@@ -55,7 +55,7 @@ function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
             ["Pickup Rate",          `${d.pickup_rate.toFixed(1)}%`],
             ["Booked Appt %",        `${d.booking_rate.toFixed(1)}%`],
             ["Avg Calls per Day",    d.avg_calls_per_day.toFixed(1)],
-            ["Total Calls",          String(d.total_calls)],
+            ["Total Calls (period)", String(d.total_calls)],
           ].map(([label, val]) => (
             <tr key={label}>
               <td style={{ color: "#64748b", paddingRight: "1rem", paddingBottom: 2 }}>{label}</td>
@@ -139,8 +139,8 @@ export default function EfficiencyScatter({ data, height = "100%" }: Props) {
             style: { fill: "#94a3b8", fontSize: 13, fontWeight: 600 },
           }}
         />
-        {/* ZAxis controls bubble size based on total_calls */}
-        <ZAxis type="number" dataKey="total_calls" range={[60, 800]} name="Total Calls" />
+        {/* ZAxis controls bubble size based on avg calls per day */}
+        <ZAxis type="number" dataKey="avg_calls_per_day" range={[60, 800]} name="Avg Calls/Day" />
         <Tooltip content={<CustomTooltip />} cursor={{ strokeDasharray: "3 3" }} />
         <Legend
           verticalAlign="top"
