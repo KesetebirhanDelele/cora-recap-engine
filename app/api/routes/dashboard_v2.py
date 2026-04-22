@@ -1569,10 +1569,9 @@ _ROW_LIMIT = 500
 
 @router.get("/db/tables")
 def list_db_tables(
-    auth: DashboardAuth,
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Return all user tables with row counts."""
+    """Return all user tables with row counts. No auth required (read-only metadata)."""
     from sqlalchemy import text
     rows = session.execute(text("""
         SELECT

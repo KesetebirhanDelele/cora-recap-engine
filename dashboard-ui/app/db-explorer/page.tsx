@@ -23,8 +23,31 @@ const CARD: React.CSSProperties = {
   boxShadow: "0 1px 3px rgba(0,0,0,0.05)",
 };
 
+function downloadCsv(result: QueryResult, filename = "query_result.csv") {
+  const escape = (v: string | null) => {
+    if (v === null) return "";
+    // Wrap in quotes if contains comma, newline, or quote; escape inner quotes
+    if (v.includes(",") || v.includes("\n") || v.includes('"')) {
+      return `"${v.replace(/"/g, '""')}"`;
+    }
+    return v;
+  };
+  const lines = [
+    result.columns.map(escape).join(","),
+    ...result.rows.map((row) => row.map(escape).join(",")),
+  ];
+  const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 export default function DbExplorerPage() {
   const [tables, setTables] = useState<TableInfo[]>([]);
+  const [tablesError, setTablesError] = useState<string | null>(null);
   const [sql, setSql] = useState("SELECT * FROM lead_state LIMIT 50;");
   const [result, setResult] = useState<QueryResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +58,7 @@ export default function DbExplorerPage() {
   useEffect(() => {
     fetchDbTables()
       .then((r) => setTables(r.tables))
-      .catch((e) => console.error("table list failed", e))
+      .catch((e) => setTablesError(String(e)))
       .finally(() => setLoadingTables(false));
   }, []);
 
@@ -54,7 +77,6 @@ export default function DbExplorerPage() {
     }
   }, [sql]);
 
-  // Ctrl+Enter / Cmd+Enter to run
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
@@ -141,38 +163,49 @@ export default function DbExplorerPage() {
             Tables
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
-            {loadingTables ? (
-              <div style={{ padding: "1rem", color: "#94a3b8", fontSize: "0.85rem" }}>Loading…</div>
-            ) : (
-              tables.map((t) => (
-                <button
-                  key={t.name}
-                  onClick={() => handleTableClick(t.name)}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    width: "100%",
-                    padding: "0.4rem 0.75rem",
-                    background: "none",
-                    border: "none",
-                    borderBottom: "1px solid #f1f5f9",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    fontSize: "0.82rem",
-                    color: "#334155",
-                    gap: "0.5rem",
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
-                >
-                  <span style={{ fontFamily: "monospace" }}>{t.name}</span>
-                  <span style={{ color: "#94a3b8", fontSize: "0.75rem", flexShrink: 0 }}>
-                    {t.row_estimate.toLocaleString()}
-                  </span>
-                </button>
-              ))
+            {loadingTables && (
+              <div style={{ padding: "1rem", color: "#94a3b8", fontSize: "0.85rem" }}>
+                Loading…
+              </div>
             )}
+            {!loadingTables && tablesError && (
+              <div style={{ padding: "0.75rem", color: "#dc2626", fontSize: "0.8rem" }}>
+                ⚠ {tablesError}
+              </div>
+            )}
+            {!loadingTables && !tablesError && tables.length === 0 && (
+              <div style={{ padding: "0.75rem", color: "#94a3b8", fontSize: "0.82rem" }}>
+                No tables found
+              </div>
+            )}
+            {!loadingTables && !tablesError && tables.map((t) => (
+              <button
+                key={t.name}
+                onClick={() => handleTableClick(t.name)}
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  width: "100%",
+                  padding: "0.4rem 0.75rem",
+                  background: "none",
+                  border: "none",
+                  borderBottom: "1px solid #f1f5f9",
+                  cursor: "pointer",
+                  textAlign: "left",
+                  fontSize: "0.82rem",
+                  color: "#334155",
+                  gap: "0.5rem",
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = "#f8fafc")}
+                onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+              >
+                <span style={{ fontFamily: "monospace" }}>{t.name}</span>
+                <span style={{ color: "#94a3b8", fontSize: "0.75rem", flexShrink: 0 }}>
+                  {t.row_estimate.toLocaleString()}
+                </span>
+              </button>
+            ))}
           </div>
         </div>
 
@@ -220,7 +253,7 @@ export default function DbExplorerPage() {
                 boxSizing: "border-box",
               }}
             />
-            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
               <button
                 onClick={runQuery}
                 disabled={running}
@@ -237,14 +270,33 @@ export default function DbExplorerPage() {
               >
                 {running ? "Running…" : "▶ Run"}
               </button>
+
+              {result && result.columns.length > 0 && (
+                <button
+                  onClick={() => downloadCsv(result)}
+                  style={{
+                    padding: "0.4rem 1rem",
+                    background: "#16a34a",
+                    color: "#ffffff",
+                    border: "none",
+                    borderRadius: 6,
+                    fontWeight: 700,
+                    fontSize: "0.88rem",
+                    cursor: "pointer",
+                  }}
+                >
+                  ↓ Download Excel
+                </button>
+              )}
+
               {result && !error && (
                 <span style={{ fontSize: "0.82rem", color: "#64748b" }}>
                   {result.row_count.toLocaleString()} row{result.row_count !== 1 ? "s" : ""}
-                  {result.truncated && " (truncated at 500)"}
+                  {result.truncated && " · truncated at 500"}
                 </span>
               )}
               {error && (
-                <span style={{ fontSize: "0.82rem", color: "#dc2626" }}>
+                <span style={{ fontSize: "0.82rem", color: "#dc2626", maxWidth: "60%" }}>
                   ⚠ {error}
                 </span>
               )}
@@ -308,10 +360,7 @@ export default function DbExplorerPage() {
                 </thead>
                 <tbody>
                   {result.rows.map((row, i) => (
-                    <tr
-                      key={i}
-                      style={{ background: i % 2 === 0 ? "#ffffff" : "#f8fafc" }}
-                    >
+                    <tr key={i} style={{ background: i % 2 === 0 ? "#ffffff" : "#f8fafc" }}>
                       {row.map((cell, j) => (
                         <td
                           key={j}
