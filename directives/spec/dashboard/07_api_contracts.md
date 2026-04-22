@@ -716,3 +716,72 @@ Log a post-call sales outcome from the Sales Queue view. Updates `lead_state` wi
   "fallback_url": "/dashboard/events"
 }
 ```
+
+---
+
+## GET /dashboard/db/tables
+
+Returns all Postgres user tables with live row estimates.
+
+**Auth**: None required (read-only metadata)
+
+**Response 200**
+```json
+{
+  "tables": [
+    { "name": "call_events", "row_estimate": 23500 },
+    { "name": "lead_state",  "row_estimate": 1028 }
+  ]
+}
+```
+
+**Notes**:
+- Row estimates come from `pg_stat_user_tables.n_live_tup` — they are approximate (updated by autovacuum) and may lag slightly behind the true count.
+- Tables are sorted alphabetically.
+
+---
+
+## POST /dashboard/db/query
+
+Execute an arbitrary SQL statement against the production database and return results as JSON.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}`
+
+**Request body**
+```json
+{ "sql": "SELECT * FROM lead_state LIMIT 10;" }
+```
+
+**Response 200 — SELECT**
+```json
+{
+  "columns": ["contact_id", "campaign_name", "status"],
+  "rows": [
+    ["+17204925394", "Cold Lead", null],
+    ["+13616494022", "Cold Lead", null]
+  ],
+  "row_count": 2,
+  "truncated": false
+}
+```
+
+**Response 200 — DML (INSERT / UPDATE / DELETE)**
+```json
+{
+  "columns": [],
+  "rows": [],
+  "row_count": 3,
+  "truncated": false
+}
+```
+`row_count` is the number of rows affected. DML is auto-committed.
+
+**Response 400** — SQL syntax error or runtime error. `detail` contains the Postgres error message.
+
+**Limits**:
+- Maximum 500 rows returned for SELECT queries. If the result set exceeds 500 rows, `truncated: true` is set and only the first 500 rows are returned.
+- `null` values in rows are returned as JSON `null`.
+- All non-null cell values are coerced to strings.
+
+**Frontend**: Accessible at `/db-explorer`. Includes a table browser (left sidebar) and CSV download button. The downloaded `.csv` opens natively in Excel.
+

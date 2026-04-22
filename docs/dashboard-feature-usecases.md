@@ -403,6 +403,37 @@ A cross-filter analytics view over the same KPI and AI distribution dataset used
 
 ---
 
+## DB Explorer (`/db-explorer`)
+
+**Question answered:** What is currently in the database? Let me run a quick query without leaving the dashboard.
+
+Located in the **Operations** section of the home page. Provides a self-contained SQL interface backed by `POST /dashboard/db/query`.
+
+### Layout
+
+Two panels side by side:
+
+**Left — Table list**: All Postgres user tables sorted alphabetically, each showing a row estimate (from `pg_stat_user_tables`). Clicking a table auto-fills the editor with `SELECT * FROM <table> LIMIT 100` and focuses the cursor in the editor.
+
+**Right — Editor + Results**:
+- Multi-line SQL textarea. `Ctrl+Enter` (or `Cmd+Enter` on Mac) runs the query.
+- **▶ Run** button executes the current query.
+- Results rendered as a scrollable table with sticky column headers and alternating row shading. `NULL` values are shown in grey italic. Hovering a cell shows the full value via tooltip (useful for truncated long strings).
+- **↓ Download Excel** button appears after any successful SELECT. Downloads a properly escaped `.csv` file. Excel opens `.csv` files natively.
+- Row count and truncation warning shown inline (`truncated at 500`).
+- SQL errors displayed in red below the Run button.
+
+### Auth
+
+The table list (`GET /dashboard/db/tables`) requires no auth. The query runner (`POST /dashboard/db/query`) requires a valid Bearer token (same token set in the Settings page).
+
+### Limits
+
+- Maximum 500 rows returned per SELECT query.
+- DML statements (INSERT, UPDATE, DELETE) are supported and auto-committed. Use with care — there is no undo.
+
+---
+
 ## Settings (`/settings`)
 
 **Question answered:** What are the current runtime configuration values, and can I change them without redeploying?

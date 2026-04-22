@@ -69,9 +69,36 @@ docker compose up -d --build dashboard-api frontend
 docker compose up -d --build dashboard-api
 ```
 
+> **Important — code is baked into the image, not volume-mounted.**
+> `docker compose restart <service>` only restarts the running container — it does NOT pick up new code. You must always run `docker compose up -d --build <service>` (or `--no-cache` if Docker is serving a stale layer) after `git pull` for code changes to take effect.
+>
+> If a rebuild still serves old code (visible via stale UI text or behaviour), use `--no-cache` to force a full rebuild:
+> ```bash
+> docker compose build --no-cache frontend && docker compose up -d --no-deps frontend
+> docker compose build --no-cache dashboard-api && docker compose up -d --no-deps dashboard-api
+> ```
+
+---
+
+## DB Explorer (browser-based SQL tool)
+
+The dashboard includes a built-in SQL query interface at `/db-explorer` (Operations section on the home page). It does not require an SSH tunnel and works directly in the browser.
+
+Features:
+- Left sidebar: all Postgres tables with row estimates (click any table to auto-fill `SELECT * FROM <table> LIMIT 100`)
+- SQL editor: multi-line textarea, `Ctrl+Enter` to run
+- Results table: scrollable, sticky column headers, striped rows, `NULL` displayed clearly, cell tooltip on hover
+- **Download Excel** button: appears after any successful SELECT — downloads a `.csv` file that Excel opens natively
+- Max 500 rows per query; `truncated` warning shown if result is larger
+- DML (INSERT/UPDATE/DELETE) is supported — result shows rows affected
+
+Auth: the query endpoint (`POST /dashboard/db/query`) requires a valid Bearer token (same token used for other write actions in the dashboard).
+
 ---
 
 ## Querying Postgres directly on the server
+
+> **Tip:** The `/db-explorer` dashboard page provides an embedded SQL runner accessible directly from the browser — no SSH tunnel required for most queries. Use the CLI approach below for bulk exports, scripting, or when the dashboard is unavailable.
 
 All `docker compose` commands must be run from the project directory:
 

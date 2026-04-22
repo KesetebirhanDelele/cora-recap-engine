@@ -614,6 +614,25 @@ docker compose logs worker-ai --tail=30
 | All data shows zeros / null | No call events in DB yet | Normal on fresh deploy — send real calls via Synthflow first |
 | Worker not processing jobs | Redis not healthy | `docker compose logs redis` — restart if needed; worker reconnects automatically |
 
+### Adminer — browser-based DB UI (port 8080)
+
+Adminer is included in `docker-compose.yml` as an optional service that provides a full browser-based SQL interface (table browser + query runner + CSV export). It connects to the Postgres container over Docker's internal network.
+
+It is bound to `127.0.0.1:8080` only (not publicly exposed). Access it via an SSH tunnel:
+
+```bash
+# From your local machine:
+ssh -L 8080:127.0.0.1:8080 root@<server-ip>
+# Then open: http://localhost:8080
+```
+
+Login credentials:
+- **System**: PostgreSQL
+- **Server**: `postgres`
+- **Username / Password / Database**: from your `.env` (`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`)
+
+Alternatively, use the **DB Explorer** page (`/db-explorer`) built into the dashboard — no SSH tunnel required.
+
 ### Querying Postgres on the server
 
 All `docker compose` commands require you to be in the project directory first:
@@ -742,6 +761,7 @@ Open http://localhost:3000 in your browser.
 | `/crm-health` | GHL task and VM update success rates, shadow write count |
 | `/lead/[id]` | Per-contact pipeline trace — full job history, shadow flags, failure reasons |
 | `/settings` | Runtime settings management — brand config, messaging config, thresholds |
+| `/db-explorer` | Embedded SQL query runner — browse all tables with row estimates, write and run queries, download results as CSV (opens in Excel) |
 
 ### Dashboard API endpoints (port 8001)
 
@@ -771,6 +791,9 @@ Open http://localhost:3000 in your browser.
 | `POST` | `/dashboard/actions/resolve` | Resolve a specific exception |
 | `POST` | `/dashboard/actions/ignore` | Ignore a specific exception |
 | `POST` | `/dashboard/actions/bulk-ignore` | Ignore all open exceptions of a given type |
+| `GET` | `/dashboard/db/tables` | List all Postgres tables with row estimates (no auth required) |
+| `POST` | `/dashboard/db/query` | Execute arbitrary SQL and return up to 500 rows as JSON (auth required) |
+| `GET` | `/dashboard/lead-lifecycle` | Per-lead journey table (campaign, VM tier, call/SMS/email counts, status) |
 
 ### Environment variables for dashboard
 
