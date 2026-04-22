@@ -1560,6 +1560,74 @@ def resume_system(
     return {"status": "ok", "system_paused": False}
 
 
+# ── DB Explorer ───────────────────────────────────────────────────────────────
+
+class DbQueryRequest(BaseModel):
+    sql: str
+
+_ROW_LIMIT = 500
+
+@router.get("/db/tables")
+def list_db_tables(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return all user tables with row counts."""
+    from sqlalchemy import text
+    rows = session.execute(text("""
+        SELECT
+            t.table_name,
+            COALESCE(s.n_live_tup, 0) AS row_estimate
+        FROM information_schema.tables t
+        LEFT JOIN pg_stat_user_tables s ON s.relname = t.table_name
+        WHERE t.table_schema = 'public'
+          AND t.table_type = 'BASE TABLE'
+        ORDER BY t.table_name
+    """)).fetchall()
+    return {"tables": [{"name": r[0], "row_estimate": int(r[1])} for r in rows]}
+
+
+@router.post("/db/query")
+def run_db_query(
+    body: DbQueryRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Execute a SQL query and return up to 500 rows. Auth required."""
+    from sqlalchemy import text
+    sql = body.sql.strip()
+    if not sql:
+        raise HTTPException(status_code=400, detail="SQL cannot be empty")
+    try:
+        result = session.execute(text(sql))
+        # DML (INSERT/UPDATE/DELETE) has no cursor description
+        if result.returns_rows:
+            columns = list(result.keys())
+            raw_rows = result.fetchmany(_ROW_LIMIT + 1)
+            truncated = len(raw_rows) > _ROW_LIMIT
+            rows = [
+                [str(v) if v is not None else None for v in row]
+                for row in raw_rows[:_ROW_LIMIT]
+            ]
+            return {
+                "columns": columns,
+                "rows": rows,
+                "row_count": len(rows),
+                "truncated": truncated,
+            }
+        else:
+            session.commit()
+            return {
+                "columns": [],
+                "rows": [],
+                "row_count": result.rowcount,
+                "truncated": False,
+            }
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 # ── Campaign overview ─────────────────────────────────────────────────────────
 
 @router.websocket("/ws/events")

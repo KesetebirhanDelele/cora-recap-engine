@@ -193,6 +193,19 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Adminer (DB browser + SQL runner, port 8080) ─────────────────────────────
+  # Lightweight database UI. Reachable at http://server-ip:8080
+  # Login: System=PostgreSQL, Server=postgres, Username/Password/Database from .env
+  # WARNING: bind to 127.0.0.1 or put behind auth if server is publicly accessible.
+  adminer:
+    image: adminer:4
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   postgres_data:
     # Named volume — persists across container restarts and image upgrades.

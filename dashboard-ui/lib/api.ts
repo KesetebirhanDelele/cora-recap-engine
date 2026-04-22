@@ -346,6 +346,19 @@ export async function fetchIntentCalls(options: {
   return get<IntentCallsResponse>("/dashboard/intent-calls", params);
 }
 
+export async function fetchDbTables(): Promise<{ tables: { name: string; row_estimate: number }[] }> {
+  return get("/dashboard/db/tables");
+}
+
+export async function runDbQuery(sql: string): Promise<{
+  columns: string[];
+  rows: (string | null)[][];
+  row_count: number;
+  truncated: boolean;
+}> {
+  return post("/dashboard/db/query", { sql });
+}
+
 export async function fetchLeadLifecycle(options?: {
   status?:   "all" | "active" | "finalized" | "vm" | "dnc";
   campaign?: string;

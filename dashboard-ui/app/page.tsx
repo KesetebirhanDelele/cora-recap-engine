@@ -28,6 +28,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
       { href: "/alerts",          title: "Alerts",              icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
       { href: "/contact-lookup",  title: "Contact Drill-Down",  icon: "🔍", description: "Inspect all data for a single contact.", category: "operations" },
       { href: "/settings",        title: "Settings",            icon: "⚙", description: "Calling windows, delays & brand identity.", category: "operations" },
+      { href: "/db-explorer",     title: "DB Explorer",         icon: "🗄️", description: "Browse tables and run SQL queries.", category: "operations" },
     ],
   },
   {
