@@ -671,8 +671,6 @@ def get_voice_performance(
           AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
           AND NOT ce.report_excluded
-          AND ce.status IS NOT NULL
-          AND ce.status <> ''
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
