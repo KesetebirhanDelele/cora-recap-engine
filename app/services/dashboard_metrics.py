@@ -1096,7 +1096,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
            END), 0)
-           FROM call_events WHERE created_at >= :s""",
+           FROM call_events WHERE created_at >= :s AND NOT report_excluded""",
         {"s": w24_start},
     ))
     book_prev = _r(_scalar(
@@ -1106,7 +1106,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
            END), 0)
-           FROM call_events WHERE created_at BETWEEN :a AND :b""",
+           FROM call_events WHERE created_at BETWEEN :a AND :b AND NOT report_excluded""",
         {"a": w48_start, "b": w24_start},
     ))
 
