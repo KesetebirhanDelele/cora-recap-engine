@@ -508,6 +508,26 @@ def get_voice_performance(
         wow_curr = _compute_voice_kpis(session, this_week_start, now, days_this_week)
         wow_prev = _compute_voice_kpis(session, last_week_start, this_week_start, 7.0)
         wow_changes = {k: _wow(wow_curr.get(k), wow_prev.get(k)) for k in wow_keys}
+
+        # Count-based KPIs use cumulative formula:
+        # WoW% = (total_till_now - total_till_end_of_last_week) / total_till_end_of_last_week
+        cum_row = session.execute(text(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                ) AS booked_now,
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND created_at < :week_start
+                ) AS booked_prev,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) AS unique_now,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) FILTER (WHERE created_at < :week_start) AS unique_prev
+            FROM call_events ce
+            WHERE NOT ce.report_excluded
+        """), {"week_start": this_week_start}).fetchone()
+        if cum_row:
+            wow_changes["booked_appts"]     = _wow(cum_row[0], cum_row[1])
+            wow_changes["unique_contacts"]  = _wow(cum_row[2], cum_row[3])
     else:
         wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 
@@ -1004,6 +1024,10 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     w2h_start = now - timedelta(hours=2)
     w7d_start = now - timedelta(days=7)
     w14d_start = now - timedelta(days=14)
+    # Calendar-week anchors (Mon 00:00 UTC)
+    this_week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    last_week_start = this_week_start - timedelta(days=7)
+    last_week_end   = this_week_start  # exclusive upper bound
 
     def _scalar(sql: str, params: dict | None = None) -> Any:
         return session.execute(text(sql), params or {}).scalar()
@@ -1088,7 +1112,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         {"a": w48_start, "b": w24_start},
     ))
 
-    # ── booking_rate (booked / unique phones) ────────────────────────────────
+    # ── booking_rate WoW: this calendar week (Mon–now) vs last full week (Mon–Sun) ──
     book_curr = _r(_scalar(
         """SELECT COUNT(*) FILTER (WHERE
                 raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
@@ -1096,8 +1120,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
            END), 0)
-           FROM call_events WHERE created_at >= :s AND NOT report_excluded""",
-        {"s": w24_start},
+           FROM call_events WHERE created_at >= :s""",
+        {"s": this_week_start},
     ))
     book_prev = _r(_scalar(
         """SELECT COUNT(*) FILTER (WHERE
@@ -1106,8 +1130,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
            END), 0)
-           FROM call_events WHERE created_at BETWEEN :a AND :b AND NOT report_excluded""",
-        {"a": w48_start, "b": w24_start},
+           FROM call_events WHERE created_at >= :a AND created_at < :b""",
+        {"a": last_week_start, "b": last_week_end},
     ))
 
     # ── active_leads ──────────────────────────────────────────────────────────
