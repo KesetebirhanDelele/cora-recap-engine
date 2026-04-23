@@ -658,19 +658,34 @@ def get_voice_performance(
 
     # ── Voice agent breakdown for scatter ─────────────────────────────────────
     # Grouped by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
+    # Pickup-rate stats (status-filtered) joined to booking count (status-agnostic).
+    # Booking signal fires on NULL-status Inbound records — must be counted separately.
     camp_rows = session.execute(text(f"""
         SELECT
             ce.voice_agent,
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked
+            MAX(COALESCE(bk.booked, 0))                                    AS booked
         FROM call_events ce
+        LEFT JOIN (
+            SELECT voice_agent, COUNT(*) AS booked
+            FROM call_events
+            WHERE NOT report_excluded
+              AND COALESCE(call_started_at, created_at)
+                      >= date_trunc('week', CAST(:from_dt AS timestamptz))
+              AND COALESCE(call_started_at, created_at) <= :to_dt
+              AND voice_agent IS NOT NULL
+              AND raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+            GROUP BY voice_agent
+        ) bk ON bk.voice_agent = ce.voice_agent
         WHERE COALESCE(ce.call_started_at, ce.created_at)
                   >= date_trunc('week', CAST(:from_dt AS timestamptz))
           AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
           AND NOT ce.report_excluded
+          AND ce.status IS NOT NULL
+          AND ce.status <> ''
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
