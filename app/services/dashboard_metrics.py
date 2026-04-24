@@ -535,7 +535,7 @@ def get_voice_performance(
     # Group by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     ts_rows = session.execute(text(f"""
         SELECT
-            date_trunc('week', ce.call_started_at)  AS week_start,
+            date_trunc('week', COALESCE(ce.call_started_at, ce.created_at))   AS week_start,
             ce.voice_agent                                                     AS voice_agent,
             COUNT(*)                                                           AS total_calls,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts,
@@ -545,10 +545,10 @@ def get_voice_performance(
             COUNT(*) FILTER (WHERE {_BOOKED_COND})                            AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                             AS avg_duration
         FROM call_events ce
-        WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
-          AND ce.call_started_at <= :to_dt
+        WHERE COALESCE(ce.call_started_at, ce.created_at) >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND NOT ce.report_excluded
-        GROUP BY date_trunc('week', ce.call_started_at), ce.voice_agent
+        GROUP BY date_trunc('week', COALESCE(ce.call_started_at, ce.created_at)), ce.voice_agent
         ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
 
@@ -556,13 +556,13 @@ def get_voice_performance(
     # double-counting contacts who received calls from multiple campaign types.
     ts_unique_rows = session.execute(text(f"""
         SELECT
-            date_trunc('week', ce.call_started_at)  AS week_start,
+            date_trunc('week', COALESCE(ce.call_started_at, ce.created_at))   AS week_start,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts
         FROM call_events ce
-        WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
-          AND ce.call_started_at <= :to_dt
+        WHERE COALESCE(ce.call_started_at, ce.created_at) >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND NOT ce.report_excluded
-        GROUP BY date_trunc('week', ce.call_started_at)
+        GROUP BY date_trunc('week', COALESCE(ce.call_started_at, ce.created_at))
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
     # Build a week → true unique count lookup
     week_unique: dict[str, int] = {}
