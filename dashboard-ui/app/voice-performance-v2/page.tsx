@@ -102,6 +102,11 @@ export default function VoicePerformanceV2Page() {
   const campaignBreakdown = data?.campaign_breakdown ?? [];
   const wowChanges        = data?.wow_changes        ?? {};
 
+  // WoW subtitle: show the two 7-day windows being compared
+  const wowCurrStart = new Date(toDateObj.getTime() - 7 * 86400000).toISOString().slice(0, 10);
+  const wowPrevStart = new Date(toDateObj.getTime() - 14 * 86400000).toISOString().slice(0, 10);
+  const wowPrevEnd   = wowCurrStart;
+
 return (
     <div
       style={{
@@ -278,7 +283,7 @@ return (
               <div style={SECTION_LABEL}>
                 <span>📊</span> WoW % Performance
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — {fromDate} → {toDate} vs prior equal period
+                  — {wowCurrStart} → {toDate} vs {wowPrevStart} → {wowPrevEnd}
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>

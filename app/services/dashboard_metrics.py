@@ -533,10 +533,12 @@ def get_voice_performance(
             wow_changes["booked_appts"]     = _wow(cum_row[0], cum_row[1])
             wow_changes["unique_contacts"]  = _wow(cum_row[2], cum_row[3])
     elif wow_shift:
-        # Shift mode: compare (from_dt, to_dt) vs same window shifted back 7 days.
+        # Compare the 7-day window ending at to_dt vs the same 7-day window ending 7 days earlier.
+        # This always produces a meaningful single-week comparison regardless of the selected range.
         shift = timedelta(days=7)
-        kpis_shifted = _compute_voice_kpis(session, from_dt - shift, to_dt - shift, days)
-        wow_changes = {k: _wow(kpis_curr.get(k), kpis_shifted.get(k)) for k in wow_keys}
+        wow_curr_7 = _compute_voice_kpis(session, to_dt - shift, to_dt, 7.0)
+        wow_prev_7 = _compute_voice_kpis(session, to_dt - 2 * shift, to_dt - shift, 7.0)
+        wow_changes = {k: _wow(wow_curr_7.get(k), wow_prev_7.get(k)) for k in wow_keys}
     else:
         wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 
