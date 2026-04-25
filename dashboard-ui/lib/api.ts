@@ -192,6 +192,11 @@ export async function fetchVoicePerformance(options?: {
   return get<VoicePerformanceResponse>("/dashboard/voice-performance", params);
 }
 
+export async function fetchVoicePerformanceEarliestDate(): Promise<string | null> {
+  const res = await get<{ monday: string | null }>("/dashboard/voice-performance/earliest-date");
+  return res.monday;
+}
+
 export async function fetchCampaignOverview(options?: {
   from_date?: string;
   to_date?: string;

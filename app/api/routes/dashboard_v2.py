@@ -160,6 +160,22 @@ def get_ai_timeseries(
     return _get_ats(session, from_date=from_date, to_date=to_date)
 
 
+@router.get("/voice-performance/earliest-date")
+def get_voice_performance_earliest_date(session: Session = Depends(get_db)) -> dict[str, str | None]:
+    """Return the Monday of the earliest calendar week that has call_events data."""
+    from sqlalchemy import text as _text
+    from datetime import timezone as _tz, timedelta as _td
+    row = session.execute(_text("SELECT MIN(COALESCE(call_started_at, created_at)) FROM call_events WHERE NOT report_excluded")).fetchone()
+    earliest = row[0] if (row and row[0]) else None
+    if earliest is None:
+        return {"monday": None}
+    if earliest.tzinfo is None:
+        earliest = earliest.replace(tzinfo=_tz.utc)
+    days_since_monday = earliest.weekday()  # Mon=0
+    monday = (earliest - _td(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return {"monday": monday.date().isoformat()}
+
+
 @router.get("/voice-performance")
 def get_voice_performance(
     from_date: datetime | None = Query(default=None),

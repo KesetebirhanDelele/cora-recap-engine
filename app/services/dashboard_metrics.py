@@ -498,19 +498,21 @@ def get_voice_performance(
         return round((curr - prev) / abs(prev) * 100, 1)
 
     if wow_mode:
-        # Calendar-week WoW: this week (Mon 00:00 UTC → now) vs last week (Mon–Sun)
-        weekday = now.weekday()  # Mon=0 … Sun=6
-        this_week_start = (now - timedelta(days=weekday)).replace(
+        # Calendar-week WoW: week containing to_dt (Mon 00:00 → to_dt) vs prior full week.
+        # When to_dt == now (default, no to_date supplied) this is identical to the old behaviour.
+        ref = to_dt
+        weekday = ref.weekday()  # Mon=0 … Sun=6
+        this_week_start = (ref - timedelta(days=weekday)).replace(
             hour=0, minute=0, second=0, microsecond=0
         )
         last_week_start = this_week_start - timedelta(days=7)
-        days_this_week = max(1.0, (now - this_week_start).total_seconds() / 86400)
-        wow_curr = _compute_voice_kpis(session, this_week_start, now, days_this_week)
+        days_this_week = max(1.0, (ref - this_week_start).total_seconds() / 86400)
+        wow_curr = _compute_voice_kpis(session, this_week_start, ref, days_this_week)
         wow_prev = _compute_voice_kpis(session, last_week_start, this_week_start, 7.0)
         wow_changes = {k: _wow(wow_curr.get(k), wow_prev.get(k)) for k in wow_keys}
 
         # Count-based KPIs use cumulative formula:
-        # WoW% = (total_till_now - total_till_end_of_last_week) / total_till_end_of_last_week
+        # WoW% = (total_till_ref - total_till_end_of_last_week) / total_till_end_of_last_week
         cum_row = session.execute(text(f"""
             SELECT
                 COUNT(*) FILTER (WHERE
@@ -524,7 +526,8 @@ def get_voice_performance(
                 COUNT(DISTINCT {_UNIQUE_PHONE}) FILTER (WHERE created_at < :week_start) AS unique_prev
             FROM call_events ce
             WHERE NOT ce.report_excluded
-        """), {"week_start": this_week_start}).fetchone()
+              AND created_at <= :ref_dt
+        """), {"week_start": this_week_start, "ref_dt": ref}).fetchone()
         if cum_row:
             wow_changes["booked_appts"]     = _wow(cum_row[0], cum_row[1])
             wow_changes["unique_contacts"]  = _wow(cum_row[2], cum_row[3])
