@@ -22,15 +22,6 @@ import WowWaterfall from "@/components/voice/WowWaterfall";
 import EfficiencyScatter from "@/components/voice/EfficiencyScatter";
 import DateRangePicker from "@/components/voice/DateRangePicker";
 
-/** Return the ISO date string (YYYY-MM-DD) for the Monday of the week containing d. */
-function mondayOfWeek(d: Date): string {
-  const copy = new Date(d);
-  const dow = copy.getDay(); // 0=Sun … 6=Sat
-  const daysToMonday = dow === 0 ? 6 : dow - 1;
-  copy.setDate(copy.getDate() - daysToMonday);
-  return copy.toISOString().slice(0, 10);
-}
-
 /** Return the Monday that is `n` full weeks before the Monday of the week containing d. */
 function mondayNWeeksBack(d: Date, n: number): string {
   const copy = new Date(d);
@@ -111,12 +102,7 @@ export default function VoicePerformanceV2Page() {
   const campaignBreakdown = data?.campaign_breakdown ?? [];
   const wowChanges        = data?.wow_changes        ?? {};
 
-  // WoW subtitle: selected range length in days for "prior N-day period" label
-  const rangeDays = fromDate && toDate
-    ? Math.round((new Date(toDate).getTime() - new Date(fromDate).getTime()) / 86400000) + 1
-    : 0;
-
-  return (
+return (
     <div
       style={{
         height: "100vh",
