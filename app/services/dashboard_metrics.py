@@ -445,6 +445,7 @@ def get_voice_performance(
     to_date: datetime | None = None,
     all_time: bool = False,
     wow_mode: bool = False,
+    wow_shift: bool = False,
 ) -> dict[str, Any]:
     """
     Voice Call Performance analytics — feeds /voice-performance dashboard page.
@@ -531,6 +532,11 @@ def get_voice_performance(
         if cum_row:
             wow_changes["booked_appts"]     = _wow(cum_row[0], cum_row[1])
             wow_changes["unique_contacts"]  = _wow(cum_row[2], cum_row[3])
+    elif wow_shift:
+        # Shift mode: compare (from_dt, to_dt) vs same window shifted back 7 days.
+        shift = timedelta(days=7)
+        kpis_shifted = _compute_voice_kpis(session, from_dt - shift, to_dt - shift, days)
+        wow_changes = {k: _wow(kpis_curr.get(k), kpis_shifted.get(k)) for k in wow_keys}
     else:
         wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 

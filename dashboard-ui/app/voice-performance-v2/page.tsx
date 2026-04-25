@@ -79,7 +79,7 @@ export default function VoicePerformanceV2Page() {
       const result = await fetchVoicePerformance({
         from_date: from ? `${from}T00:00:00Z` : undefined,
         to_date:   to   ? `${to}T23:59:59Z`   : undefined,
-        // no wow_mode — wow_changes compares selected range vs prior equal-length period
+        wow_shift: true, // compare (from, to) vs same window shifted back 7 days
       });
       setData(result);
     } catch (e) {
