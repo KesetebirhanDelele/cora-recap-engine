@@ -14,7 +14,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { fetchVoicePerformance, fetchVoicePerformanceEarliestDate } from "@/lib/api";
+import { fetchVoicePerformance } from "@/lib/api";
 import type { VoicePerformanceResponse } from "@/types";
 import KpiSidebar from "@/components/voice/KpiSidebar";
 import TrendsChart from "@/components/voice/TrendsChart";
@@ -75,18 +75,11 @@ const EMPTY_KPIS = {
 
 export default function VoicePerformanceV2Page() {
   const today = new Date().toISOString().slice(0, 10);
-  const [fromDate, setFromDate] = useState(today); // updated once earliest-date loads
+  const [fromDate, setFromDate] = useState("2025-07-16");
   const [toDate, setToDate] = useState(today);
   const [data, setData] = useState<VoicePerformanceResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Fetch earliest date once on mount to set the default start date
-  useEffect(() => {
-    fetchVoicePerformanceEarliestDate()
-      .then((monday) => { if (monday) setFromDate(monday); })
-      .catch(() => {/* keep today as fallback */});
-  }, []);
 
   const load = useCallback(async (from: string, to: string) => {
     setLoading(true);
@@ -95,7 +88,7 @@ export default function VoicePerformanceV2Page() {
       const result = await fetchVoicePerformance({
         from_date: from ? `${from}T00:00:00Z` : undefined,
         to_date:   to   ? `${to}T23:59:59Z`   : undefined,
-        wow_mode: true, // WoW reference = calendar week of to_date
+        // no wow_mode — wow_changes compares selected range vs prior equal-length period
       });
       setData(result);
     } catch (e) {
@@ -118,9 +111,10 @@ export default function VoicePerformanceV2Page() {
   const campaignBreakdown = data?.campaign_breakdown ?? [];
   const wowChanges        = data?.wow_changes        ?? {};
 
-  // Labels for the WoW subtitle
-  const wowRefMonday  = mondayOfWeek(toDateObj);
-  const wowPrevMonday = mondayNWeeksBack(toDateObj, 1);
+  // WoW subtitle: selected range length in days for "prior N-day period" label
+  const rangeDays = fromDate && toDate
+    ? Math.round((new Date(toDate).getTime() - new Date(fromDate).getTime()) / 86400000) + 1
+    : 0;
 
   return (
     <div
@@ -298,7 +292,7 @@ export default function VoicePerformanceV2Page() {
               <div style={SECTION_LABEL}>
                 <span>📊</span> WoW % Performance
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — w/o {wowRefMonday} vs w/o {wowPrevMonday}
+                  — {fromDate} → {toDate} vs prior equal period
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>
