@@ -22,12 +22,19 @@ import WowWaterfall from "@/components/voice/WowWaterfall";
 import EfficiencyScatter from "@/components/voice/EfficiencyScatter";
 import DateRangePicker from "@/components/voice/DateRangePicker";
 
-/** Return the Monday that is `n` full weeks before the Monday of the week containing d. */
+/** Monday of the week containing d (ISO date string). */
+function mondayOfWeek(d: Date): string {
+  const copy = new Date(d);
+  const dow = copy.getDay();
+  copy.setDate(copy.getDate() - (dow === 0 ? 6 : dow - 1));
+  return copy.toISOString().slice(0, 10);
+}
+
+/** Monday n full weeks before the Monday of the week containing d. */
 function mondayNWeeksBack(d: Date, n: number): string {
   const copy = new Date(d);
   const dow = copy.getDay();
-  const daysToMonday = dow === 0 ? 6 : dow - 1;
-  copy.setDate(copy.getDate() - daysToMonday - n * 7);
+  copy.setDate(copy.getDate() - (dow === 0 ? 6 : dow - 1) - n * 7);
   return copy.toISOString().slice(0, 10);
 }
 
@@ -79,7 +86,7 @@ export default function VoicePerformanceV2Page() {
       const result = await fetchVoicePerformance({
         from_date: from ? `${from}T00:00:00Z` : undefined,
         to_date:   to   ? `${to}T23:59:59Z`   : undefined,
-        wow_shift: true, // compare (from, to) vs same window shifted back 7 days
+        wow_mode: true, // calendar week of to_date vs prior calendar week — matches PowerBI WoW formula
       });
       setData(result);
     } catch (e) {
@@ -102,10 +109,10 @@ export default function VoicePerformanceV2Page() {
   const campaignBreakdown = data?.campaign_breakdown ?? [];
   const wowChanges        = data?.wow_changes        ?? {};
 
-  // WoW subtitle: show the two 7-day windows being compared
-  const wowCurrStart = new Date(toDateObj.getTime() - 7 * 86400000).toISOString().slice(0, 10);
-  const wowPrevStart = new Date(toDateObj.getTime() - 14 * 86400000).toISOString().slice(0, 10);
-  const wowPrevEnd   = wowCurrStart;
+  // WoW subtitle: calendar week of to_date vs prior calendar week
+  const wowCurrStart = mondayOfWeek(toDateObj);          // Mon of current week
+  const wowPrevStart = mondayNWeeksBack(toDateObj, 1);   // Mon of prior week
+  const wowPrevEnd   = wowCurrStart;                     // prior week ends at current Mon
 
 return (
     <div
