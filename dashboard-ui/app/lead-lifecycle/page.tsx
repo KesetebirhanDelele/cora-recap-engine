@@ -12,9 +12,9 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { fetchLeadLifecycle } from "@/lib/api";
 import type { LeadLifecycleResponse, LeadLifecycleRow, LeadLifecycleSummary } from "@/types";
+import ContactLookupClient from "@/components/ContactLookupClient";
 
 // ── Polling interval ──────────────────────────────────────────────────────────
 const POLL_MS = 60 * 60 * 1000; // 1 hour
@@ -132,9 +132,7 @@ const TD: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
-  const router = useRouter();
-
+function LeadTable({ rows, onDrillDown }: { rows: LeadLifecycleRow[]; onDrillDown: (contactId: string, phone: string) => void }) {
   if (rows.length === 0) {
     return (
       <div style={{ color: "#94a3b8", padding: "2rem", textAlign: "center", fontSize: "0.875rem" }}>
@@ -170,7 +168,7 @@ function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
                 <td style={TD}>
                   {row.phone ? (
                     <span
-                      onClick={() => router.push(`/contact-lookup?phone=${encodeURIComponent(row.phone!)}`)}
+                      onClick={() => onDrillDown(row.phone!, row.phone!)}
                       style={{ color: "#3b82f6", cursor: "pointer", textDecoration: "underline" }}
                     >
                       {row.phone}
@@ -247,6 +245,7 @@ export default function LeadLifecyclePage() {
   const [statusFilter, setStatusFilter]   = useState<"all" | "active" | "finalized" | "vm" | "dnc">("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
   const [offset, setOffset]     = useState(0);
+  const [drillDown, setDrillDown] = useState<{ contactId: string; phone: string } | null>(null);
   const LIMIT = 100;
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -276,6 +275,42 @@ export default function LeadLifecyclePage() {
     load(statusFilter, campaignFilter, offset);
     timerRef.current = setInterval(() => load(statusFilter, campaignFilter, offset), POLL_MS);
   };
+
+  // ── Drill-down view ────────────────────────────────────────────────────────
+  if (drillDown) {
+    return (
+      <div style={{
+        minHeight: "100vh", display: "flex", flexDirection: "column",
+        background: "#f1f5f9", fontFamily: "system-ui, -apple-system, sans-serif", color: "#1e293b",
+        padding: "0.75rem", gap: "1rem",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: "0.75rem",
+          background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8,
+          padding: "0.75rem 1rem",
+        }}>
+          <button
+            onClick={() => setDrillDown(null)}
+            style={{
+              display: "flex", alignItems: "center", gap: "0.35rem",
+              padding: "0.35rem 0.875rem",
+              background: "#f1f5f9", border: "1px solid #e2e8f0",
+              borderRadius: 6, fontSize: "0.82rem", cursor: "pointer", fontWeight: 600,
+            }}
+          >
+            ← Back to Lead Lifecycle
+          </button>
+          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
+            Contact:{" "}
+            <strong style={{ color: "#1e293b", fontFamily: "monospace" }}>
+              {drillDown.phone}
+            </strong>
+          </span>
+        </div>
+        <ContactLookupClient contactId={drillDown.contactId} />
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -375,7 +410,7 @@ export default function LeadLifecyclePage() {
 
           {/* Table */}
           <div style={{ flex: 1, overflowY: "auto" }}>
-            <LeadTable rows={data?.rows ?? []} />
+            <LeadTable rows={data?.rows ?? []} onDrillDown={(contactId, phone) => setDrillDown({ contactId, phone })} />
           </div>
 
           {/* Pagination */}

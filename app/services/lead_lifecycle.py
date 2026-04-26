@@ -57,7 +57,7 @@ WITH call_agg AS (
         MIN(COALESCE(ce.call_started_at, ce.created_at))                   AS first_contact_at,
         MAX(COALESCE(ce.call_started_at, ce.created_at))                   AS last_contact_at,
         COUNT(ce.id)                                                        AS total_calls,
-        MAX(ce.lead_name)                                                   AS lead_name,
+        MAX(NULLIF(TRIM(ce.lead_name), 'Unknown'))                          AS lead_name,
         -- last intent: from the most recent call that has one
         (
             SELECT ce2.detected_intent
@@ -113,7 +113,7 @@ finalization AS (
 )
 SELECT
     ls.contact_id,
-    COALESCE(ca.lead_name, ls.contact_id)           AS lead_name,
+    ca.lead_name                                     AS lead_name,
     ls.normalized_phone,
     ls.campaign_name                                AS current_campaign,
     COALESCE(ic.campaign, ls.campaign_name)         AS initial_campaign,
