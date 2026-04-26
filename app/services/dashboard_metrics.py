@@ -533,13 +533,39 @@ def get_voice_performance(
             wow_changes["booked_appts"]     = _wow(cum_row[0], cum_row[1])
             wow_changes["unique_contacts"]  = _wow(cum_row[2], cum_row[3])
     elif wow_shift:
-        # Shift the ENTIRE filter range back 7 days — matches PowerBI DATEADD(-7, DAY) logic.
-        # CurrentPeriod = (from_dt, to_dt); PreviousPeriod = (from_dt-7d, to_dt-7d).
-        # For narrow ranges (≤2 weeks) this produces typical WoW%. For wide ranges the
-        # delta is small by design — both windows contain mostly the same data.
+        # Rate-based KPIs: shift the ENTIRE filter range back 7 days.
+        # Count-based KPIs (unique_contacts, booked_appts): use calendar-week cumulative
+        # formula — COUNT DISTINCT is not meaningful when two large overlapping windows
+        # differ by only 7 days at each boundary.
         shift = timedelta(days=7)
         kpis_shifted = _compute_voice_kpis(session, from_dt - shift, to_dt - shift, days)
         wow_changes = {k: _wow(kpis_curr.get(k), kpis_shifted.get(k)) for k in wow_keys}
+
+        # Override unique_contacts and booked_appts with calendar-week cumulative formula
+        # (same as wow_mode): new contacts/bookings this week vs total before this week.
+        ref = to_dt
+        weekday = ref.weekday()
+        this_week_start = (ref - timedelta(days=weekday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        cum_row = session.execute(text(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                ) AS booked_now,
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND created_at < :week_start
+                ) AS booked_prev,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) AS unique_now,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) FILTER (WHERE created_at < :week_start) AS unique_prev
+            FROM call_events ce
+            WHERE NOT ce.report_excluded
+              AND created_at <= :ref_dt
+        """), {"week_start": this_week_start, "ref_dt": ref}).fetchone()
+        if cum_row:
+            wow_changes["booked_appts"]    = _wow(cum_row[0], cum_row[1])
+            wow_changes["unique_contacts"] = _wow(cum_row[2], cum_row[3])
     else:
         wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 
