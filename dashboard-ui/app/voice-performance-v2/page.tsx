@@ -139,12 +139,8 @@ return (
           ← Dashboard
         </Link>
         <span style={{ color: "#e2e8f0" }}>|</span>
-        <Link href="/voice-performance" style={{ color: "#64748b", textDecoration: "none", fontSize: "0.9rem" }}>
-          v1
-        </Link>
-        <span style={{ color: "#e2e8f0" }}>|</span>
         <span style={{ fontSize: "1rem", fontWeight: 600, color: "#1e293b" }}>
-          Voice Call Performance Review <span style={{ color: "#94a3b8", fontWeight: 400 }}>v2</span>
+          Voice Call Performance Review
         </span>
         {loading && (
           <span style={{ marginLeft: "auto", fontSize: "0.875rem", color: "#94a3b8" }}>
