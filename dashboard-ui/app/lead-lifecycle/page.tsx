@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { fetchLeadLifecycle } from "@/lib/api";
 import type { LeadLifecycleResponse, LeadLifecycleRow, LeadLifecycleSummary } from "@/types";
 
@@ -132,6 +133,8 @@ const TD: React.CSSProperties = {
 };
 
 function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
+  const router = useRouter();
+
   if (rows.length === 0) {
     return (
       <div style={{ color: "#94a3b8", padding: "2rem", textAlign: "center", fontSize: "0.875rem" }}>
@@ -156,13 +159,24 @@ function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
         <tbody>
           {rows.map(row => {
             const badge = statusBadge(row);
+            const hasName = row.lead_name && row.lead_name !== "Unknown";
+            const displayName = hasName ? row.lead_name : (row.phone ?? row.contact_id.slice(0, 12));
             return (
               <tr key={row.contact_id} style={{ background: row.do_not_call ? "#fff7f7" : undefined }}>
                 <td style={TD}>
-                  <div style={{ fontWeight: 600 }}>{row.lead_name}</div>
+                  <div style={{ fontWeight: 600 }}>{displayName}</div>
                   <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>{row.contact_id.slice(0, 12)}…</div>
                 </td>
-                <td style={TD}>{row.phone ?? "—"}</td>
+                <td style={TD}>
+                  {row.phone ? (
+                    <span
+                      onClick={() => router.push(`/contact-lookup?phone=${encodeURIComponent(row.phone!)}`)}
+                      style={{ color: "#3b82f6", cursor: "pointer", textDecoration: "underline" }}
+                    >
+                      {row.phone}
+                    </span>
+                  ) : "—"}
+                </td>
                 <td style={TD}>
                   <span style={{
                     background: badge.color + "18",
