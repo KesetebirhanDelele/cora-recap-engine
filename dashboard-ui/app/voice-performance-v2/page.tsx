@@ -22,14 +22,6 @@ import WowWaterfall from "@/components/voice/WowWaterfall";
 import EfficiencyScatter from "@/components/voice/EfficiencyScatter";
 import DateRangePicker from "@/components/voice/DateRangePicker";
 
-/** Monday of the week containing d (ISO date string). */
-function mondayOfWeek(d: Date): string {
-  const copy = new Date(d);
-  const dow = copy.getDay();
-  copy.setDate(copy.getDate() - (dow === 0 ? 6 : dow - 1));
-  return copy.toISOString().slice(0, 10);
-}
-
 /** Monday n full weeks before the Monday of the week containing d. */
 function mondayNWeeksBack(d: Date, n: number): string {
   const copy = new Date(d);
@@ -86,7 +78,7 @@ export default function VoicePerformanceV2Page() {
       const result = await fetchVoicePerformance({
         from_date: from ? `${from}T00:00:00Z` : undefined,
         to_date:   to   ? `${to}T23:59:59Z`   : undefined,
-        wow_mode: true, // calendar week of to_date vs prior calendar week — matches PowerBI WoW formula
+        wow_shift: true, // full range vs same range shifted -7d — matches PowerBI DATEADD(-7,DAY) logic
       });
       setData(result);
     } catch (e) {
@@ -109,10 +101,14 @@ export default function VoicePerformanceV2Page() {
   const campaignBreakdown = data?.campaign_breakdown ?? [];
   const wowChanges        = data?.wow_changes        ?? {};
 
-  // WoW subtitle: calendar week of to_date vs prior calendar week
-  const wowCurrStart = mondayOfWeek(toDateObj);          // Mon of current week
-  const wowPrevStart = mondayNWeeksBack(toDateObj, 1);   // Mon of prior week
-  const wowPrevEnd   = wowCurrStart;                     // prior week ends at current Mon
+  // WoW subtitle: full filter range vs same range shifted -7 days
+  const wowCurrStart = fromDate;
+  const wowPrevStart = fromDate
+    ? new Date(new Date(fromDate).getTime() - 7 * 86400000).toISOString().slice(0, 10)
+    : "";
+  const wowPrevEnd = toDate
+    ? new Date(new Date(toDate).getTime() - 7 * 86400000).toISOString().slice(0, 10)
+    : "";
 
 return (
     <div
