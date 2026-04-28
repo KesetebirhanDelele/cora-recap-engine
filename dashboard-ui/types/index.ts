@@ -28,6 +28,28 @@ export interface WorkerActivityResponse {
   recorded_at: string;
 }
 
+// ── Worker Activity Trend ─────────────────────────────────────────────────────
+
+export interface WorkerTrendPoint {
+  bucket: string;
+  worker_id: string;
+  worker_id_short: string;
+  jobs: number;
+  avg_duration_s: number | null;
+}
+
+export interface WorkerTrendWorker {
+  worker_id: string;
+  worker_id_short: string;
+}
+
+export interface WorkerTrendResponse {
+  points: WorkerTrendPoint[];
+  worker_ids: WorkerTrendWorker[];
+  window_minutes: number;
+  recorded_at: string;
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export interface HealthResponse {

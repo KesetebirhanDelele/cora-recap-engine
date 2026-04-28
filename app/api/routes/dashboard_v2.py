@@ -213,6 +213,15 @@ def get_worker_activity(
     return _get_wa(session)
 
 
+@router.get("/worker-activity-trend")
+def get_worker_activity_trend(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """60-minute per-worker job count and avg duration trend (1-min buckets)."""
+    from app.services.dashboard_metrics import get_worker_activity_trend as _get_wat
+    return _get_wat(session)
+
+
 @router.get("/card-metrics")
 def get_card_metrics(
     session: Session = Depends(get_db),

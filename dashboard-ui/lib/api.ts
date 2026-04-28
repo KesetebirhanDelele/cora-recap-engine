@@ -38,6 +38,7 @@ import type {
   SaveSettingsResponse,
   VoicePerformanceResponse,
   WorkerActivityResponse,
+  WorkerTrendResponse,
 } from "@/types";
 
 // Server-side (SSR/RSC): use full internal URL to reach dashboard-api directly.
@@ -96,6 +97,10 @@ export async function fetchHealth(): Promise<HealthResponse> {
 
 export async function fetchWorkerActivity(): Promise<WorkerActivityResponse> {
   return get<WorkerActivityResponse>("/dashboard/worker-activity");
+}
+
+export async function fetchWorkerActivityTrend(): Promise<WorkerTrendResponse> {
+  return get<WorkerTrendResponse>("/dashboard/worker-activity-trend");
 }
 
 export async function fetchMetrics(options?: {

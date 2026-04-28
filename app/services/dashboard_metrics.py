@@ -221,6 +221,59 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
     }
 
 
+def get_worker_activity_trend(session: Session) -> dict[str, Any]:
+    """
+    60-minute per-worker trend in 1-minute buckets.
+    Returns flat points list (bucket, worker_id, jobs, avg_duration_s) plus
+    a deduped worker_ids index so the frontend knows which series to render.
+    """
+    rows = session.execute(text("""
+        SELECT
+            claimed_by,
+            date_trunc('minute', updated_at)                                AS bucket,
+            COUNT(*)                                                         AS jobs,
+            ROUND(AVG(
+                GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
+            ) FILTER (WHERE claimed_at IS NOT NULL)::numeric, 1)             AS avg_duration_s
+        FROM scheduled_jobs
+        WHERE claimed_by IS NOT NULL
+          AND updated_at >= NOW() - INTERVAL '60 minutes'
+          AND status IN ('completed', 'failed')
+        GROUP BY claimed_by, date_trunc('minute', updated_at)
+        ORDER BY bucket, claimed_by
+    """)).fetchall()
+
+    seen_workers: dict[str, str] = {}
+    for r in rows:
+        worker_id = r[0]
+        if worker_id not in seen_workers:
+            parts = worker_id.rsplit("-", 1)
+            short_id = parts[-1] if len(parts) > 1 and len(parts[-1]) <= 12 else worker_id[-12:]
+            seen_workers[worker_id] = short_id
+
+    points = [
+        {
+            "bucket": r[1].isoformat() if r[1] else None,
+            "worker_id": r[0],
+            "worker_id_short": seen_workers[r[0]],
+            "jobs": int(r[2]),
+            "avg_duration_s": float(r[3]) if r[3] is not None else None,
+        }
+        for r in rows
+    ]
+
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "points": points,
+        "worker_ids": [
+            {"worker_id": wid, "worker_id_short": short}
+            for wid, short in seen_workers.items()
+        ],
+        "window_minutes": 60,
+        "recorded_at": now.isoformat(),
+    }
+
+
 def get_metrics(
     session: Session,
     campaign: str | None = None,

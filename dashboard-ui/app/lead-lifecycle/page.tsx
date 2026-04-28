@@ -409,12 +409,49 @@ export default function LeadLifecyclePage() {
             </div>
           </div>
 
+          {/* Pagination — top */}
+          {data && data.total > LIMIT && (
+            <div style={{
+              padding: "0.4rem 0.875rem",
+              borderBottom: "1px solid #e2e8f0",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+              fontSize: "0.78rem",
+              color: "#64748b",
+              background: "#fafafa",
+            }}>
+              <span>
+                {offset + 1}–{Math.min(offset + LIMIT, data.total)} of {data.total.toLocaleString()}
+              </span>
+              <button
+                disabled={offset === 0}
+                onClick={() => setOffset(Math.max(0, offset - LIMIT))}
+                style={{ padding: "3px 10px", fontSize: "0.78rem", borderRadius: 4,
+                         border: "1px solid #e2e8f0", cursor: offset === 0 ? "not-allowed" : "pointer",
+                         background: offset === 0 ? "#f8fafc" : "#ffffff" }}
+              >
+                ← Prev
+              </button>
+              <button
+                disabled={offset + LIMIT >= data.total}
+                onClick={() => setOffset(offset + LIMIT)}
+                style={{ padding: "3px 10px", fontSize: "0.78rem", borderRadius: 4,
+                         border: "1px solid #e2e8f0",
+                         cursor: offset + LIMIT >= data.total ? "not-allowed" : "pointer",
+                         background: offset + LIMIT >= data.total ? "#f8fafc" : "#ffffff" }}
+              >
+                Next →
+              </button>
+            </div>
+          )}
+
           {/* Table */}
           <div style={{ flex: 1, overflowY: "auto" }}>
             <LeadTable rows={data?.rows ?? []} onDrillDown={(contactId, phone) => setDrillDown({ contactId, phone })} />
           </div>
 
-          {/* Pagination */}
+          {/* Pagination — bottom */}
           {data && data.total > LIMIT && (
             <div style={{
               padding: "0.5rem 0.875rem",
