@@ -153,7 +153,7 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
                   AND updated_at >= NOW() - INTERVAL '10 minutes'
             )                                                                AS jobs_last_10m,
             ROUND(AVG(
-                EXTRACT(EPOCH FROM (updated_at - claimed_at))
+                GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
             ) FILTER (
                 WHERE status = 'completed'
                   AND updated_at >= NOW() - INTERVAL '10 minutes'
@@ -176,7 +176,7 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
             job_type,
             COUNT(*)                                                          AS cnt,
             ROUND(AVG(
-                EXTRACT(EPOCH FROM (updated_at - claimed_at))
+                GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
             )::numeric, 1)                                                    AS avg_duration_s
         FROM scheduled_jobs
         WHERE status IN ('completed','failed')
