@@ -91,11 +91,28 @@ def main(live: bool, window_start: datetime) -> None:
         mode, window_start.isoformat(),
     )
 
+    from datetime import timedelta
+
     from app.config import get_settings
     from app.db import get_sync_session
-    from app.worker.jobs.outbound_jobs import _compute_window_run_at
+    from app.models.scheduled_job import ScheduledJob
     from app.worker.scheduler import schedule_job
-    from sqlalchemy import text
+    from sqlalchemy import func, select, text
+
+    _CALL_BATCH_SIZE = 10
+    _CALL_SLOT_SECONDS = 120
+
+    def _compute_window_run_at(session, ws):
+        pending = session.scalar(
+            select(func.count()).select_from(ScheduledJob).where(
+                ScheduledJob.job_type == "launch_outbound_call",
+                ScheduledJob.status.in_(["pending", "claimed"]),
+                ScheduledJob.run_at >= ws,
+                ScheduledJob.run_at < ws + timedelta(hours=4),
+            )
+        ) or 0
+        slot = pending // _CALL_BATCH_SIZE
+        return ws + timedelta(seconds=slot * _CALL_SLOT_SECONDS)
 
     settings = get_settings()
 
