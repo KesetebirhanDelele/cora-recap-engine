@@ -352,3 +352,76 @@ Mitigation: explicitly inspect `executed_actions` and never assume success.
 ### Risk: provider-specific statuses drift from internal routing semantics
 Mitigation: centralize normalization rules and persist both raw and normalized values.
 
+---
+
+## Known operational constraint: HTTP step concurrency limit
+
+**Observed 2026-04-27 (production incident).**
+
+### What happens
+Synthflow's HTTP step — the step inside the completed-call workflow that POSTs to `POST /v1/webhooks/calls` — has an undocumented concurrency limit. When a large number of calls complete simultaneously, the HTTP step drops webhooks silently. The call happened in Synthflow; Cora never receives the completion event. Affected leads are left with:
+- `launch_outbound_call` job status = `completed` (call was launched successfully)
+- No `call_event` row created (webhook never arrived)
+- Voicemail tier not advanced
+- No next call scheduled
+
+### Root cause
+All rescheduled calls deferred to the next active window (e.g. 9 AM CDT) were previously assigned `run_at = window_start` exactly, causing all of them to fire at the same second. On 2026-04-27, 366 calls fired simultaneously at 14:00:00 UTC, overwhelming the HTTP step.
+
+### Fix implemented (2026-04-27)
+`_compute_window_run_at(session, window_start)` in `app/worker/jobs/outbound_jobs.py` assigns a slot-based `run_at` at reschedule time:
+- Counts all pending `launch_outbound_call` jobs in the 4-hour window
+- Divides by `_CALL_BATCH_SIZE = 10` to get the slot index
+- Returns `window_start + slot * _CALL_SLOT_SECONDS` (120 s per slot)
+
+Effect: 10 calls per 2-minute slot. 100 deferred calls spread over 20 minutes. Prevents burst at window open.
+
+### Design rule
+**Never assign `run_at = window_start` directly for rescheduled calls.** Always call `_compute_window_run_at(session, window_start)` so the slot-based spacing is applied.
+
+### Detection query
+```sql
+-- Calls launched in a burst with no webhook return:
+SELECT DATE_TRUNC('minute', sj.run_at) AT TIME ZONE 'America/Chicago' AS minute_cst,
+       ls.ai_campaign_value AS vm_tier, COUNT(*) AS leads
+FROM lead_state ls
+JOIN LATERAL (
+    SELECT run_at FROM scheduled_jobs
+    WHERE entity_id = ls.contact_id
+      AND job_type  = 'launch_outbound_call'
+      AND status    = 'completed'
+    ORDER BY run_at DESC LIMIT 1
+) sj ON TRUE
+WHERE ls.ai_campaign_value IN ('0','1','2')
+  AND (ls.status IS NULL OR ls.status NOT IN ('closed','terminal'))
+  AND ls.do_not_call IS NOT TRUE
+  AND NOT EXISTS (SELECT 1 FROM scheduled_jobs WHERE entity_id = ls.contact_id
+                    AND job_type = 'launch_outbound_call' AND status IN ('pending','claimed'))
+  AND NOT EXISTS (SELECT 1 FROM call_events ce WHERE ce.contact_id = ls.contact_id
+                    AND ce.created_at >= sj.run_at)
+GROUP BY 1, 2 ORDER BY 1 DESC, 2;
+```
+A large spike at a single minute in the results confirms a burst event.
+
+### Recovery procedures
+
+**Tier 2 leads (would have finalized):**
+Use `execution/finalize_stuck_tier2.py`. Advances `ai_campaign_value` to `'3'` and writes `AI Campaign = No` / `Mark as Lead = Yes` to GHL for each affected lead.
+```bash
+docker compose cp execution/finalize_stuck_tier2.py worker-default:/app/execution/finalize_stuck_tier2.py
+docker compose exec worker-default python execution/finalize_stuck_tier2.py        # dry run
+docker compose exec worker-default python execution/finalize_stuck_tier2.py --live # live
+```
+
+**Tier 0 / Tier 1 leads (need next call scheduled):**
+Use `execution/reschedule_burst_tier1.py`. Identifies burst-affected leads by last completed job timestamp and schedules fresh `launch_outbound_call` jobs spread across the next window using `_compute_window_run_at`.
+```bash
+docker compose cp execution/reschedule_burst_tier1.py worker-default:/app/execution/reschedule_burst_tier1.py
+docker compose exec worker-default python execution/reschedule_burst_tier1.py        # dry run
+docker compose exec worker-default python execution/reschedule_burst_tier1.py --live # live
+# Override window start if needed:
+docker compose exec worker-default python execution/reschedule_burst_tier1.py --live --window-start 2026-04-29T14:00:00+00:00
+```
+
+**Note:** A second class of stuck leads exists from intermittent Synthflow HTTP step failures unrelated to burst concurrency (individual webhook drops spread throughout the day). These leads appear with counts of 1–3 per minute across many time slots — not a single-minute spike. Recovery approach is the same (reschedule), but root cause is Synthflow reliability, not call volume.
+

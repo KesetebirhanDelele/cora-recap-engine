@@ -138,7 +138,7 @@ constraint before adding workers.
 | API | Known limit | Mitigation |
 |---|---|---|
 | GHL (GoHighLevel) | ~100 req/s per location | Backoff + retry in `app/adapters/ghl.py`; queue GHL writes behind a rate-limited dispatcher |
-| Synthflow | Per-account call concurrency cap | Check Synthflow account plan; cap worker concurrency for Synthflow-bound job types |
+| Synthflow | HTTP step concurrency limit (undocumented) — simultaneous webhook POSTs are dropped silently when too many calls complete at once | Never schedule burst of calls at exact same `run_at`. Use `_compute_window_run_at()` for all rescheduled calls — 10 calls per 2-min slot. See `spec/14_synthflow_integration_addendum.md` for full details and recovery scripts. |
 | OpenAI | Token/minute and request/minute limits | Exponential backoff already in `app/adapters/openai_client.py`; add per-minute token budget tracking for high volume |
 
 **Rule:** Before scaling workers beyond 3, confirm external API throughput can absorb the increased call rate.
@@ -204,3 +204,4 @@ Record each scaling action here so future engineers have a paper trail.
 | Date | Action | Reason | Result |
 |---|---|---|---|
 | — | Initial single-host deploy | Baseline | — |
+| 2026-04-27 | Added `_compute_window_run_at()` slot-based call spacing | 366 simultaneous calls at 9 AM CDT overwhelmed Synthflow HTTP step concurrency limit; webhooks dropped | Fixed — 10 calls/slot, 2-min slots. Manually recovered 134 finalized leads + 450 rescheduled leads. |
