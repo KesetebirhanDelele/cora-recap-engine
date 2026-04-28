@@ -1206,12 +1206,12 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     # ── finalized_today (resets at midnight America/Chicago) ──────────────────
     finalized_today = int(_scalar(
         f"SELECT COUNT(*) FROM lead_state"
-        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3')"
         f"   AND updated_at >= {_midnight_cst}"
     ) or 0)
     finalized_yesterday = int(_scalar(
         f"SELECT COUNT(*) FROM lead_state"
-        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3')"
         f"   AND updated_at >= {_yesterday_start}"
         f"   AND updated_at < {_midnight_cst}"
     ) or 0)
