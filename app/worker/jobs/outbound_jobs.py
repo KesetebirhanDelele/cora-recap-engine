@@ -30,7 +30,7 @@ from app.worker.exceptions import create_exception
 logger = logging.getLogger(__name__)
 
 _CALL_BATCH_SIZE = 10    # calls per slot
-_CALL_SLOT_SECONDS = 120  # 2 minutes between slots
+_CALL_SLOT_SECONDS = 600  # 10 minutes between slots — max 10 calls/10 min
 
 
 def _compute_window_run_at(session, window_start: datetime) -> datetime:
@@ -41,8 +41,8 @@ def _compute_window_run_at(session, window_start: datetime) -> datetime:
     divides by _CALL_BATCH_SIZE to get the slot index, and returns
     window_start + slot * _CALL_SLOT_SECONDS.
 
-    10 calls per 2-minute slot prevents the 9 AM burst that overwhelms
-    Synthflow's HTTP step concurrency limit and drops webhooks.
+    10 calls per 10-minute slot (down from 10/2-min = 50/10-min) prevents
+    Synthflow webhook saturation observed at burst volumes of 50/10-min.
     """
     from sqlalchemy import func, select
 
