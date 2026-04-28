@@ -35,7 +35,7 @@ export interface WorkerTrendPoint {
   worker_id: string;
   worker_id_short: string;
   jobs: number;
-  avg_duration_s: number | null;
+  median_duration_s: number | null;
 }
 
 export interface WorkerTrendWorker {
@@ -47,6 +47,7 @@ export interface WorkerTrendResponse {
   points: WorkerTrendPoint[];
   worker_ids: WorkerTrendWorker[];
   window_minutes: number;
+  bucket_minutes: number;
   recorded_at: string;
 }
 

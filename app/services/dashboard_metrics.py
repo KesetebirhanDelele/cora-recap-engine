@@ -223,23 +223,34 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
 
 def get_worker_activity_trend(session: Session) -> dict[str, Any]:
     """
-    60-minute per-worker trend in 1-minute buckets.
-    Returns flat points list (bucket, worker_id, jobs, avg_duration_s) plus
-    a deduped worker_ids index so the frontend knows which series to render.
+    6-hour per-worker trend in 10-minute buckets.
+
+    Uses PERCENTILE_CONT(0.5) (median) for duration — not average — so a single
+    stuck job does not skew the reported duration for an entire bucket.
+
+    Returns flat points list + a deduped worker_ids index. The frontend pivots
+    points into wide format for recharts stacked-area and multi-line charts.
     """
     rows = session.execute(text("""
         SELECT
             claimed_by,
-            date_trunc('minute', updated_at)                                AS bucket,
-            COUNT(*)                                                         AS jobs,
-            ROUND(AVG(
-                GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
-            ) FILTER (WHERE claimed_at IS NOT NULL)::numeric, 1)             AS avg_duration_s
+            date_trunc('hour', updated_at)
+                + (EXTRACT(MINUTE FROM updated_at)::int / 10) * INTERVAL '10 minutes'
+                                                                             AS bucket,
+            COUNT(*)                                                          AS jobs,
+            ROUND(
+                (PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
+                ) FILTER (WHERE claimed_at IS NOT NULL))::numeric,
+            1)                                                                AS median_duration_s
         FROM scheduled_jobs
         WHERE claimed_by IS NOT NULL
-          AND updated_at >= NOW() - INTERVAL '60 minutes'
+          AND updated_at >= NOW() - INTERVAL '6 hours'
           AND status IN ('completed', 'failed')
-        GROUP BY claimed_by, date_trunc('minute', updated_at)
+        GROUP BY
+            claimed_by,
+            date_trunc('hour', updated_at)
+                + (EXTRACT(MINUTE FROM updated_at)::int / 10) * INTERVAL '10 minutes'
         ORDER BY bucket, claimed_by
     """)).fetchall()
 
@@ -257,7 +268,7 @@ def get_worker_activity_trend(session: Session) -> dict[str, Any]:
             "worker_id": r[0],
             "worker_id_short": seen_workers[r[0]],
             "jobs": int(r[2]),
-            "avg_duration_s": float(r[3]) if r[3] is not None else None,
+            "median_duration_s": float(r[3]) if r[3] is not None else None,
         }
         for r in rows
     ]
@@ -269,7 +280,8 @@ def get_worker_activity_trend(session: Session) -> dict[str, Any]:
             {"worker_id": wid, "worker_id_short": short}
             for wid, short in seen_workers.items()
         ],
-        "window_minutes": 60,
+        "window_minutes": 360,
+        "bucket_minutes": 10,
         "recorded_at": now.isoformat(),
     }
 
