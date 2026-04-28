@@ -4,6 +4,30 @@
  * All timestamps are ISO 8601 UTC strings.
  */
 
+// ── Worker Activity ───────────────────────────────────────────────────────────
+
+export interface WorkerJobBreakdown {
+  job_type: string;
+  count: number;
+  avg_duration_s: number | null;
+}
+
+export interface WorkerSummary {
+  worker_id: string;
+  worker_id_short: string;
+  is_active: boolean;
+  current_job_type: string | null;
+  jobs_last_10m: number;
+  avg_duration_s: number | null;
+  breakdown: WorkerJobBreakdown[];
+}
+
+export interface WorkerActivityResponse {
+  workers: WorkerSummary[];
+  window_minutes: number;
+  recorded_at: string;
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export interface HealthResponse {

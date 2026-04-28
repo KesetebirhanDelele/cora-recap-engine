@@ -133,6 +133,94 @@ def get_health(session: Session) -> dict[str, Any]:
     }
 
 
+def get_worker_activity(session: Session) -> dict[str, Any]:
+    """
+    Per-worker throughput and latency over the last 10 minutes.
+
+    Returns every worker seen in a running state or that completed/failed a job
+    in the last 10 minutes. Two queries:
+      1. Per-worker summary: active flag, current job type, job count, avg duration.
+      2. Per-worker per-job-type breakdown for the detail rows.
+    """
+    summary_rows = session.execute(text("""
+        SELECT
+            claimed_by,
+            BOOL_OR(status = 'running' AND lease_expires_at > NOW())        AS is_active,
+            MIN(CASE WHEN status = 'running'
+                      AND lease_expires_at > NOW() THEN job_type END)        AS current_job_type,
+            COUNT(*) FILTER (
+                WHERE status IN ('completed','failed')
+                  AND updated_at >= NOW() - INTERVAL '10 minutes'
+            )                                                                AS jobs_last_10m,
+            ROUND(AVG(
+                EXTRACT(EPOCH FROM (updated_at - claimed_at))
+            ) FILTER (
+                WHERE status = 'completed'
+                  AND updated_at >= NOW() - INTERVAL '10 minutes'
+                  AND claimed_at IS NOT NULL
+            )::numeric, 1)                                                   AS avg_duration_s
+        FROM scheduled_jobs
+        WHERE claimed_by IS NOT NULL
+          AND (
+              (status = 'running' AND lease_expires_at > NOW())
+              OR (status IN ('completed','failed')
+                  AND updated_at >= NOW() - INTERVAL '10 minutes')
+          )
+        GROUP BY claimed_by
+        ORDER BY claimed_by
+    """)).fetchall()
+
+    breakdown_rows = session.execute(text("""
+        SELECT
+            claimed_by,
+            job_type,
+            COUNT(*)                                                          AS cnt,
+            ROUND(AVG(
+                EXTRACT(EPOCH FROM (updated_at - claimed_at))
+            )::numeric, 1)                                                    AS avg_duration_s
+        FROM scheduled_jobs
+        WHERE status IN ('completed','failed')
+          AND updated_at >= NOW() - INTERVAL '10 minutes'
+          AND claimed_by IS NOT NULL
+          AND claimed_at IS NOT NULL
+        GROUP BY claimed_by, job_type
+        ORDER BY claimed_by, cnt DESC
+    """)).fetchall()
+
+    # Index breakdown by worker
+    breakdown_by_worker: dict[str, list] = {}
+    for r in breakdown_rows:
+        worker_id = r[0]
+        breakdown_by_worker.setdefault(worker_id, []).append({
+            "job_type": r[1],
+            "count": int(r[2]),
+            "avg_duration_s": float(r[3]) if r[3] is not None else None,
+        })
+
+    now = datetime.now(tz=timezone.utc)
+    workers = []
+    for r in summary_rows:
+        worker_id = r[0]
+        # Shorten display ID: last segment after final hyphen if UUID-like, else last 12 chars
+        parts = worker_id.rsplit("-", 1)
+        short_id = parts[-1] if len(parts) > 1 and len(parts[-1]) <= 12 else worker_id[-12:]
+        workers.append({
+            "worker_id": worker_id,
+            "worker_id_short": short_id,
+            "is_active": bool(r[1]),
+            "current_job_type": r[2],
+            "jobs_last_10m": int(r[3]) if r[3] is not None else 0,
+            "avg_duration_s": float(r[4]) if r[4] is not None else None,
+            "breakdown": breakdown_by_worker.get(worker_id, []),
+        })
+
+    return {
+        "workers": workers,
+        "window_minutes": 10,
+        "recorded_at": now.isoformat(),
+    }
+
+
 def get_metrics(
     session: Session,
     campaign: str | None = None,

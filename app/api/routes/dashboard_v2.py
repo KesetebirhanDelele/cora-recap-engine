@@ -204,6 +204,15 @@ def get_lead_lifecycle(
                    limit=limit, offset=offset)
 
 
+@router.get("/worker-activity")
+def get_worker_activity(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Per-worker job throughput and avg latency over the last 10 minutes."""
+    from app.services.dashboard_metrics import get_worker_activity as _get_wa
+    return _get_wa(session)
+
+
 @router.get("/card-metrics")
 def get_card_metrics(
     session: Session = Depends(get_db),
