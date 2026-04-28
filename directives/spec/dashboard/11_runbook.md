@@ -202,6 +202,56 @@ streamlit run execution/dashboard.py --server.headless true
 
 ---
 
+## Lead Lifecycle Monitor — known issues and fixes
+
+### Tier-3 leads showing as "Active" (fixed 2026-04-28)
+`_finalize_campaign()` writes to GHL but does not update `lead_state.status` to `'closed'`. Leads that complete the voicemail sequence remain with `status = NULL` and `ai_campaign_value = '3'`. Before the fix, the status badge and summary counts treated these as Active.
+
+**Fix applied to**:
+- `dashboard-ui/app/lead-lifecycle/page.tsx` — `statusBadge()` now checks `vm_tier === "3"` before the Active fallback
+- `app/services/lead_lifecycle.py` — summary counts and row filters include `ai_campaign_value = '3'` in the finalized definition
+- `app/services/dashboard_metrics.py` — `finalized_today` and `finalized_yesterday` include `ai_campaign_value = '3'`
+
+**If this regression reappears**: verify all three files include the `ai_campaign_value = '3'` condition and rebuild `dashboard-api` + `frontend`.
+
+### Lead Lifecycle nav card showing stale "in VM" count
+The nav card previously used `in_vm_sequence` as its primary metric. Changed to `active_leads` (2026-04-28) for a more meaningful at-a-glance count.
+
+**Location**: `dashboard-ui/lib/indicators.ts` — `CARD_METRIC_MAP["/lead-lifecycle"]`
+
+If the card label reverts to "in VM" after a deploy, check that `indicators.ts` has `key: "active_leads"` and rebuild the frontend.
+
+### Leads stuck mid-voicemail sequence (no pending job, no call_event)
+Caused by Synthflow HTTP step webhook drops — either from burst concurrency (all calls firing at exact window-open second) or transient Synthflow reliability failures. See `spec/14_synthflow_integration_addendum.md` for the full diagnosis procedure.
+
+**Detection query**:
+```sql
+SELECT DATE_TRUNC('minute', sj.run_at) AT TIME ZONE 'America/Chicago' AS minute_cst,
+       ls.ai_campaign_value AS vm_tier, COUNT(*) AS leads
+FROM lead_state ls
+JOIN LATERAL (
+    SELECT run_at FROM scheduled_jobs
+    WHERE entity_id = ls.contact_id AND job_type = 'launch_outbound_call' AND status = 'completed'
+    ORDER BY run_at DESC LIMIT 1
+) sj ON TRUE
+WHERE ls.ai_campaign_value IN ('0','1','2')
+  AND (ls.status IS NULL OR ls.status NOT IN ('closed','terminal'))
+  AND ls.do_not_call IS NOT TRUE
+  AND NOT EXISTS (SELECT 1 FROM scheduled_jobs WHERE entity_id = ls.contact_id
+                    AND job_type = 'launch_outbound_call' AND status IN ('pending','claimed'))
+  AND NOT EXISTS (SELECT 1 FROM call_events ce WHERE ce.contact_id = ls.contact_id
+                    AND ce.created_at >= sj.run_at)
+GROUP BY 1, 2 ORDER BY 1 DESC, 2;
+```
+
+**Recovery**:
+- Tier-2 stuck leads (would have finalized): `execution/finalize_stuck_tier2.py --live`
+- Tier-0/1 stuck leads (need next call): `execution/reschedule_burst_tier1.py --live`
+
+Always dry-run first. Copy scripts into the container with `docker compose cp` since images are baked.
+
+---
+
 ## Alert response procedures
 
 ### CRITICAL: queue_lag_exceeded

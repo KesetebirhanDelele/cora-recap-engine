@@ -547,9 +547,19 @@ Returns compact current + previous metric pairs for every navigation card indica
 
 **Fields**:
 - `urgent_leads_count`: calls in the last 7 days with a high-intent `detected_intent` (enrolled, callback_request, callback_with_time, re_engaged, human_transfer_request), duration ≥ 30s, transcript and recording present. Color semantics: 0 = green, high = red.
+- `active_leads`: count of `lead_state` rows where `status NOT IN ('closed','terminal')` and `do_not_call IS NOT TRUE`. Used as the Lead Lifecycle nav card primary metric (replaces `in_vm_sequence` as of 2026-04-28).
+- `in_vm_sequence`: leads in active voicemail tier (tier 0–2 only; tier 3 excluded as it is terminal/finalized).
+- `finalized_today`: leads where `status IN ('closed','terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3'` and `updated_at >= midnight CST`. Includes tier-3 leads as finalized (updated 2026-04-28).
 - All numeric rate fields are 0–1 (not 0–100).
 - `config_health` is a string enum: `"healthy"` | `"warning"` | `"error"`.
 - `previous_value` is the corresponding metric from the prior 24-hour window (used for trend arrow direction).
+
+**Nav card mapping** (as of 2026-04-28):
+
+| Page | Primary metric | Secondary metric | Display format |
+|---|---|---|---|
+| `/lead-lifecycle` | `active_leads` | `finalized_today` | `{n} active · {n} finalized` |
+| `/campaign-overview` | `active_leads` | — | `{n} leads` |
 
 ---
 
@@ -604,6 +614,70 @@ Returns calls with duration ≥ 30s that have a transcript and recording URL. Ea
 - Base score: per-intent table (0–100). `enrolled`/`human_transfer_request` = 100, `callback_request`/`callback_with_time`/`re_engaged` = 90, `interested_not_now` = 70, `failed_booking` = 65, `partial_engagement` = 40, all others ≤ 30.
 - Recency bonus: +10 if `last_call_minutes_ago < 30`; +5 if `< 120`.
 - Thresholds: `urgent` ≥ 80, `review` ≥ 40, `none` < 40.
+
+---
+
+## GET /dashboard/lead-lifecycle
+
+Returns per-lead campaign journey data for the Lead Lifecycle Monitor page.
+
+**Auth**: Optional
+
+**Query params**:
+- `status` (optional): `all` | `active` | `finalized` | `vm` | `dnc`. Default: `all`.
+- `campaign` (optional): `all` | `Cold Lead` | `New Lead` | `Inbound`. Default: `all`.
+- `limit` (optional): integer, default 100.
+- `offset` (optional): integer, default 0.
+
+**Response 200**
+```json
+{
+  "summary": {
+    "active": 1447,
+    "in_vm_sequence": 1305,
+    "campaign_switched": 1,
+    "finalized": 18,
+    "avg_days_to_close": 5.8
+  },
+  "total": 1465,
+  "rows": [
+    {
+      "contact_id": "+16025550101",
+      "lead_name": "Sarah Johnson",
+      "phone": "+16025550101",
+      "current_campaign": "Cold Lead",
+      "initial_campaign": "New Lead",
+      "vm_tier": "2",
+      "status": null,
+      "do_not_call": false,
+      "first_contact_at": "2026-04-21T14:00:00Z",
+      "last_contact_at": "2026-04-27T14:06:00Z",
+      "days_active": 6,
+      "total_calls": 4,
+      "total_sms": 3,
+      "total_email": 1,
+      "last_intent": "partial_engagement",
+      "campaign_switches": 1,
+      "next_job_type": "launch_outbound_call",
+      "next_run_at": "2026-04-28T14:02:00Z",
+      "finalization_reason": null,
+      "finalized_at": null
+    }
+  ],
+  "filters": {"status": "all", "campaign": "all"}
+}
+```
+
+**Finalized classification rules** (applied identically in summary counts, row filter, and `statusBadge` on the frontend):
+- `do_not_call IS TRUE` → DNC
+- `status IN ('closed', 'terminal')` → Finalized
+- `ai_campaign_value = '3'` → Finalized (terminal voicemail tier — GHL finalization writes have been made)
+- `ai_campaign_value IN ('0','1','2')` → VM Sequence
+- All others → Active
+
+**Important**: `ai_campaign_value = '3'` is treated as Finalized even if `lead_state.status` is not `'closed'` — `_finalize_campaign()` writes to GHL but does not update `status`. Never treat tier-3 leads as active.
+
+**Implementation**: `app/services/lead_lifecycle.py` — `get_lead_lifecycle()`
 
 ---
 

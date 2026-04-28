@@ -94,6 +94,36 @@
 - All KPIs support date range and campaign filter.
 - Standalone `/kpis` page **removed** (2026-04-06) — KPI data is now distributed: conversion metrics on Conversion Funnel page, AI metrics on AI Performance page, outcome trends on Voice Performance page.
 
+### L. Lead Lifecycle Monitor (`/lead-lifecycle`)
+
+**Purpose**: Show the full Cold Lead / New Lead campaign journey per contact — who is active, who has been finalized, where leads are in the voicemail sequence.
+
+**Summary strip** (top of page):
+- Active: leads not closed/terminal, not DNC, not tier 3
+- In VM Sequence: leads at tier 0, 1, or 2
+- Campaign Switched: leads with at least one `campaign_switch` audit_log entry
+- Finalized: leads where `status IN ('closed','terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3'`
+- Avg Days to Close: average days from first call_event to finalization, for finalized leads only
+
+**Table columns**: Lead, Phone, Status badge, Initial Campaign, Current Campaign, VM Tier, First Contact, Last Contact, Days Active, Calls, SMS, Email, Last Intent, Next Action, Finalization.
+
+**Status badge rules** (enforced identically in frontend and backend SQL):
+1. `do_not_call IS TRUE` → **DNC** (red)
+2. `status IN ('closed','terminal')` → **Finalized** (grey)
+3. `ai_campaign_value = '3'` → **Finalized** (grey) — terminal voicemail tier; GHL finalization writes already made
+4. `ai_campaign_value IN ('0','1','2')` → **VM Sequence** (amber)
+5. All others → **Active** (green)
+
+**Critical invariant**: tier-3 leads must never be shown as "Active". `_finalize_campaign()` does not update `lead_state.status` — the `ai_campaign_value = '3'` check is the authoritative finalized signal.
+
+**Nav card indicator**: `{active_leads} active · {finalized_today} finalized` — uses `active_leads` from `GET /dashboard/card-metrics` (updated 2026-04-28; previously showed `in_vm_sequence`).
+
+**Filters**: status (all / active / finalized / vm / dnc) + campaign (all / Cold Lead / New Lead / Inbound). Pagination: 100 rows per page.
+
+**Drill-down**: clicking a phone number opens the Contact Lookup view inline (reuses `ContactLookupClient`).
+
+**Data source**: `GET /dashboard/lead-lifecycle` → `app/services/lead_lifecycle.py`.
+
 ### K. Lead journey (enhanced)
 - Reuse existing Postgres query logic from the Streamlit Lead Journey.
 - Improve visualization with per-step duration bars, intent signal badges, and AI output expansion.
