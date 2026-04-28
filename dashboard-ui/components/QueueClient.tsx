@@ -21,16 +21,20 @@ export default function QueueClient() {
 
   const load = useCallback(() => {
     setError(null);
-    Promise.all([fetchMetrics(), fetchWorkerActivity(), fetchWorkerActivityTrend(), fetchWebhookFailures()])
-      .then(([m, a, t, wf]) => {
+    // Core data — failure blocks the page
+    Promise.all([fetchMetrics(), fetchWorkerActivity(), fetchWorkerActivityTrend()])
+      .then(([m, a, t]) => {
         setQueue(m.queue);
         setActivity(a);
         setTrend(t);
-        setWebhooks(wf);
         setLastRefreshed(new Date());
       })
       .catch((e) => setError(String(e)))
       .finally(() => setLoading(false));
+    // Webhook panel — non-fatal, fails silently if endpoint not yet deployed
+    fetchWebhookFailures()
+      .then(wf => setWebhooks(wf))
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
