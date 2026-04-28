@@ -44,7 +44,8 @@ function vmLabel(tier: string | null): string {
 function statusBadge(row: LeadLifecycleRow): { label: string; color: string } {
   if (row.do_not_call) return { label: "DNC", color: "#ef4444" };
   if (row.status === "closed" || row.status === "terminal") return { label: "Finalized", color: "#6b7280" };
-  if (row.vm_tier !== null && row.vm_tier !== "3") return { label: "VM Sequence", color: "#f59e0b" };
+  if (row.vm_tier === "3") return { label: "Finalized", color: "#6b7280" };
+  if (row.vm_tier !== null) return { label: "VM Sequence", color: "#f59e0b" };
   return { label: "Active", color: "#16a34a" };
 }
 
