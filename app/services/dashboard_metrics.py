@@ -1700,3 +1700,82 @@ def get_intent_calls(
         "total": len(calls),
         "calls": calls,
     }
+
+
+def get_webhook_failures(session: Session) -> dict[str, Any]:
+    """
+    Return webhook delivery failures for launch_outbound_call jobs in the last 24 hours.
+
+    A failure is a completed launch_outbound_call with no matching call_events row
+    within 4 hours after execution. Jobs executed within the last 20 minutes are
+    excluded — Synthflow may still be delivering those webhooks.
+    """
+    summary_row = session.execute(text("""
+        SELECT
+            COUNT(*)                     AS total_launched,
+            COUNT(ce.call_id)            AS got_webhook,
+            COUNT(*) - COUNT(ce.call_id) AS missing
+        FROM scheduled_jobs sj
+        LEFT JOIN LATERAL (
+            SELECT call_id FROM call_events
+            WHERE contact_id = sj.payload_json->>'contact_id'
+              AND created_at >= sj.updated_at - INTERVAL '10 minutes'
+              AND created_at <= sj.updated_at + INTERVAL '4 hours'
+            LIMIT 1
+        ) ce ON true
+        WHERE sj.job_type  = 'launch_outbound_call'
+          AND sj.status    = 'completed'
+          AND sj.updated_at >= NOW() - INTERVAL '24 hours'
+          AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+    """)).fetchone()
+
+    total   = int(summary_row[0]) if summary_row else 0
+    got     = int(summary_row[1]) if summary_row else 0
+    missing = int(summary_row[2]) if summary_row else 0
+    webhook_pct = round(100.0 * got / total) if total > 0 else None
+
+    rows = session.execute(text("""
+        SELECT
+            sj.id                                                         AS job_id,
+            sj.payload_json->>'contact_id'                                AS contact_id,
+            sj.payload_json->>'campaign_name'                             AS campaign,
+            sj.run_at                                                     AS placed_at,
+            sj.updated_at                                                 AS executed_at,
+            ROUND(EXTRACT(EPOCH FROM (NOW() - sj.updated_at)) / 60)::int AS minutes_since_execution
+        FROM scheduled_jobs sj
+        WHERE sj.job_type  = 'launch_outbound_call'
+          AND sj.status    = 'completed'
+          AND sj.updated_at >= NOW() - INTERVAL '24 hours'
+          AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+          AND NOT EXISTS (
+              SELECT 1 FROM call_events ce
+              WHERE ce.contact_id = sj.payload_json->>'contact_id'
+                AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
+                AND ce.created_at <= sj.updated_at + INTERVAL '4 hours'
+          )
+        ORDER BY sj.updated_at DESC
+        LIMIT 200
+    """)).fetchall()
+
+    failures = []
+    for r in rows:
+        failures.append({
+            "job_id":                  r[0],
+            "contact_id":              r[1],
+            "campaign":                r[2],
+            "placed_at":               r[3].isoformat() if r[3] and hasattr(r[3], "isoformat") else str(r[3]),
+            "executed_at":             r[4].isoformat() if r[4] and hasattr(r[4], "isoformat") else str(r[4]),
+            "minutes_since_execution": int(r[5]) if r[5] is not None else None,
+        })
+
+    return {
+        "summary": {
+            "total_launched": total,
+            "got_webhook":    got,
+            "missing":        missing,
+            "webhook_pct":    webhook_pct,
+        },
+        "failures":     failures,
+        "window_hours": 24,
+        "recorded_at":  datetime.now(tz=timezone.utc).isoformat(),
+    }

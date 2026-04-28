@@ -634,3 +634,28 @@ export interface LeadLifecycleResponse {
 export type WebSocketMessage =
   | StreamEvent
   | { type: "error"; code: string; fallback_url: string };
+
+// ── Webhook Failures ──────────────────────────────────────────────────────────
+
+export interface WebhookFailureRow {
+  job_id:                  string;
+  contact_id:              string | null;
+  campaign:                string | null;
+  placed_at:               string;
+  executed_at:             string;
+  minutes_since_execution: number | null;
+}
+
+export interface WebhookFailureSummary {
+  total_launched: number;
+  got_webhook:    number;
+  missing:        number;
+  webhook_pct:    number | null;
+}
+
+export interface WebhookFailuresResponse {
+  summary:      WebhookFailureSummary;
+  failures:     WebhookFailureRow[];
+  window_hours: number;
+  recorded_at:  string;
+}

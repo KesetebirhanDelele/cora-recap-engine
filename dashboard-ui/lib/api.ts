@@ -37,6 +37,7 @@ import type {
   SaveSettingsRequest,
   SaveSettingsResponse,
   VoicePerformanceResponse,
+  WebhookFailuresResponse,
   WorkerActivityResponse,
   WorkerTrendResponse,
 } from "@/types";
@@ -374,6 +375,10 @@ export async function runDbQuery(sql: string): Promise<{
   truncated: boolean;
 }> {
   return post("/dashboard/db/query", { sql });
+}
+
+export async function fetchWebhookFailures(): Promise<WebhookFailuresResponse> {
+  return get<WebhookFailuresResponse>("/dashboard/webhook-failures");
 }
 
 export async function fetchLeadLifecycle(options?: {

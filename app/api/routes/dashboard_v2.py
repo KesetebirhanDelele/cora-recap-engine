@@ -222,6 +222,15 @@ def get_worker_activity_trend(
     return _get_wat(session)
 
 
+@router.get("/webhook-failures")
+def get_webhook_failures(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Webhook delivery failures for launch_outbound_call jobs in the last 24 hours."""
+    from app.services.dashboard_metrics import get_webhook_failures as _get_wf
+    return _get_wf(session)
+
+
 @router.get("/card-metrics")
 def get_card_metrics(
     session: Session = Depends(get_db),

@@ -1,29 +1,32 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { fetchMetrics, fetchWorkerActivity, fetchWorkerActivityTrend, cancelLeadJobs } from "@/lib/api";
-import type { MetricsResponse, WorkerActivityResponse, WorkerTrendResponse } from "@/types";
+import { fetchMetrics, fetchWorkerActivity, fetchWorkerActivityTrend, fetchWebhookFailures, cancelLeadJobs } from "@/lib/api";
+import type { MetricsResponse, WorkerActivityResponse, WorkerTrendResponse, WebhookFailuresResponse } from "@/types";
 import QueueTable from "@/components/QueueTable";
 import WorkerActivityTable from "@/components/WorkerActivityTable";
 import WorkerTrendChart from "@/components/WorkerTrendChart";
+import WebhookFailurePanel from "@/components/WebhookFailurePanel";
 
 const REFRESH_MS = 30_000;
 
 export default function QueueClient() {
-  const [queue, setQueue]       = useState<MetricsResponse["queue"] | null>(null);
-  const [activity, setActivity] = useState<WorkerActivityResponse | null>(null);
-  const [trend, setTrend]       = useState<WorkerTrendResponse | null>(null);
-  const [loading, setLoading]   = useState(true);
-  const [error, setError]       = useState<string | null>(null);
+  const [queue, setQueue]           = useState<MetricsResponse["queue"] | null>(null);
+  const [activity, setActivity]     = useState<WorkerActivityResponse | null>(null);
+  const [trend, setTrend]           = useState<WorkerTrendResponse | null>(null);
+  const [webhooks, setWebhooks]     = useState<WebhookFailuresResponse | null>(null);
+  const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
 
   const load = useCallback(() => {
     setError(null);
-    Promise.all([fetchMetrics(), fetchWorkerActivity(), fetchWorkerActivityTrend()])
-      .then(([m, a, t]) => {
+    Promise.all([fetchMetrics(), fetchWorkerActivity(), fetchWorkerActivityTrend(), fetchWebhookFailures()])
+      .then(([m, a, t, wf]) => {
         setQueue(m.queue);
         setActivity(a);
         setTrend(t);
+        setWebhooks(wf);
         setLastRefreshed(new Date());
       })
       .catch((e) => setError(String(e)))
@@ -54,12 +57,15 @@ export default function QueueClient() {
         </div>
       )}
 
-      {/* 2 — Stuck jobs + expired leases */}
+      {/* 2 — Webhook delivery failures */}
+      {webhooks && <WebhookFailurePanel data={webhooks} />}
+
+      {/* 3 — Stuck jobs + expired leases */}
       {queue && (
         <QueueTable queue={queue} onCancelJob={handleCancelJob} />
       )}
 
-      {/* 3 — Per-worker 10-min activity table */}
+      {/* 4 — Per-worker 10-min activity table */}
       {activity && <WorkerActivityTable data={activity} />}
 
       {lastRefreshed && (
