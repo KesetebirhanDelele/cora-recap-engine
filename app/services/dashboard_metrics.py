@@ -161,6 +161,7 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
             )::numeric, 1)                                                   AS avg_duration_s
         FROM scheduled_jobs
         WHERE claimed_by IS NOT NULL
+          AND claimed_by LIKE 'worker-%'
           AND (
               (status = 'running' AND lease_expires_at > NOW())
               OR (status IN ('completed','failed')
@@ -182,6 +183,7 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
         WHERE status IN ('completed','failed')
           AND updated_at >= NOW() - INTERVAL '10 minutes'
           AND claimed_by IS NOT NULL
+          AND claimed_by LIKE 'worker-%'
           AND claimed_at IS NOT NULL
         GROUP BY claimed_by, job_type
         ORDER BY claimed_by, cnt DESC
@@ -244,6 +246,7 @@ def get_worker_activity_trend(session: Session) -> dict[str, Any]:
             1)                                                                AS median_duration_s
         FROM scheduled_jobs
         WHERE claimed_by IS NOT NULL
+          AND claimed_by LIKE 'worker-%'
           AND updated_at >= NOW() - INTERVAL '6 hours'
           AND status IN ('completed', 'failed')
         GROUP BY
