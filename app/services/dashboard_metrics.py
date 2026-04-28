@@ -201,12 +201,11 @@ def get_worker_activity(session: Session) -> dict[str, Any]:
     workers = []
     for r in summary_rows:
         worker_id = r[0]
-        # Shorten display ID: last segment after final hyphen if UUID-like, else last 12 chars
-        parts = worker_id.rsplit("-", 1)
-        short_id = parts[-1] if len(parts) > 1 and len(parts[-1]) <= 12 else worker_id[-12:]
+        # worker_id format: worker-{role}-{host6}  (e.g. worker-default-abc123)
+        # Use as-is for display — it's already compact and human-readable.
         workers.append({
             "worker_id": worker_id,
-            "worker_id_short": short_id,
+            "worker_id_short": worker_id,
             "is_active": bool(r[1]),
             "current_job_type": r[2],
             "jobs_last_10m": int(r[3]) if r[3] is not None else 0,
@@ -258,9 +257,8 @@ def get_worker_activity_trend(session: Session) -> dict[str, Any]:
     for r in rows:
         worker_id = r[0]
         if worker_id not in seen_workers:
-            parts = worker_id.rsplit("-", 1)
-            short_id = parts[-1] if len(parts) > 1 and len(parts[-1]) <= 12 else worker_id[-12:]
-            seen_workers[worker_id] = short_id
+            # worker_id format: worker-{role}-{host6} — use as-is for display.
+            seen_workers[worker_id] = worker_id
 
     points = [
         {

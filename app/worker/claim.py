@@ -33,8 +33,23 @@ DEFAULT_LEASE_SECONDS = 300  # 5 minutes
 
 
 def get_worker_id() -> str:
-    """Return a unique identifier for the current worker process."""
-    return f"{socket.gethostname()}-{os.getpid()}"
+    """
+    Return a stable, human-readable identifier for the current worker process.
+
+    Format: worker-{role}-{host6}
+      - role  : WORKER_ROLE env var (set per service in docker-compose.yml)
+      - host6 : first 6 chars of the container hostname (unique per replica)
+
+    Examples:
+      worker-ai-abc123
+      worker-default-def456   ← replica 1
+      worker-default-ghi789   ← replica 2
+      worker-callbacks-jkl012
+      worker-retries-mno345
+    """
+    role = os.environ.get("WORKER_ROLE", "worker")
+    host = socket.gethostname()[:6]
+    return f"worker-{role}-{host}"
 
 
 def claim_job(
