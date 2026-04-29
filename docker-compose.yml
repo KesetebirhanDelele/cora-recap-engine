@@ -36,20 +36,18 @@ services:
   # Listens on :5432 internally. App services use pgbouncer:5432 in DATABASE_URL.
   # migrate and adminer connect directly to postgres:5432 (bypass pooler).
   pgbouncer:
-    image: bitnami/pgbouncer:latest
+    image: edoburu/pgbouncer:latest
     environment:
-      POSTGRESQL_HOST: postgres
-      POSTGRESQL_PORT: "5432"
-      POSTGRESQL_DATABASE: ${POSTGRES_DATABASE:-cora}
-      POSTGRESQL_USERNAME: ${POSTGRES_USERNAME:-postgres}
-      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD}
-      PGBOUNCER_DATABASE: ${POSTGRES_DATABASE:-cora}
-      PGBOUNCER_PORT: "5432"
-      PGBOUNCER_POOL_MODE: transaction
-      PGBOUNCER_MAX_CLIENT_CONN: "500"
-      PGBOUNCER_DEFAULT_POOL_SIZE: "20"
-      PGBOUNCER_AUTH_TYPE: md5
-      PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USERNAME:-postgres}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DATABASE:-cora}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "500"
+      DEFAULT_POOL_SIZE: "20"
+      AUTH_TYPE: md5
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
     depends_on:
       postgres:
         condition: service_healthy
