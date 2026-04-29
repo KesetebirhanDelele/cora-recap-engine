@@ -368,18 +368,22 @@ Synthflow's HTTP step — the step inside the completed-call workflow that POSTs
 ### Root cause
 All rescheduled calls deferred to the next active window (e.g. 9 AM CDT) were previously assigned `run_at = window_start` exactly, causing all of them to fire at the same second. On 2026-04-27, 366 calls fired simultaneously at 14:00:00 UTC, overwhelming the HTTP step.
 
-### Fix implemented (2026-04-27, tightened 2026-04-29)
+### Fix implemented (2026-04-27, tightened 2026-04-29, within-slot spread 2026-04-29)
 `_compute_window_run_at(session, window_start)` in `app/worker/jobs/outbound_jobs.py` assigns a slot-based `run_at` at reschedule time:
 - Counts all pending `launch_outbound_call` jobs in the 4-hour window
-- Divides by `_CALL_BATCH_SIZE = 4` to get the slot index
-- Returns `window_start + slot * _CALL_SLOT_SECONDS` (300 s = 5 min per slot)
+- Slot index = `pending // _CALL_BATCH_SIZE` → selects the 5-minute window
+- Within-slot offset = `(pending % _CALL_BATCH_SIZE) * _CALL_WITHIN_SLOT_SPACING` → staggers individual calls by 75 s each
+- Returns `window_start + slot * 300s + within_slot_offset`
 
-Effect: 4 calls per 5-minute slot. 100 deferred calls spread over ~2 hours. Prevents burst at window open.
+Effect: 4 calls per 5-minute slot, separated by 75 seconds each (at +0s, +75s, +150s, +225s). No two calls in the same slot fire simultaneously. 100 deferred calls spread over ~2 hours.
 
-Original values (2026-04-27): `_CALL_BATCH_SIZE = 10`, `_CALL_SLOT_SECONDS = 120`. Tightened to 4/300 on 2026-04-29 after April 28 incident confirmed 10/2-min still exceeded Synthflow's HTTP step capacity.
+**History of tightening:**
+- 2026-04-27: `_CALL_BATCH_SIZE = 10`, `_CALL_SLOT_SECONDS = 120` (initial)
+- 2026-04-29: tightened to 4/300 — April 28 confirmed 10/2-min still exceeded Synthflow HTTP step capacity
+- 2026-04-29: added within-slot 75-second stagger — confirmed that 4 calls sharing the same `run_at` second still triggered drops even under the 4/slot cap
 
 ### Design rule
-**Never assign `run_at = window_start` directly for rescheduled calls.** Always call `_compute_window_run_at(session, window_start)` so the slot-based spacing is applied.
+**Never assign `run_at = window_start` directly for rescheduled calls.** Always call `_compute_window_run_at(session, window_start)` so slot-based spacing and within-slot staggering are both applied.
 
 ### Slot-aware voicemail retry scheduling (deployed 2026-04-29)
 
@@ -398,20 +402,22 @@ Residual risk: two workers scheduling retries within the same millisecond may bo
 
 Started automatically at `worker-default` boot via `start_slot_rebalancer()`. No manual intervention needed for slot overages — they self-correct within 5 minutes.
 
-**Manual redistribution SQL** (if needed outside the rebalancer window):
+**Manual redistribution SQL** (if needed outside the rebalancer window, or to apply within-slot stagger to already-queued jobs):
 ```sql
 WITH ranked AS (
-    SELECT id, run_at, ROW_NUMBER() OVER (ORDER BY run_at ASC, id ASC) - 1 AS rn
+    SELECT id, ROW_NUMBER() OVER (ORDER BY run_at ASC, id ASC) - 1 AS rn
     FROM scheduled_jobs
     WHERE job_type = 'launch_outbound_call' AND status = 'pending' AND run_at >= NOW()
 ),
-base AS (SELECT GREATEST(NOW(), MIN(run_at)) AS t FROM ranked)
+base AS (SELECT MIN(run_at) AS t FROM ranked r JOIN scheduled_jobs sj ON sj.id = r.id)
 UPDATE scheduled_jobs sj
-SET run_at = b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+SET run_at = b.t
+           + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+           + ((r.rn % 4)       * INTERVAL '75 seconds')
 FROM ranked r, base b
-WHERE sj.id = r.id AND sj.run_at != b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes');
+WHERE sj.id = r.id;
 ```
-Run as a SELECT first to preview. Only updates `pending` jobs.
+Run as a SELECT COUNT(*) first to preview. Only updates `pending` jobs. The `75 seconds` within-slot offset matches `_CALL_WITHIN_SLOT_SPACING` in `outbound_jobs.py` — update both if `_CALL_BATCH_SIZE` or `_CALL_SLOT_SECONDS` ever changes.
 
 ### Detection query
 ```sql
@@ -483,5 +489,7 @@ WHERE sj.job_type = 'launch_outbound_call' AND sj.status = 'completed'
 ```
 Expected: 0 after successful recovery.
 
-**Note:** A second class of stuck leads exists from intermittent Synthflow HTTP step failures unrelated to burst concurrency (individual webhook drops spread throughout the day). These leads appear with counts of 1–3 per minute across many time slots — not a single-minute spike. Recovery approach is the same script, but root cause is Synthflow reliability, not call volume.
+**Note on the CSV requirement:** The recovery script makes the CSV optional. If `--csv` path does not exist, Path A is skipped and all contacts recover via Path B (hangup_on_voicemail). Pass `--live` without `--csv` when all outcomes are known to be voicemail.
+
+**Note on within-slot simultaneous drops:** Even with the slot cap correctly at 4/slot, confirmed webhook drops can occur when all 4 calls in a slot share the same `run_at` second (e.g. `04:00:21`, `04:00:21`, `04:00:22`, `04:00:23`). Root cause is the same HTTP step concurrency limit — 4 simultaneous POSTs exceeds it. The within-slot 75-second stagger (deployed 2026-04-29) eliminates this. Already-queued jobs require the manual redistribution SQL above to apply the stagger retroactively.
 
