@@ -458,7 +458,11 @@ def main(live: bool, csv_path: Path) -> None:
     from app.models.call_event import CallEvent
 
     settings = get_settings()
-    csv_records = load_csv(csv_path)
+    if csv_path.exists():
+        csv_records = load_csv(csv_path)
+    else:
+        logger.info("CSV not found at %s — skipping Path A (all contacts → Path B hangup_on_voicemail)", csv_path)
+        csv_records = {}
 
     counters = {
         "path_a_completed":    0,
