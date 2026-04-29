@@ -324,6 +324,26 @@ def _make_default_queue(settings):
         return None
 
 
+def _slot_aware_run_at(session, delay_minutes: int) -> datetime:
+    """
+    Compute a slot-aware run_at for a voicemail retry.
+
+    Rounds raw_run_at down to the nearest slot boundary so that concurrent
+    retries from the same burst share the same slot counter in
+    _compute_window_run_at and are spread across _CALL_BATCH_SIZE slots
+    instead of piling at the same second.
+    """
+    from datetime import timedelta
+
+    from app.worker.jobs.outbound_jobs import _CALL_SLOT_SECONDS, _compute_window_run_at
+
+    _EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    raw = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
+    slot_idx = int((raw - _EPOCH).total_seconds() / _CALL_SLOT_SECONDS)
+    window_start = _EPOCH + timedelta(seconds=slot_idx * _CALL_SLOT_SECONDS)
+    return _compute_window_run_at(session, window_start)
+
+
 def _schedule_retry_outbound_call(
     session, contact_id: str, phone: str, call_id: str, current_tier: str | None,
     campaign_name: str, settings, *, lead_name: str = "",
@@ -389,7 +409,7 @@ def _schedule_retry_outbound_call(
 
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
-    run_at = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
+    run_at = _slot_aware_run_at(session, delay_minutes)
     default_queue = _make_default_queue(settings)
 
     schedule_job(
