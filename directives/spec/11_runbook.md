@@ -18,13 +18,15 @@ Note: Google Sheets shadow sync is out of scope. No Sheets setup required.
 ### Infrastructure
 - Hetzner CX22 (2 vCPU, 4 GB RAM, Ubuntu 22.04)
 - Docker CE + Docker Compose plugin
-- All services run in Docker Compose: postgres, redis, migrate, api, dashboard-api, frontend, worker-default, worker-ai, worker-callbacks, worker-retries
+- All services run in Docker Compose: postgres, redis, pgbouncer, migrate, api, dashboard-api, frontend, worker-default, worker-ai, worker-callbacks, worker-retries
 
 ### Key .env values for production
 
 ```
 APP_ENV=production
-DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
+POSTGRES_USERNAME=postgres
+POSTGRES_PASSWORD=<PASSWORD>
+POSTGRES_DATABASE=cora
 REDIS_HOST=redis
 DASHBOARD_API_URL=http://<server-ip>:8001
 WS_URL=ws://<server-ip>:8001/ws
@@ -45,7 +47,9 @@ Synthflow routing rules:
 - `JylDXjF8QB0Skr5cQzGGm` must never be used — it is a test workflow that silently drops calls
 
 Rules:
-- `DATABASE_URL` must use Docker service name `postgres:5432` (not `localhost` or `host.docker.internal`)
+- App services (api, dashboard-api, workers) connect via PgBouncer: `DATABASE_URL=postgresql+psycopg2://...@pgbouncer:5432/cora` — set directly in `docker-compose.yml`, not in `.env`
+- `migrate` and `adminer` connect directly to `postgres:5432` (hardcoded in `docker-compose.yml`, bypasses PgBouncer)
+- Never set `DATABASE_URL` to `localhost` or `host.docker.internal` in any service
 - `DASHBOARD_API_URL` must be the public server IP — baked into Next.js bundle at build time
 - `docker-compose.override.yml` must NOT be present on the server — it is local dev only
 - Settings validator blocks boot if `SECRET_KEY` or `WEBHOOK_SHARED_SECRET` is `changeme` when `APP_ENV=production`

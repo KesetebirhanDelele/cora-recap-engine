@@ -18,9 +18,17 @@ Provides durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates,
 │  POST /exceptions   │    │    ai                  │
 └────────┬────────────┘    │    callbacks           │
          │                 │    retries             │
-         ▼                 │    sheet_mirror        │
-┌─────────────────────┐    └────────────┬───────────┘
-│   Postgres          │◄───────────────┘
+         ▼                 └────────────┬───────────┘
+┌─────────────────────┐                │
+│   PgBouncer         │◄───────────────┘
+│   (connection pool) │
+│   transaction mode  │
+│   20 server conns   │
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│   Postgres          │
 │   (authoritative    │
 │    state store)     │
 └─────────────────────┘
@@ -540,7 +548,6 @@ Copy your working local `.env` to the server, then adjust these values:
 
 ```
 APP_ENV=production
-DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
 REDIS_HOST=redis
 DASHBOARD_API_URL=http://<server-ip>:8001
 WS_URL=ws://<server-ip>:8001/ws
@@ -548,7 +555,8 @@ ALLOW_ORIGINS=http://<server-ip>:3000
 ```
 
 **Critical rules:**
-- `DATABASE_URL` must use the Docker service name `postgres:5432`, NOT `localhost` or `host.docker.internal`
+- App services connect through PgBouncer — `DATABASE_URL` is set to `pgbouncer:5432` directly in `docker-compose.yml` and does not need to be in `.env`. Only `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, and `POSTGRES_DATABASE` are needed in `.env`.
+- `migrate` and `adminer` connect directly to `postgres:5432` (bypassing PgBouncer) — this is hardcoded in `docker-compose.yml` and requires no `.env` entry.
 - `DASHBOARD_API_URL` must be the **public server IP** (not localhost) — it is baked into the Next.js bundle at build time and used by the browser
 - `ALLOW_ORIGINS` must match the origin the browser uses to open the dashboard
 - Do NOT copy `docker-compose.override.yml` to the server — it is local dev only
@@ -559,6 +567,7 @@ ALLOW_ORIGINS=http://<server-ip>:3000
 cd /opt/cora-recap-engine
 docker compose up -d --build
 docker compose logs migrate       # verify migrations ran (should exit 0)
+docker compose logs pgbouncer     # verify "listening on 0.0.0.0:5432"
 docker compose ps                 # all services should be healthy/running
 ```
 
