@@ -541,6 +541,7 @@ Returns compact current + previous metric pairs for every navigation card indica
   "active_leads":               {"value": 1240,  "previous_value": 1180},
   "sync_success_rate":          {"value": 0.97,  "previous_value": 0.95},
   "anomaly_count":              {"value": 2,     "previous_value": 0},
+  "webhook_delivery_pct":       {"value": 0.94,  "previous_value": 1.0},
   "computed_at": "2026-04-10T14:00:00Z"
 }
 ```
@@ -550,14 +551,16 @@ Returns compact current + previous metric pairs for every navigation card indica
 - `active_leads`: count of `lead_state` rows where `status NOT IN ('closed','terminal')` and `do_not_call IS NOT TRUE`. Used as the Lead Lifecycle nav card primary metric (replaces `in_vm_sequence` as of 2026-04-28).
 - `in_vm_sequence`: leads in active voicemail tier (tier 0–2 only; tier 3 excluded as it is terminal/finalized).
 - `finalized_today`: leads where `status IN ('closed','terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3'` and `updated_at >= midnight CST`. Includes tier-3 leads as finalized (updated 2026-04-28).
+- `webhook_delivery_pct`: fraction of `launch_outbound_call` jobs completed in the last 24 hours (excluding the most recent 20 minutes) that have a matching `call_event`. Value is 0–1. `null` when no qualifying jobs exist. Displayed on the Queue Health nav card alongside backlog size. Color semantics: ≥ 0.7 = green, ≥ 0.4 = yellow, < 0.4 = red. Added 2026-04-29 following the April 28 Synthflow HTTP step burst incident.
 - All numeric rate fields are 0–1 (not 0–100).
 - `config_health` is a string enum: `"healthy"` | `"warning"` | `"error"`.
 - `previous_value` is the corresponding metric from the prior 24-hour window (used for trend arrow direction).
 
-**Nav card mapping** (as of 2026-04-28):
+**Nav card mapping** (as of 2026-04-29):
 
 | Page | Primary metric | Secondary metric | Display format |
 |---|---|---|---|
+| `/queue` | `backlog_size` | `webhook_delivery_pct` | `{n} backlog · {pct}% webhooks` |
 | `/lead-lifecycle` | `active_leads` | `finalized_today` | `{n} active · {n} finalized` |
 | `/campaign-overview` | `active_leads` | — | `{n} leads` |
 

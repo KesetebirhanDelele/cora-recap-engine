@@ -368,16 +368,38 @@ Synthflow's HTTP step — the step inside the completed-call workflow that POSTs
 ### Root cause
 All rescheduled calls deferred to the next active window (e.g. 9 AM CDT) were previously assigned `run_at = window_start` exactly, causing all of them to fire at the same second. On 2026-04-27, 366 calls fired simultaneously at 14:00:00 UTC, overwhelming the HTTP step.
 
-### Fix implemented (2026-04-27)
+### Fix implemented (2026-04-27, tightened 2026-04-29)
 `_compute_window_run_at(session, window_start)` in `app/worker/jobs/outbound_jobs.py` assigns a slot-based `run_at` at reschedule time:
 - Counts all pending `launch_outbound_call` jobs in the 4-hour window
-- Divides by `_CALL_BATCH_SIZE = 10` to get the slot index
-- Returns `window_start + slot * _CALL_SLOT_SECONDS` (120 s per slot)
+- Divides by `_CALL_BATCH_SIZE = 4` to get the slot index
+- Returns `window_start + slot * _CALL_SLOT_SECONDS` (300 s = 5 min per slot)
 
-Effect: 10 calls per 2-minute slot. 100 deferred calls spread over 20 minutes. Prevents burst at window open.
+Effect: 4 calls per 5-minute slot. 100 deferred calls spread over ~2 hours. Prevents burst at window open.
+
+Original values (2026-04-27): `_CALL_BATCH_SIZE = 10`, `_CALL_SLOT_SECONDS = 120`. Tightened to 4/300 on 2026-04-29 after April 28 incident confirmed 10/2-min still exceeded Synthflow's HTTP step capacity.
 
 ### Design rule
 **Never assign `run_at = window_start` directly for rescheduled calls.** Always call `_compute_window_run_at(session, window_start)` so the slot-based spacing is applied.
+
+### Known limitation: voicemail retry callbacks inherit burst pattern
+`_compute_window_run_at()` is only called for calls rescheduled to the **next active window** (out-of-hours deferral). Voicemail retry calls scheduled by `_schedule_retry_outbound_call()` in `voicemail_jobs.py` use `now + delay_minutes` directly — no slot spreading is applied at schedule time.
+
+Consequence: if a large burst of calls fires simultaneously, their 24-hour (New Lead) or 48-hour (Cold Lead) VM retry callbacks will all land in the same 5-minute window, recreating the burst at the next tier. The worker's active-window deferral path then applies slot spreading for out-of-hours calls, but intra-window bursts are not automatically spread.
+
+**Mitigation when detected:** run the slot redistribution SQL (see runbook) to manually spread pending `launch_outbound_call` jobs before they fire:
+```sql
+WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (ORDER BY run_at ASC, id ASC) - 1 AS rn
+    FROM scheduled_jobs
+    WHERE job_type = 'launch_outbound_call' AND status = 'pending' AND run_at >= NOW()
+),
+base AS (SELECT GREATEST(NOW(), MIN(run_at)) AS t FROM ranked)
+UPDATE scheduled_jobs sj
+SET run_at = b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+FROM ranked r, base b
+WHERE sj.id = r.id AND sj.run_at != b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes');
+```
+Run as a SELECT first to preview changes. Only updates `pending` jobs.
 
 ### Detection query
 ```sql
@@ -405,23 +427,41 @@ A large spike at a single minute in the results confirms a burst event.
 
 ### Recovery procedures
 
-**Tier 2 leads (would have finalized):**
-Use `execution/finalize_stuck_tier2.py`. Advances `ai_campaign_value` to `'3'` and writes `AI Campaign = No` / `Mark as Lead = Yes` to GHL for each affected lead.
+**General-purpose recovery script (2026-04-28):**
+`execution/recover_webhook_drop_20260428.py` handles both tier-advancement and AI-queuing for any burst incident. It loads a Synthflow CSV export, matches against DB contacts with missing webhooks, and routes each contact:
+- **Path A** (call found in CSV — completed): creates call_event, queues `run_call_analysis`
+- **Path B** (no CSV match — assumed hangup_on_voicemail): advances voicemail tier, schedules next call if not terminal
+
 ```bash
-docker compose cp execution/finalize_stuck_tier2.py worker-default:/app/execution/finalize_stuck_tier2.py
-docker compose exec worker-default python execution/finalize_stuck_tier2.py        # dry run
-docker compose exec worker-default python execution/finalize_stuck_tier2.py --live # live
+# Copy CSV to container first
+docker compose exec worker-default mkdir -p /app/tmp
+docker compose cp /path/to/calls.csv worker-default:/app/tmp/calls.csv
+
+# Copy and run script
+docker compose cp execution/recover_webhook_drop_20260428.py worker-default:/app/execution/recover_webhook_drop_20260428.py
+docker compose exec worker-default python execution/recover_webhook_drop_20260428.py        # dry run
+docker compose exec worker-default python execution/recover_webhook_drop_20260428.py --live # live
 ```
 
-**Tier 0 / Tier 1 leads (need next call scheduled):**
-Use `execution/reschedule_burst_tier1.py`. Identifies burst-affected leads by last completed job timestamp and schedules fresh `launch_outbound_call` jobs spread across the next window using `_compute_window_run_at`.
-```bash
-docker compose cp execution/reschedule_burst_tier1.py worker-default:/app/execution/reschedule_burst_tier1.py
-docker compose exec worker-default python execution/reschedule_burst_tier1.py        # dry run
-docker compose exec worker-default python execution/reschedule_burst_tier1.py --live # live
-# Override window start if needed:
-docker compose exec worker-default python execution/reschedule_burst_tier1.py --live --window-start 2026-04-29T14:00:00+00:00
-```
+Key parameters in the script:
+- `_INCIDENT_START` / `_INCIDENT_END`: UTC window of the burst (extend `_INCIDENT_END` if contacts from the next UTC day are affected)
+- NOT EXISTS window: `INTERVAL '7 days'` — wide enough to avoid re-detecting contacts already recovered
+- CSV column fallbacks: supports both `Duration (s)` and `Duration`, `Recording Link` and `Recording URL`
 
-**Note:** A second class of stuck leads exists from intermittent Synthflow HTTP step failures unrelated to burst concurrency (individual webhook drops spread throughout the day). These leads appear with counts of 1–3 per minute across many time slots — not a single-minute spike. Recovery approach is the same (reschedule), but root cause is Synthflow reliability, not call volume.
+**Verification after recovery:**
+```sql
+-- Confirm no contacts remain stuck
+SELECT COUNT(*) FROM scheduled_jobs sj
+WHERE sj.job_type = 'launch_outbound_call' AND sj.status = 'completed'
+  AND sj.updated_at >= :incident_start AND sj.updated_at <= :incident_end
+  AND NOT EXISTS (
+      SELECT 1 FROM call_events ce
+      WHERE ce.contact_id = sj.payload_json->>'contact_id'
+        AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
+        AND ce.created_at <= sj.updated_at + INTERVAL '7 days'
+  );
+```
+Expected: 0 after successful recovery.
+
+**Note:** A second class of stuck leads exists from intermittent Synthflow HTTP step failures unrelated to burst concurrency (individual webhook drops spread throughout the day). These leads appear with counts of 1–3 per minute across many time slots — not a single-minute spike. Recovery approach is the same script, but root cause is Synthflow reliability, not call volume.
 
