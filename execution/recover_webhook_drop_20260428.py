@@ -159,7 +159,7 @@ WHERE sj.job_type   = 'launch_outbound_call'
       SELECT 1 FROM call_events ce
       WHERE ce.contact_id = sj.payload_json->>'contact_id'
         AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
-        AND ce.created_at <= sj.updated_at + INTERVAL '4 hours'
+        AND ce.created_at <= sj.updated_at + INTERVAL '7 days'
   )
 ORDER BY sj.updated_at
 """
