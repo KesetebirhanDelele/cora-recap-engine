@@ -381,15 +381,27 @@ Original values (2026-04-27): `_CALL_BATCH_SIZE = 10`, `_CALL_SLOT_SECONDS = 120
 ### Design rule
 **Never assign `run_at = window_start` directly for rescheduled calls.** Always call `_compute_window_run_at(session, window_start)` so the slot-based spacing is applied.
 
-### Known limitation: voicemail retry callbacks inherit burst pattern
-`_compute_window_run_at()` is only called for calls rescheduled to the **next active window** (out-of-hours deferral). Voicemail retry calls scheduled by `_schedule_retry_outbound_call()` in `voicemail_jobs.py` use `now + delay_minutes` directly — no slot spreading is applied at schedule time.
+### Slot-aware voicemail retry scheduling (deployed 2026-04-29)
 
-Consequence: if a large burst of calls fires simultaneously, their 24-hour (New Lead) or 48-hour (Cold Lead) VM retry callbacks will all land in the same 5-minute window, recreating the burst at the next tier. The worker's active-window deferral path then applies slot spreading for out-of-hours calls, but intra-window bursts are not automatically spread.
+`_schedule_retry_outbound_call()` previously used `now + delay_minutes` directly. A burst of calls at time T would produce a burst of retries at T+delay, recreating the concurrency spike at the next tier.
 
-**Mitigation when detected:** run the slot redistribution SQL (see runbook) to manually spread pending `launch_outbound_call` jobs before they fire:
+**Fix (2026-04-29):** `_slot_aware_run_at(session, delay_minutes)` in `app/worker/jobs/voicemail_jobs.py` rounds `raw_run_at` down to the nearest 5-minute slot boundary and calls `_compute_window_run_at()`. All retries from the same burst share the same slot counter and are distributed at ≤4 per 5-minute slot at schedule time.
+
+Residual risk: two workers scheduling retries within the same millisecond may both read the pending count before either commits, producing a slot count of 5–7. This is handled automatically by the slot rebalancer below.
+
+### Automatic slot rebalancer (deployed 2026-04-29)
+
+`app/worker/jobs/slot_rebalancer.py` — `rebalance_call_slots_job` — runs every 5 minutes on the `default` queue. It:
+1. Counts 5-minute slots with > 4 pending `launch_outbound_call` jobs
+2. If any found: runs the redistribution UPDATE and logs the row count
+3. Reschedules itself at `now + 5 min`
+
+Started automatically at `worker-default` boot via `start_slot_rebalancer()`. No manual intervention needed for slot overages — they self-correct within 5 minutes.
+
+**Manual redistribution SQL** (if needed outside the rebalancer window):
 ```sql
 WITH ranked AS (
-    SELECT id, ROW_NUMBER() OVER (ORDER BY run_at ASC, id ASC) - 1 AS rn
+    SELECT id, run_at, ROW_NUMBER() OVER (ORDER BY run_at ASC, id ASC) - 1 AS rn
     FROM scheduled_jobs
     WHERE job_type = 'launch_outbound_call' AND status = 'pending' AND run_at >= NOW()
 ),
@@ -399,7 +411,7 @@ SET run_at = b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
 FROM ranked r, base b
 WHERE sj.id = r.id AND sj.run_at != b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes');
 ```
-Run as a SELECT first to preview changes. Only updates `pending` jobs.
+Run as a SELECT first to preview. Only updates `pending` jobs.
 
 ### Detection query
 ```sql
@@ -427,26 +439,34 @@ A large spike at a single minute in the results confirms a burst event.
 
 ### Recovery procedures
 
-**General-purpose recovery script (2026-04-28):**
-`execution/recover_webhook_drop_20260428.py` handles both tier-advancement and AI-queuing for any burst incident. It loads a Synthflow CSV export, matches against DB contacts with missing webhooks, and routes each contact:
-- **Path A** (call found in CSV — completed): creates call_event, queues `run_call_analysis`
-- **Path B** (no CSV match — assumed hangup_on_voicemail): advances voicemail tier, schedules next call if not terminal
+**Recovery scripts (one per incident date):**
+
+| Date | Script | Contacts recovered | Notes |
+|---|---|---|---|
+| 2026-04-28 | `execution/recover_webhook_drop_20260428.py` | ~134 finalized + ~450 rescheduled | Tier 1→2 specific |
+| 2026-04-29 | `execution/recover_webhook_drop_20260429.py` | 38 (5 Path A + 33 Path B) | General tier (any tier) |
+
+Both scripts follow the same two-path model:
+- **Path A** (call found in CSV — completed/failed/no-answer): creates call_event; queues `run_call_analysis` for completed calls
+- **Path B** (no CSV match — assumed hangup_on_voicemail): advances voicemail tier from any current tier, schedules next call if not terminal (slot-aware run_at)
 
 ```bash
-# Copy CSV to container first
+# Copy CSV to container and run
 docker compose exec worker-default mkdir -p /app/tmp
 docker compose cp /path/to/calls.csv worker-default:/app/tmp/calls.csv
-
-# Copy and run script
-docker compose cp execution/recover_webhook_drop_20260428.py worker-default:/app/execution/recover_webhook_drop_20260428.py
-docker compose exec worker-default python execution/recover_webhook_drop_20260428.py        # dry run
-docker compose exec worker-default python execution/recover_webhook_drop_20260428.py --live # live
+docker compose exec worker-default python execution/recover_webhook_drop_20260429.py        # dry run
+docker compose exec worker-default python execution/recover_webhook_drop_20260429.py --live # live
 ```
 
-Key parameters in the script:
-- `_INCIDENT_START` / `_INCIDENT_END`: UTC window of the burst (extend `_INCIDENT_END` if contacts from the next UTC day are affected)
-- NOT EXISTS window: `INTERVAL '7 days'` — wide enough to avoid re-detecting contacts already recovered
+For a new incident, copy `recover_webhook_drop_20260429.py`, update:
+- `_INCIDENT_START` / `_INCIDENT_END` to the UTC window of the burst
+- `_DEFAULT_CSV` path
+- source labels (`webhook_recovery_YYYYMMDD`) and Path B `call_id` prefix
+
+Key parameters:
+- NOT EXISTS window: `INTERVAL '7 days'` — prevents re-detecting already-recovered contacts on re-runs
 - CSV column fallbacks: supports both `Duration (s)` and `Duration`, `Recording Link` and `Recording URL`
+- For failed calls with empty `To` field: falls back to `From` (Synthflow outbound: `From` = contact's number)
 
 **Verification after recovery:**
 ```sql

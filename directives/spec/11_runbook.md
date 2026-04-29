@@ -222,19 +222,27 @@ After AI analysis on a completed call, `detect_intent()` is called with the tran
 - **Lead unexpectedly moved to Cold Lead** — caused by `low_confidence_audio` detection. Check transcript in `call_events` and `classification_results`. If the classification was incorrect, use `cancel-future-jobs` to stop the queued Cold Lead call, then manually set `lead_state.campaign_name = 'New Lead'` and `ai_campaign_value = NULL`.
 - **Duplicate follow-up calls scheduled** — `_schedule_outbound_call` in `intent_actions.py` has an idempotency guard; inspect `scheduled_jobs` for `launch_outbound_call` rows with status `pending` for the contact. Cancel duplicates via the dashboard `cancel-future-jobs` endpoint.
 
-## Nurture scheduler
+## Periodic background jobs (started by worker-default at boot)
 
-The nurture scheduler runs every 5 minutes and graduates `status='nurture'` leads whose `next_action_at` has passed into the Cold Lead campaign.
+Three self-rescheduling jobs start automatically when `worker-default` starts:
 
-- `run_nurture_scheduler` job appears in `scheduled_jobs` with `entity_id='nurture_scheduler'`
+| Job type | Interval | Purpose |
+|---|---|---|
+| `run_nurture_scheduler` | 5 min | Graduates `status='nurture'` leads into Cold Lead campaign |
+| `collect_metrics` | 60 s | Writes system_metrics rows; feeds dashboard health tiles and alerts |
+| `rebalance_call_slots` | 5 min | Detects `launch_outbound_call` slots with >4 pending jobs and redistributes them |
+
+All three appear in `scheduled_jobs` with `status='pending'` and self-reschedule at job completion. If any is missing after a restart, restarting `worker-default` re-creates it.
+
+### Nurture scheduler detail
+- `run_nurture_scheduler` job uses `entity_id='nurture_scheduler'`
 - On worker startup, `ensure_scheduled()` creates the first job automatically
 - Individual lead failures are isolated — one bad row does not stop the batch
-- If no `run_nurture_scheduler` job is pending, the worker may have been restarted without running `ensure_scheduled()` — restart the worker or manually insert a job
 
 ## Troubleshooting
 
 ### Production / Docker Compose issues
-- **PgBouncer fails to start or app services can't connect** → check `docker compose logs pgbouncer`; most common cause is auth mismatch — `POSTGRES_PASSWORD` in `.env` doesn't match how Postgres was initialized. Also check that `PGBOUNCER_AUTH_TYPE=md5` is compatible with the Postgres `pg_hba.conf` auth method. Fallback: temporarily set all app service `DATABASE_URL` back to `postgres:5432` and remove `pgbouncer` from `depends_on` to restore access while diagnosing.
+- **PgBouncer fails to start or app services can't connect** → check `docker compose logs pgbouncer`; most common cause is auth mismatch — `POSTGRES_PASSWORD` in `.env` doesn't match how Postgres was initialized. Postgres 16 defaults to `scram-sha-256`; PgBouncer must be configured with `AUTH_TYPE: scram-sha-256` in `docker-compose.yml` (not `md5`). Fallback: temporarily set all app service `DATABASE_URL` back to `postgres:5432` and remove `pgbouncer` from `depends_on` to restore access while diagnosing.
 - **"too many clients already" after PgBouncer is deployed** → PgBouncer is not routing correctly; verify `docker compose ps pgbouncer` shows healthy and app service logs show connections to `pgbouncer:5432` not `postgres:5432`. Check `PGBOUNCER_DEFAULT_POOL_SIZE` — raise to 30 if Postgres still shows high connection count.
 - `migrate` fails with `host.docker.internal` → `docker-compose.override.yml` is present on server or `.env` has `DATABASE_URL` pointing to localhost; remove override file, fix `DATABASE_URL` to use `postgres:5432`
 - frontend shows `Couldn't find pages or app directory` → dev Dockerfile used; `docker compose build --no-cache frontend && docker compose up -d frontend`
@@ -264,12 +272,14 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - voicemail tier not advancing after shadow mode was on → shadow mode intercepted `launch_outbound_call` without placing a real call; Synthflow never sent a callback; re-trigger from tier 0 once shadow mode is disabled
 - **leads stuck mid-voicemail sequence with no pending job and no call_event** → Synthflow HTTP step webhook drop, either from burst concurrency or transient failure. Diagnose with the detection query in `spec/14_synthflow_integration_addendum.md`. Use `execution/recover_webhook_drop_20260428.py` with a Synthflow CSV export — it handles both tier advancement (Path B) and AI queuing for completed calls (Path A). Always dry-run first. The NOT EXISTS window in both the recovery script and `get_webhook_failures()` is 7 days to prevent re-detecting already-recovered contacts on re-runs.
 - **large count of leads stuck at same minute** (burst pattern) → all rescheduled calls landed at `run_at = window_start` exactly; `_compute_window_run_at()` was not used. Confirm fix is deployed, then run recovery scripts above.
-- **burst pattern repeats at +24h or +48h after a prior burst** → voicemail retry callbacks scheduled by `_schedule_retry_outbound_call()` use `now + delay_minutes` directly; they inherit the original burst timestamp. `_compute_window_run_at()` does not apply here. Spread manually using the slot redistribution SQL in `spec/14_synthflow_integration_addendum.md` before the affected slots fire. Verify with: `SELECT date_trunc('hour', run_at) + INTERVAL '5 min' * FLOOR(EXTRACT(minute FROM run_at)/5) AS slot, COUNT(*) FROM scheduled_jobs WHERE job_type='launch_outbound_call' AND status='pending' AND run_at >= NOW() GROUP BY slot ORDER BY slot;` — any slot > 4 needs redistribution.
+- **burst pattern repeats at +24h or +48h after a prior burst** → as of 2026-04-29 this is handled automatically: `_slot_aware_run_at()` in `voicemail_jobs.py` spreads new retries at schedule time, and `rebalance_call_slots_job` auto-corrects any race-condition overages every 5 minutes. If overages persist beyond 10 minutes, check `docker compose logs worker-default` for `rebalance_call_slots` errors. Manual fallback: run the slot redistribution SQL in `spec/14_synthflow_integration_addendum.md`.
 - Lead Journey shows only 1 event despite multiple outreach attempts → SMS and outbound calls in shadow mode are in `shadow_actions`, not `outbound_messages`; they are not currently displayed in Lead Journey timeline
 
 ### Alerting / metrics collector issues
 
 - **No rows in `system_metrics`, dashboard shows 0 active alerts** → `collect_metrics_job` never ran. Check worker-default startup logs for: `Could not ensure metrics scheduler on startup`. If present, confirm the `collect_metrics` job exists in `scheduled_jobs` with `status='pending'`; if missing, restart `worker-default` (it calls `start_metrics_scheduler()` on boot).
+
+- **Slot overages not self-correcting** → `rebalance_call_slots_job` should run every 5 min on `worker-default`. Check startup logs for `Slot rebalancer ensured on startup`. Confirm a `rebalance_call_slots` row exists in `scheduled_jobs` with `status='pending'`. If missing, restart `worker-default`.
 
 - **Dashboard shows large backlog in Queue Health but 0 active alerts** → The `queue_lag_exceeded` alert fires on `queue_lag_seconds` (age of the oldest overdue pending job), **not** on backlog count. If all pending jobs are future-dated (e.g. voicemail retries scheduled minutes ahead), `queue_lag_seconds` = 0 and no alert fires. Use the diagnostic query below to confirm:
   ```sql

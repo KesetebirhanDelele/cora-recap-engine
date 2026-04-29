@@ -207,3 +207,7 @@ Record each scaling action here so future engineers have a paper trail.
 |---|---|---|---|
 | — | Initial single-host deploy | Baseline | — |
 | 2026-04-27 | Added `_compute_window_run_at()` slot-based call spacing | 366 simultaneous calls at 9 AM CDT overwhelmed Synthflow HTTP step concurrency limit; webhooks dropped | Fixed — 10 calls/slot, 2-min slots. Manually recovered 134 finalized leads + 450 rescheduled leads. |
+| 2026-04-29 | Tightened burst cap: `_CALL_BATCH_SIZE` 10→4, `_CALL_SLOT_SECONDS` 120→300 | April 28 confirmed 10/2-min still exceeded Synthflow HTTP step capacity; 38 contacts had dropped webhooks | 4 calls per 5-min slot. Manually ran redistribution SQL to spread 725 pending jobs. |
+| 2026-04-29 | Added `_slot_aware_run_at()` to voicemail retry scheduling | VM retry callbacks used `now + delay_minutes` directly, recreating bursts at +24h/+48h | Fixed — retries now round to nearest slot boundary and compete for the same slot counter via `_compute_window_run_at()` |
+| 2026-04-29 | Added `rebalance_call_slots` self-rescheduling job (every 5 min) | Concurrent scheduling races could still produce 5–7 calls/slot; manual redistribution was the only fix | Auto-corrects overages within 5 min; no manual intervention needed |
+| 2026-04-29 | Deployed PgBouncer connection pooler | 6 app services × up to 15 connections = ~90 potential connections against max_connections=100; exhaustion observed | Postgres sees max 20 connections regardless of replica count. Effective ceiling: unlimited scale at current volume. |
