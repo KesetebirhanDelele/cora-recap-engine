@@ -1720,7 +1720,7 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
             SELECT call_id FROM call_events
             WHERE contact_id = sj.payload_json->>'contact_id'
               AND created_at >= sj.updated_at - INTERVAL '10 minutes'
-              AND created_at <= sj.updated_at + INTERVAL '4 hours'
+              AND created_at <= sj.updated_at + INTERVAL '7 days'
             LIMIT 1
         ) ce ON true
         WHERE sj.job_type  = 'launch_outbound_call'
@@ -1751,7 +1751,7 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
               SELECT 1 FROM call_events ce
               WHERE ce.contact_id = sj.payload_json->>'contact_id'
                 AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
-                AND ce.created_at <= sj.updated_at + INTERVAL '4 hours'
+                AND ce.created_at <= sj.updated_at + INTERVAL '7 days'
           )
         ORDER BY sj.updated_at DESC
         LIMIT 200
