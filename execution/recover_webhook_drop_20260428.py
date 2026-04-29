@@ -79,7 +79,7 @@ _INCIDENT_END   = datetime(2026, 4, 29, 0, 0, 0, tzinfo=timezone.utc)
 _WEBHOOK_GRACE_MINUTES = 20
 
 # Default CSV path (when running inside the container)
-_DEFAULT_CSV = Path("/app/tmp/calls-files.csv")
+_DEFAULT_CSV = Path("/app/tmp/calls-files2.csv")
 
 
 # ── Phone normalisation ────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ def load_csv(csv_path: Path) -> dict[str, dict]:
 
 _MISSING_WEBHOOK_SQL = """
 SELECT
-    REGEXP_REPLACE(sj.payload_json->>'phone_number', '[^0-9]', '', 'g') AS digits,
+    RIGHT(REGEXP_REPLACE(sj.payload_json->>'phone_number', '[^0-9]', '', 'g'), 10) AS digits,
     sj.payload_json->>'contact_id'    AS contact_id,
     sj.payload_json->>'phone_number'  AS phone_number,
     sj.payload_json->>'campaign_name' AS campaign_name,
