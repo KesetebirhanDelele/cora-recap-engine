@@ -1243,6 +1243,26 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     expired = _scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'running' AND lease_expires_at < NOW()") or 0
     backlog = stuck + expired
 
+    # ── webhook_delivery_pct (24h outbound call delivery rate) ───────────────
+    wf_row = session.execute(text("""
+        SELECT COUNT(*) AS total, COUNT(ce.call_id) AS got
+        FROM scheduled_jobs sj
+        LEFT JOIN LATERAL (
+            SELECT call_id FROM call_events
+            WHERE contact_id = sj.payload_json->>'contact_id'
+              AND created_at >= sj.updated_at - INTERVAL '10 minutes'
+              AND created_at <= sj.updated_at + INTERVAL '7 days'
+            LIMIT 1
+        ) ce ON true
+        WHERE sj.job_type = 'launch_outbound_call'
+          AND sj.status   = 'completed'
+          AND sj.updated_at >= NOW() - INTERVAL '24 hours'
+          AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+    """)).fetchone()
+    wf_total = int(wf_row[0]) if wf_row else 0
+    wf_got   = int(wf_row[1]) if wf_row else 0
+    webhook_delivery_pct = round(wf_got / wf_total, 4) if wf_total > 0 else None
+
     # ── active_alerts ─────────────────────────────────────────────────────────
     active_alerts = _scalar("SELECT COUNT(*) FROM alert_events WHERE status = 'active'") or 0
 
@@ -1425,6 +1445,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "events_per_min":             _pt(round(ev_curr / 5, 1),  round(ev_prev / 5, 1)),
         "open_exceptions":            _pt(open_exc,                prev_open_exc),
         "backlog_size":               _pt(backlog,                 None),
+        "webhook_delivery_pct":       _pt(webhook_delivery_pct,    None),
         "active_alerts":              _pt(active_alerts,           None),
         "lookup_rate":                _pt(lookup_curr,             lookup_prev),
         "config_health":              _pt(config_health,           config_health),

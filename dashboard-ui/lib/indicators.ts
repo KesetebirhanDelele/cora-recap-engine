@@ -88,7 +88,7 @@ interface CardMetricConfig {
 const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
   "/activity":           { key: "events_per_min",             format: (v) => `${v ?? "—"} events/min`,    colorType: "neutral"  },
   "/exceptions":         { key: "open_exceptions",            format: (v) => `${v ?? "—"} open issues`,   colorType: "negative" },
-  "/queue":              { key: "backlog_size",               format: (v) => `${v ?? "—"} backlog`,        colorType: "negative" },
+  "/queue":              { key: "backlog_size", secondaryKey: "webhook_delivery_pct", format: (v, v2) => `${v ?? "—"} backlog · ${pct(v2 as number | null)} webhooks`, colorType: "negative" },
   "/alerts":             { key: "active_alerts",              format: (v) => `${v ?? "—"} active alerts`, colorType: "negative" },
   "/contact-lookup":     { key: "lookup_rate",                format: (v) => `${v ?? "—"} calls/hr`,      colorType: "neutral"  },
   "/settings":           { key: "config_health",              format: (v) => `${v ?? "—"} config`,         colorType: "config"   },

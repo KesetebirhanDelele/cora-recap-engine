@@ -522,6 +522,7 @@ export interface CardMetricsResponse {
   events_per_min:             MetricPoint;
   open_exceptions:            MetricPoint;
   backlog_size:               MetricPoint;
+  webhook_delivery_pct:       MetricPoint;
   active_alerts:              MetricPoint;
   lookup_rate:                MetricPoint;
   config_health:              MetricPoint;
