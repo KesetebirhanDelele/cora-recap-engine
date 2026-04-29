@@ -19,7 +19,7 @@ register(
         "for a prospective student who did not answer an admissions call.\n\n"
         "Return a JSON object with exactly these fields:\n"
         '- "email_subject": concise email subject line (under 60 characters)\n'
-        '- "email_html": HTML-formatted email body (professional, warm, brief)\n'
+        '- "email_html": HTML-formatted email body (professional, warm, brief; under 1200 characters total including all HTML tags)\n'
         '- "sms_text": brief SMS text (under 160 characters, no HTML)\n\n'
         "The content should be friendly and focused on reconnecting with the student. "
         "Do not fabricate program details not provided in the context.\n\n"

@@ -87,6 +87,7 @@ class OpenAIClient:
         messages: list[dict[str, str]],
         model: str,
         response_format: dict | None = None,
+        max_tokens: int | None = None,
         *,
         _retry_delay: float = 1.0,
     ) -> dict:
@@ -96,6 +97,8 @@ class OpenAIClient:
         messages: OpenAI chat messages list.
         model: model name (may include 'openai/' prefix — stripped automatically).
         response_format: e.g. {"type": "json_object"} to request JSON output.
+        max_tokens: hard cap on response length; use to bound output size for
+                    fields with character limits (e.g. GHL custom fields).
         _retry_delay: base delay seconds; pass 0.0 in tests to skip sleeps.
 
         Returns: parsed dict from the model's response content.
@@ -107,6 +110,8 @@ class OpenAIClient:
         kwargs: dict[str, Any] = {"model": clean_model, "messages": messages}
         if response_format:
             kwargs["response_format"] = response_format
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
 
         for attempt in range(self.settings.openai_retry_max + 1):
             try:
