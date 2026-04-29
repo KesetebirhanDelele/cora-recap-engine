@@ -77,10 +77,19 @@ _DEFAULT_IDLE_DAYS = 7
 _GHL_CALL_DELAY_SECONDS = 0.2   # 5 req/s — well inside GHL's ~100 req/s limit
 _TMP_DIR = Path("/app/tmp")
 
-# Tags in GHL that definitively indicate the lead should not be called
+# Tags in GHL that indicate the lead should not be called.
+# Matched case-insensitively against each tag in the contact's tag list.
 _DNC_TAGS = frozenset({
-    "do_not_call", "do not call", "DNC", "dnc", "wrong_number", "wrong number",
-    "opted_out", "opted out",
+    # Explicit do-not-call variants used in this GHL account
+    "do not contact",
+    "do not call",
+    "do not call again",
+    "dnc",
+    # Disposition signals
+    "not interested",
+    "wrong number",
+    "opted out",
+    "opted_out",
 })
 
 # ── SQL: fetch stale active leads ─────────────────────────────────────────────
