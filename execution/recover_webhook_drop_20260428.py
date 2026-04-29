@@ -73,7 +73,7 @@ logger = logging.getLogger(__name__)
 
 # Date window for the webhook-drop incident (UTC)
 _INCIDENT_START = datetime(2026, 4, 28, 0, 0, 0, tzinfo=timezone.utc)
-_INCIDENT_END   = datetime(2026, 4, 29, 0, 0, 0, tzinfo=timezone.utc)
+_INCIDENT_END   = datetime(2026, 4, 29, 1, 0, 0, tzinfo=timezone.utc)
 
 # Give Synthflow 20 min to deliver before declaring a webhook missing
 _WEBHOOK_GRACE_MINUTES = 20
