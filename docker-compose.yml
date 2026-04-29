@@ -29,8 +29,40 @@ services:
       timeout: 5s
       retries: 5
 
+  # ── PgBouncer connection pooler ───────────────────────────────────────────────
+  # Sits between app services and Postgres. Transaction mode recycles a Postgres
+  # connection after each transaction commit — all 6+ app services share 20 actual
+  # Postgres connections regardless of pool_size settings on each service.
+  # Listens on :5432 internally. App services use pgbouncer:5432 in DATABASE_URL.
+  # migrate and adminer connect directly to postgres:5432 (bypass pooler).
+  pgbouncer:
+    image: bitnami/pgbouncer:latest
+    environment:
+      POSTGRESQL_HOST: postgres
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: ${POSTGRES_DATABASE:-cora}
+      POSTGRESQL_USERNAME: ${POSTGRES_USERNAME:-postgres}
+      POSTGRESQL_PASSWORD: ${POSTGRES_PASSWORD}
+      PGBOUNCER_DATABASE: ${POSTGRES_DATABASE:-cora}
+      PGBOUNCER_PORT: "5432"
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: "500"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "20"
+      PGBOUNCER_AUTH_TYPE: md5
+      PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # ── Migration runner ──────────────────────────────────────────────────────────
   # One-shot: runs alembic upgrade head then exits cleanly.
+  # Connects directly to postgres:5432 — bypasses PgBouncer for DDL safety.
   # All services that touch the DB depend on this completing successfully.
   migrate:
     build: .
@@ -56,13 +88,15 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
       REDIS_HOST: redis
       POSTGRES_POOL_SIZE: "10"
       POSTGRES_MAX_OVERFLOW: "5"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -78,13 +112,15 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
       REDIS_HOST: redis
       POSTGRES_POOL_SIZE: "5"
       POSTGRES_MAX_OVERFLOW: "3"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -117,13 +153,15 @@ services:
       - .env
     environment:
       WORKER_ROLE: default
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
       REDIS_HOST: redis
       POSTGRES_POOL_SIZE: "2"
       POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -139,13 +177,15 @@ services:
       - .env
     environment:
       WORKER_ROLE: ai
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
       REDIS_HOST: redis
       POSTGRES_POOL_SIZE: "2"
       POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -161,13 +201,15 @@ services:
       - .env
     environment:
       WORKER_ROLE: callbacks
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
       REDIS_HOST: redis
       POSTGRES_POOL_SIZE: "2"
       POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -182,13 +224,15 @@ services:
       - .env
     environment:
       WORKER_ROLE: retries
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DATABASE:-cora}
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
       REDIS_HOST: redis
       POSTGRES_POOL_SIZE: "2"
       POSTGRES_MAX_OVERFLOW: "2"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped

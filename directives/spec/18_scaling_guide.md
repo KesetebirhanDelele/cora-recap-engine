@@ -56,27 +56,29 @@ The claim/lease pattern in `app/worker/claim.py` is already concurrency-safe:
 **Ceiling before external API rate limits become the real constraint:** ~5–8 workers for current GHL/Synthflow/OpenAI quotas.
 
 ### Stage 3 — PgBouncer connection pooler
+**Status: IMPLEMENTED 2026-04-29**
+
 **Signal:** Postgres `max_connections` near limit; API or worker logs show connection wait time.
 
-**Action:** Add PgBouncer in transaction mode in front of Postgres. No application code changes — only `DATABASE_URL` environment variable is updated to point to PgBouncer.
+**Implemented config** (`docker-compose.yml`):
+- Image: `bitnami/pgbouncer:latest`
+- Pool mode: `transaction` — Postgres connections recycled after each commit
+- Max client connections: 500
+- Default pool size: 20 actual Postgres connections
+- Listen port: 5432 (internal Docker network)
+- Auth type: `md5`
+- `PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits` — prevents SQLAlchemy startup param warnings
 
-```yaml
-# docker-compose.yml addition
-pgbouncer:
-  image: pgbouncer/pgbouncer:latest
-  environment:
-    DATABASES_HOST: postgres
-    DATABASES_PORT: 5432
-    DATABASES_DBNAME: cora
-    PGBOUNCER_POOL_MODE: transaction
-    PGBOUNCER_MAX_CLIENT_CONN: 500
-    PGBOUNCER_DEFAULT_POOL_SIZE: 20
-```
+**Routing:**
+- All app services (api, dashboard-api, worker-*): `DATABASE_URL` → `pgbouncer:5432`
+- `migrate` and `adminer`: connect directly to `postgres:5432` (bypass PgBouncer — DDL safety + direct admin access)
 
-Update `DATABASE_URL` in `.env`:
-```
-DATABASE_URL=postgresql+psycopg2://postgres:<password>@pgbouncer:5432/cora
-```
+**Effective ceiling after this change:** Postgres sees max 20 connections regardless of how many app services, worker replicas, or admin tools are running simultaneously. Connection exhaustion is no longer a concern at current or projected scale.
+
+**If PgBouncer fails to start** (auth errors at startup):
+- Check `docker compose logs pgbouncer` for `auth_query failed` or `password mismatch`
+- Confirm `POSTGRES_PASSWORD` in `.env` matches what Postgres was initialized with
+- Fallback: revert app services to `postgres:5432` in DATABASE_URL, remove pgbouncer depends_on
 
 ### Stage 4 — API horizontal scale + load balancer
 **Signal:** API CPU > 70 % sustained; vertical upgrade not cost-effective; need zero-downtime deploys.

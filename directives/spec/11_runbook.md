@@ -57,6 +57,7 @@ cd /opt/cora-recap-engine
 git pull origin main
 docker compose up -d --build
 docker compose logs migrate       # verify exits 0
+docker compose logs pgbouncer     # verify "pgbouncer: listening on 0.0.0.0:5432"
 docker compose ps                 # all services healthy/running
 ```
 
@@ -229,6 +230,8 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 ## Troubleshooting
 
 ### Production / Docker Compose issues
+- **PgBouncer fails to start or app services can't connect** → check `docker compose logs pgbouncer`; most common cause is auth mismatch — `POSTGRES_PASSWORD` in `.env` doesn't match how Postgres was initialized. Also check that `PGBOUNCER_AUTH_TYPE=md5` is compatible with the Postgres `pg_hba.conf` auth method. Fallback: temporarily set all app service `DATABASE_URL` back to `postgres:5432` and remove `pgbouncer` from `depends_on` to restore access while diagnosing.
+- **"too many clients already" after PgBouncer is deployed** → PgBouncer is not routing correctly; verify `docker compose ps pgbouncer` shows healthy and app service logs show connections to `pgbouncer:5432` not `postgres:5432`. Check `PGBOUNCER_DEFAULT_POOL_SIZE` — raise to 30 if Postgres still shows high connection count.
 - `migrate` fails with `host.docker.internal` → `docker-compose.override.yml` is present on server or `.env` has `DATABASE_URL` pointing to localhost; remove override file, fix `DATABASE_URL` to use `postgres:5432`
 - frontend shows `Couldn't find pages or app directory` → dev Dockerfile used; `docker compose build --no-cache frontend && docker compose up -d frontend`
 - `TypeError: Failed to fetch` on all dashboard pages → `DASHBOARD_API_URL` baked as localhost at build time; set correct server IP in `.env` then rebuild frontend with `--no-cache`
