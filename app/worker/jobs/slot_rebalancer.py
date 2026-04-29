@@ -46,7 +46,8 @@ FROM (
 ) t
 """
 
-# batch_size hardcoded in the FLOOR formula — must equal _CALL_BATCH_SIZE
+# batch_size and within-slot spacing hardcoded in the FLOOR/MOD formulas —
+# must equal _CALL_BATCH_SIZE=4, _CALL_SLOT_SECONDS=300, spacing=75s
 _REDISTRIBUTE_SQL = """
 WITH ranked AS (
     SELECT id, run_at,
@@ -58,10 +59,14 @@ WITH ranked AS (
 ),
 base AS (SELECT GREATEST(NOW(), MIN(run_at)) AS t FROM ranked)
 UPDATE scheduled_jobs sj
-SET run_at = b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+SET run_at = b.t
+          + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+          + ((r.rn % 4)       * INTERVAL '75 seconds')
 FROM ranked r, base b
 WHERE sj.id = r.id
-  AND sj.run_at != b.t + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+  AND sj.run_at != b.t
+                 + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+                 + ((r.rn % 4)       * INTERVAL '75 seconds')
 """
 
 

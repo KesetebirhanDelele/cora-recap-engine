@@ -77,8 +77,9 @@ _INCIDENT_START = datetime(2026, 4, 29, 14, 0, 0, tzinfo=timezone.utc)
 _INCIDENT_END   = datetime(2026, 4, 30, 0, 0, 0, tzinfo=timezone.utc)
 
 # Slot cap constants (must match outbound_jobs.py)
-_CALL_BATCH_SIZE    = 4
-_CALL_SLOT_SECONDS  = 300
+_CALL_BATCH_SIZE           = 4
+_CALL_SLOT_SECONDS         = 300
+_CALL_WITHIN_SLOT_SPACING  = _CALL_SLOT_SECONDS // _CALL_BATCH_SIZE  # 75 s
 _SLOT_EPOCH         = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
 # Default CSV path (when running inside the container)
@@ -299,7 +300,8 @@ def _slot_aligned_run_at(session, base_time: datetime, delay_minutes: int) -> da
         )
     ) or 0
     slot = pending // _CALL_BATCH_SIZE
-    return window_start + timedelta(seconds=slot * _CALL_SLOT_SECONDS)
+    within_slot = (pending % _CALL_BATCH_SIZE) * _CALL_WITHIN_SLOT_SPACING
+    return window_start + timedelta(seconds=slot * _CALL_SLOT_SECONDS + within_slot)
 
 
 def _advance_tier_and_schedule(

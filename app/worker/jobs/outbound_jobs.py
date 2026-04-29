@@ -30,19 +30,21 @@ from app.worker.exceptions import create_exception
 logger = logging.getLogger(__name__)
 
 _CALL_BATCH_SIZE = 4     # calls per slot
-_CALL_SLOT_SECONDS = 300  # 5 minutes between slots — max 4 calls/5 min
+_CALL_SLOT_SECONDS = 300  # 5-minute slot window
+# Spacing between individual calls within a slot: 300 / 4 = 75 s.
+# Calls in the same batch fire at +0s, +75s, +150s, +225s — never simultaneously.
+_CALL_WITHIN_SLOT_SPACING = _CALL_SLOT_SECONDS // _CALL_BATCH_SIZE  # 75 s
 
 
 def _compute_window_run_at(session, window_start: datetime) -> datetime:
     """
-    Assign a slot-based run_at to spread rescheduled calls across the window.
+    Assign a slot-based run_at that spreads calls within the slot window.
 
-    Counts pending launch_outbound_call jobs at or after window_start,
-    divides by _CALL_BATCH_SIZE to get the slot index, and returns
-    window_start + slot * _CALL_SLOT_SECONDS.
-
-    4 calls per 5-minute slot prevents Synthflow webhook saturation observed
-    at burst volumes of 50/10-min on 2026-04-28.
+    Each pending job increments the position counter. The slot index
+    (pending // batch_size) selects the 5-minute window; the within-slot
+    offset (pending % batch_size) * 75s staggers individual calls so they
+    never fire simultaneously. Maximum 4 calls per 5-minute slot, separated
+    by 75 seconds each.
     """
     from sqlalchemy import func, select
 
@@ -57,7 +59,8 @@ def _compute_window_run_at(session, window_start: datetime) -> datetime:
         )
     ) or 0
     slot = pending // _CALL_BATCH_SIZE
-    return window_start + timedelta(seconds=slot * _CALL_SLOT_SECONDS)
+    within_slot = (pending % _CALL_BATCH_SIZE) * _CALL_WITHIN_SLOT_SPACING
+    return window_start + timedelta(seconds=slot * _CALL_SLOT_SECONDS + within_slot)
 
 
 def launch_outbound_call_job(job_id: str) -> None:
