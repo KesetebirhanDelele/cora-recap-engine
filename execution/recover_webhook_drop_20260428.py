@@ -79,7 +79,7 @@ _INCIDENT_END   = datetime(2026, 4, 29, 0, 0, 0, tzinfo=timezone.utc)
 _WEBHOOK_GRACE_MINUTES = 20
 
 # Default CSV path (when running inside the container)
-_DEFAULT_CSV = Path("/opt/cora-recap-engine/tmp/calls-files.csv")
+_DEFAULT_CSV = Path("/app/tmp/calls-files.csv")
 
 
 # ── Phone normalisation ────────────────────────────────────────────────────────
@@ -125,9 +125,9 @@ def load_csv(csv_path: Path) -> dict[str, dict]:
                     records[phone] = {
                         "status":        status,
                         "call_id":       call_id,
-                        "duration_s":    int(row.get("Duration (s)") or 0),
+                        "duration_s":    int(row.get("Duration (s)") or row.get("Duration") or 0),
                         "timestamp":     row.get("Timestamp", ""),
-                        "recording_url": row.get("Recording Link", ""),
+                        "recording_url": row.get("Recording Link") or row.get("Recording URL", ""),
                         "error":         row.get("Error", ""),
                     }
             logger.info("Loaded %d records from %s (encoding=%s)", len(records), csv_path, enc)
