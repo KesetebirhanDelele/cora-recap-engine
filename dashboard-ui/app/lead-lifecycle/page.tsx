@@ -10,9 +10,9 @@
  *   - Polling: every 60 minutes, with a manual Refresh Now button
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
-import { fetchLeadLifecycle } from "@/lib/api";
+import { fetchLeadLifecycle, advanceStaleLeadAction } from "@/lib/api";
 import type { LeadLifecycleResponse, LeadLifecycleRow, LeadLifecycleSummary } from "@/types";
 import ContactLookupClient from "@/components/ContactLookupClient";
 
@@ -135,7 +135,51 @@ const TD: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-function LeadTable({ rows, onDrillDown }: { rows: LeadLifecycleRow[]; onDrillDown: (contactId: string, phone: string) => void }) {
+function StaleActions({ contactId, onDone }: { contactId: string; onDone: () => void }) {
+  const [loading, setLoading] = React.useState<"voicemail" | "no_answer" | null>(null);
+  const [result, setResult] = React.useState<string | null>(null);
+
+  async function act(outcome: "voicemail" | "no_answer") {
+    setLoading(outcome);
+    setResult(null);
+    try {
+      const r = await advanceStaleLeadAction(contactId, outcome);
+      setResult(r.action === "finalized" ? "Finalized" :
+                r.action === "closed"    ? "Closed" :
+                r.action === "advanced"  ? `Advanced to tier ${r.tier_to}` :
+                "Retry scheduled");
+      setTimeout(onDone, 1500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult(`Error: ${msg}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  if (result) return <span style={{ fontSize: "0.72rem", color: result.startsWith("Error") ? "#ef4444" : "#16a34a", fontWeight: 600 }}>{result}</span>;
+
+  return (
+    <div style={{ display: "flex", gap: "0.35rem" }}>
+      <button
+        disabled={loading !== null}
+        onClick={() => act("voicemail")}
+        style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: 4, border: "1px solid #16a34a", background: loading === "voicemail" ? "#f0fdf4" : "#fff", color: "#16a34a", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}
+      >
+        {loading === "voicemail" ? "…" : "VM Left"}
+      </button>
+      <button
+        disabled={loading !== null}
+        onClick={() => act("no_answer")}
+        style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: 4, border: "1px solid #f97316", background: loading === "no_answer" ? "#fff7ed" : "#fff", color: "#f97316", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}
+      >
+        {loading === "no_answer" ? "…" : "No Answer"}
+      </button>
+    </div>
+  );
+}
+
+function LeadTable({ rows, onDrillDown, showActions, onActionDone }: { rows: LeadLifecycleRow[]; onDrillDown: (contactId: string, phone: string) => void; showActions?: boolean; onActionDone?: () => void }) {
   if (rows.length === 0) {
     return (
       <div style={{ color: "#94a3b8", padding: "2rem", textAlign: "center", fontSize: "0.875rem" }}>
@@ -155,6 +199,7 @@ function LeadTable({ rows, onDrillDown }: { rows: LeadLifecycleRow[]; onDrillDow
               "Calls", "SMS", "Email", "Last Intent", "Next Action",
               "Finalization",
             ].map(h => <th key={h} style={TH}>{h}</th>)}
+            {showActions && <th key="Actions" style={TH}>Action</th>}
           </tr>
         </thead>
         <tbody>
@@ -230,6 +275,13 @@ function LeadTable({ rows, onDrillDown }: { rows: LeadLifecycleRow[]; onDrillDow
                     </div>
                   ) : "—"}
                 </td>
+                {showActions && (
+                  <td style={TD}>
+                    {badge.label === "Stale" ? (
+                      <StaleActions contactId={row.contact_id} onDone={onActionDone ?? (() => {})} />
+                    ) : "—"}
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -451,7 +503,12 @@ export default function LeadLifecyclePage() {
 
           {/* Table */}
           <div style={{ flex: 1, overflowY: "auto" }}>
-            <LeadTable rows={data?.rows ?? []} onDrillDown={(contactId, phone) => setDrillDown({ contactId, phone })} />
+            <LeadTable
+              rows={data?.rows ?? []}
+              onDrillDown={(contactId, phone) => setDrillDown({ contactId, phone })}
+              showActions={statusFilter === "stale"}
+              onActionDone={refresh}
+            />
           </div>
 
           {/* Pagination — bottom */}
