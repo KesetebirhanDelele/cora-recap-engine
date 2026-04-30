@@ -187,6 +187,15 @@ def _handle_no_answer(session, lead, tier, campaign_name, last_call_status, oper
     }
 
 
+def _resolve_ghl_contact_id(ghl, contact_id: str) -> str | None:
+    """Resolve a phone-based contact_id to real GHL UUID; return as-is if already a UUID."""
+    stripped = contact_id.replace(" ", "").replace("-", "").replace("+", "")
+    if stripped.isdigit():
+        found = ghl.search_contact_by_phone(contact_id)
+        return found.get("id") if found else None
+    return contact_id
+
+
 def _finalize_lead(session, contact_id, campaign_name, operator_id, settings):
     from app.adapters.ghl import GHLClient
     from app.worker.jobs.crm_jobs import _resolve_to_field_ids
@@ -214,12 +223,14 @@ def _finalize_lead(session, contact_id, campaign_name, operator_id, settings):
         field_updates[settings.ghl_field_ai_campaign_value] = "3"
 
     if field_updates:
-        resolved = _resolve_to_field_ids(ghl, field_updates)
-        if resolved:
-            ghl.update_contact_fields(contact_id, resolved, mode_flags=flags)
+        resolved_fields = _resolve_to_field_ids(ghl, field_updates)
+        ghl_id = _resolve_ghl_contact_id(ghl, contact_id)
+        if resolved_fields and ghl_id:
+            ghl.update_contact_fields(ghl_id, resolved_fields, mode_flags=flags)
         else:
-            log_shadow_action(session, contact_id, "ghl_finalize_skipped",
-                              {"reason": "field_resolution_failed"})
+            log_shadow_action(session, contact_id, "ghl_finalize_skipped", {
+                "reason": "ghl_id_not_found" if not ghl_id else "field_resolution_failed",
+            })
 
     _write_audit(session, contact_id, operator_id, "manual_advance", {
         "reason": "stale_webhook_recovery",
@@ -250,12 +261,14 @@ def _close_lead(session, contact_id, campaign_name, operator_id, settings):
         field_updates[settings.ghl_field_ai_campaign] = "No"
 
     if field_updates:
-        resolved = _resolve_to_field_ids(ghl, field_updates)
-        if resolved:
-            ghl.update_contact_fields(contact_id, resolved, mode_flags=flags)
+        resolved_fields = _resolve_to_field_ids(ghl, field_updates)
+        ghl_id = _resolve_ghl_contact_id(ghl, contact_id)
+        if resolved_fields and ghl_id:
+            ghl.update_contact_fields(ghl_id, resolved_fields, mode_flags=flags)
         else:
-            log_shadow_action(session, contact_id, "ghl_close_skipped",
-                              {"reason": "field_resolution_failed"})
+            log_shadow_action(session, contact_id, "ghl_close_skipped", {
+                "reason": "ghl_id_not_found" if not ghl_id else "field_resolution_failed",
+            })
 
     _write_audit(session, contact_id, operator_id, "manual_advance", {
         "reason": "stale_webhook_recovery",
