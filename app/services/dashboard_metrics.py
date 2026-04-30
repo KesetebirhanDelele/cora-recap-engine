@@ -1258,6 +1258,18 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
           AND sj.status   = 'completed'
           AND sj.updated_at >= NOW() - INTERVAL '24 hours'
           AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+          AND NOT EXISTS (
+              SELECT 1 FROM lead_state ls
+              WHERE ls.contact_id = sj.payload_json->>'contact_id'
+                AND ls.status IN ('terminal', 'closed')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj2
+              WHERE sj2.entity_id = sj.payload_json->>'contact_id'
+                AND sj2.job_type  = 'launch_outbound_call'
+                AND sj2.id       != sj.id
+                AND sj2.status   IN ('pending', 'claimed', 'running')
+          )
     """)).fetchone()
     wf_total = int(wf_row[0]) if wf_row else 0
     wf_got   = int(wf_row[1]) if wf_row else 0

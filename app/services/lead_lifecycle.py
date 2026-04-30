@@ -45,8 +45,8 @@ SELECT
     COUNT(*)
         FILTER (WHERE ls.ai_campaign_value IS NOT NULL
                   AND ls.ai_campaign_value != '3'
-                  AND ls.status NOT IN ('closed', 'terminal'))
-                                                        AS in_vm_sequence,
+                  AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
+                  AND ls.do_not_call IS NOT TRUE)       AS in_vm_sequence,
     COUNT(*)
         FILTER (WHERE EXISTS (
             SELECT 1 FROM audit_log al
@@ -58,18 +58,15 @@ SELECT
                                                         AS finalized,
     ROUND(CAST(AVG(
         CASE
-            WHEN ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE
-            THEN EXTRACT(EPOCH FROM (ls.updated_at - first_ce.first_contact)) / 86400.0
+            WHEN (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE)
+                 AND ls.updated_at IS NOT NULL
+                 AND ls.created_at IS NOT NULL
+            THEN EXTRACT(EPOCH FROM (ls.updated_at - ls.created_at)) / 86400.0
         END
     ) AS numeric), 1)                                   AS avg_days_to_close
 FROM lead_state ls
 LEFT JOIN pending      p  ON p.entity_id  = ls.contact_id
-LEFT JOIN last_activity la ON la.entity_id = ls.contact_id
-LEFT JOIN LATERAL (
-    SELECT MIN(COALESCE(ce.call_started_at, ce.created_at)) AS first_contact
-    FROM call_events ce
-    WHERE ce.contact_id = ls.contact_id
-) first_ce ON TRUE;
+LEFT JOIN last_activity la ON la.entity_id = ls.contact_id;
 """
 
 # ── Per-lead rows ─────────────────────────────────────────────────────────────
