@@ -580,6 +580,34 @@ No database migrations are required for frontend-only changes.
 
 ---
 
+### "Call Completed" recovery returning `unknown_call_status` exception
+**Symptom**: Using the Call Completed button (or `POST /dashboard/actions/recover-call-webhook`) schedules the job successfully but an `unknown_call_status` exception appears in the Exceptions panel with `"status": "ok"`.
+
+**Root cause**: Synthflow's `GET /v2/calls/{call_id}` returns `{"status": "ok", "data": [{...call record...}]}` — the `data` field is an **array**, not a dict. The original envelope-unwrap code only handled the dict case, so the outer envelope leaked through. `normalize_synthflow_outcome()` found `status: "ok"` (the HTTP-level API success flag, not a call outcome) and created an `unknown_call_status` exception.
+
+**Fix applied (2026-04-30)**:
+- `app/adapters/synthflow.py` `get_call()` — envelope unwrap now handles `data` as dict, list, `response.calls[]`, and `data.calls[]` patterns.
+- `app/services/stale_recovery.py` `recover_missed_webhook()` — maps `"ok"` → `"completed"` (Synthflow API-level flag is not a call outcome), and sets `call_status` explicitly in the normalized payload so `process_call_event` finds it via the highest-priority alias and never reads `"ok"`.
+
+**Prevention**: When consuming Synthflow GET responses, always use `normalize_synthflow_outcome()` to extract call status — it tries all known field aliases in priority order. Never use raw `.get("status")` against an unwrapped Synthflow response.
+
+---
+
+### `webhook_drop_detected` alert re-fires immediately after operator resolves it
+**Symptom**: The `webhook_drop_detected` warning is resolved/acknowledged, then reappears within 60 seconds pointing to the same historical bucket.
+
+**Root cause (re-fire)**: The dedup query in `_evaluate_webhook_drop()` only checked `status = 'active'` alerts. After the operator resolved the alert, `existing` returned `None` on the next metrics cycle, and the same failing bucket triggered a new alert.
+
+**Root cause (false positive)**: Leads handled via VM Left / No Answer buttons (manual_advance audit entries) were still counted as "missing webhooks" because the query only joined against `call_events` rows. No `call_events` row is created by those recovery paths, so the delivery rate stayed below 80%.
+
+**Fix applied (2026-04-30)**:
+1. The dedup query now includes recently-resolved alerts within the 2-hour lookback window — any prior fire (active or resolved) suppresses a re-fire for the same period. The suppression clears automatically when the bucket falls outside the 2-hour lookback.
+2. The delivery rate query now counts leads with a `manual_advance` or `manual_webhook_recovery` audit entry as "got webhook", so operator-resolved leads no longer count as missing.
+
+**If the alert keeps firing after resolving**: wait ~30 minutes for the failing bucket to fall outside the 2-hour lookback window. Alternatively, verify `audit_log` has `action IN ('manual_advance', 'manual_webhook_recovery')` entries for the affected contacts.
+
+---
+
 ## Database cleanup
 
 The metrics collector runs a weekly cleanup automatically. To run manually:
