@@ -328,8 +328,10 @@ def _evaluate_webhook_drop(
             SELECT
                 date_trunc('hour', sj.updated_at)
                     + (EXTRACT(MINUTE FROM sj.updated_at)::int / 10) * INTERVAL '10 minutes' AS bucket,
-                COUNT(*)          AS total,
-                COUNT(ce.call_id) AS got_webhook
+                COUNT(*) AS total,
+                COUNT(
+                    CASE WHEN ce.call_id IS NOT NULL OR recovery.id IS NOT NULL THEN 1 END
+                ) AS got_webhook
             FROM scheduled_jobs sj
             LEFT JOIN LATERAL (
                 SELECT call_id FROM call_events
@@ -338,6 +340,13 @@ def _evaluate_webhook_drop(
                   AND created_at <= sj.updated_at + INTERVAL '4 hours'
                 LIMIT 1
             ) ce ON true
+            LEFT JOIN LATERAL (
+                SELECT id FROM audit_log
+                WHERE entity_id = sj.payload_json->>'contact_id'
+                  AND action IN ('manual_webhook_recovery', 'manual_advance')
+                  AND created_at >= sj.updated_at - INTERVAL '30 minutes'
+                LIMIT 1
+            ) recovery ON true
             WHERE sj.job_type  = 'launch_outbound_call'
               AND sj.status    = 'completed'
               AND sj.updated_at >= NOW() - INTERVAL '2 hours'
@@ -351,10 +360,14 @@ def _evaluate_webhook_drop(
     """)).fetchone()
 
     alert_type = "webhook_drop_detected"
+    # Check active OR recently-resolved alerts within the 2-hour lookback window.
+    # Historical buckets never improve once the window passes, so resolving an alert
+    # and having it re-fire on the next cycle is noise, not signal.
     existing = session.execute(
         text("""
-            SELECT id, created_at FROM alert_events
-            WHERE alert_type = :alert_type AND status = 'active'
+            SELECT id, created_at, status FROM alert_events
+            WHERE alert_type = :alert_type
+              AND created_at >= NOW() - INTERVAL '2 hours'
             ORDER BY created_at DESC LIMIT 1
         """),
         {"alert_type": alert_type},
@@ -369,12 +382,14 @@ def _evaluate_webhook_drop(
             f"({pct}% delivery rate)"
         )
         if existing:
-            if now - existing[1].replace(tzinfo=timezone.utc) < dedup_window:
+            if existing[2] == "active":
                 session.execute(
                     text("UPDATE alert_events SET last_seen_at = :now WHERE id = :id"),
                     {"now": now, "id": existing[0]},
                 )
-                return
+            # Suppress re-fire whether active or recently resolved —
+            # the same historical bucket triggered this alert already.
+            return
         alert_id = str(uuid.uuid4())
         row_obj = AlertEvent(
             id=alert_id,
