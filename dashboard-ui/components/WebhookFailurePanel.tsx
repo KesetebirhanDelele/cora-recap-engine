@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import type { WebhookFailuresResponse } from "@/types";
+import { advanceStaleLeadAction } from "@/lib/api";
 
 function pctColor(pct: number | null): string {
   if (pct === null) return "#94a3b8";
-  if (pct >= 95)    return "#10b981"; // green
-  if (pct >= 80)    return "#f59e0b"; // amber
-  return "#ef4444";                   // red
+  if (pct >= 95)    return "#10b981";
+  if (pct >= 80)    return "#f59e0b";
+  return "#ef4444";
 }
 
 function fmtTs(iso: string): string {
@@ -27,11 +28,86 @@ function fmtDate(iso: string): string {
   }
 }
 
-interface Props {
-  data: WebhookFailuresResponse;
+function RowActions({ contactId, onDone }: { contactId: string; onDone: () => void }) {
+  const [loading, setLoading] = useState<"voicemail" | "no_answer" | null>(null);
+  const [result, setResult]   = useState<string | null>(null);
+
+  async function act(outcome: "voicemail" | "no_answer") {
+    setLoading(outcome);
+    setResult(null);
+    try {
+      const r = await advanceStaleLeadAction(contactId, outcome);
+      const label =
+        r.action === "finalized"        ? "Finalized" :
+        r.action === "closed"           ? "Closed" :
+        r.action === "advanced"         ? `→ Tier ${r.tier_to}` :
+        r.action === "retry_scheduled"  ? "Retry scheduled" :
+        r.action;
+      setResult(label);
+      setTimeout(onDone, 1500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult(`Error: ${msg}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  if (result) {
+    return (
+      <span style={{
+        fontSize: "0.65rem", fontWeight: 600,
+        color: result.startsWith("Error") ? "#dc2626" : "#16a34a",
+      }}>
+        {result}
+      </span>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+      <span style={{
+        fontSize: "0.65rem", background: "#fee2e2", color: "#dc2626",
+        borderRadius: 4, padding: "1px 6px", fontWeight: 600,
+      }}>
+        no webhook
+      </span>
+      <button
+        disabled={loading !== null}
+        onClick={() => act("voicemail")}
+        title="VM was left — advance tier"
+        style={{
+          fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
+          border: "1px solid #16a34a",
+          background: loading === "voicemail" ? "#f0fdf4" : "#fff",
+          color: "#16a34a", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600,
+        }}
+      >
+        {loading === "voicemail" ? "…" : "VM Left"}
+      </button>
+      <button
+        disabled={loading !== null}
+        onClick={() => act("no_answer")}
+        title="No answer — retry or close"
+        style={{
+          fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
+          border: "1px solid #f97316",
+          background: loading === "no_answer" ? "#fff7ed" : "#fff",
+          color: "#f97316", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600,
+        }}
+      >
+        {loading === "no_answer" ? "…" : "No Answer"}
+      </button>
+    </div>
+  );
 }
 
-export default function WebhookFailurePanel({ data }: Props) {
+interface Props {
+  data: WebhookFailuresResponse;
+  onRefresh?: () => void;
+}
+
+export default function WebhookFailurePanel({ data, onRefresh }: Props) {
   const [open, setOpen] = useState(false);
   const { summary, failures } = data;
   const { total_launched, got_webhook, missing, webhook_pct } = summary;
@@ -47,65 +123,44 @@ export default function WebhookFailurePanel({ data }: Props) {
       boxShadow:    "0 1px 3px rgba(0,0,0,0.05)",
     }}>
 
-      {/* ── Header (always visible) ─────────────────────────────────────────── */}
+      {/* ── Header ─────────────────────────────────────────────────────────────── */}
       <div
         role="button"
         tabIndex={0}
         onClick={() => setOpen(o => !o)}
         onKeyDown={e => (e.key === "Enter" || e.key === " ") && setOpen(o => !o)}
         style={{
-          display:       "flex",
-          alignItems:    "center",
-          gap:           "1rem",
-          padding:       "0.875rem 1.25rem",
-          cursor:        "pointer",
-          userSelect:    "none",
-          background:    hasFailures ? "#fff7f7" : "#ffffff",
+          display: "flex", alignItems: "center", gap: "1rem",
+          padding: "0.875rem 1.25rem", cursor: "pointer", userSelect: "none",
+          background: hasFailures ? "#fff7f7" : "#ffffff",
         }}
       >
-        {/* Title */}
         <span style={{ fontSize: "0.8rem", fontWeight: 700, color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.06em" }}>
           Webhook Delivery — 24h
         </span>
-
-        {/* Delivery rate badge */}
         <span style={{
-          fontSize:     "0.72rem",
-          fontWeight:   700,
-          color:        color,
-          background:   `${color}18`,
-          border:       `1px solid ${color}40`,
-          borderRadius: 4,
-          padding:      "2px 8px",
+          fontSize: "0.72rem", fontWeight: 700, color, background: `${color}18`,
+          border: `1px solid ${color}40`, borderRadius: 4, padding: "2px 8px",
         }}>
           {webhook_pct !== null ? `${webhook_pct}%` : "—"} delivery
         </span>
-
-        {/* Stats */}
         <span style={{ fontSize: "0.72rem", color: "#64748b" }}>
           {got_webhook}/{total_launched} received
         </span>
-
         {hasFailures && (
           <span style={{
-            fontSize:     "0.72rem",
-            fontWeight:   600,
-            color:        "#dc2626",
-            background:   "#fee2e2",
-            borderRadius: 4,
-            padding:      "2px 8px",
+            fontSize: "0.72rem", fontWeight: 600, color: "#dc2626",
+            background: "#fee2e2", borderRadius: 4, padding: "2px 8px",
           }}>
             {missing} missing
           </span>
         )}
-
-        {/* Chevron */}
         <span style={{ marginLeft: "auto", fontSize: "0.7rem", color: "#94a3b8" }}>
           {open ? "▲ hide" : "▼ show jobs"}
         </span>
       </div>
 
-      {/* ── Drawer (table) ──────────────────────────────────────────────────── */}
+      {/* ── Drawer ─────────────────────────────────────────────────────────────── */}
       {open && (
         <div style={{ borderTop: "1px solid #f1f5f9", overflowX: "auto" }}>
           {failures.length === 0 ? (
@@ -116,7 +171,7 @@ export default function WebhookFailurePanel({ data }: Props) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.72rem" }}>
               <thead>
                 <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
-                  {["Contact", "Campaign", "Job Placed At", "Executed At", "Age (min)", ""].map(h => (
+                  {["Contact", "Campaign", "Job Placed At", "Executed At", "Age (min)", "Action"].map(h => (
                     <th key={h} style={{ padding: "0.5rem 0.875rem", textAlign: "left", fontWeight: 600, color: "#475569", whiteSpace: "nowrap" }}>
                       {h}
                     </th>
@@ -149,20 +204,21 @@ export default function WebhookFailurePanel({ data }: Props) {
                     <td style={{ padding: "0.45rem 0.875rem", color: "#475569", whiteSpace: "nowrap" }}>
                       {fmtTs(row.executed_at)}
                     </td>
-                    <td style={{ padding: "0.45rem 0.875rem", color: row.minutes_since_execution !== null && row.minutes_since_execution > 60 ? "#dc2626" : "#475569", fontWeight: row.minutes_since_execution !== null && row.minutes_since_execution > 60 ? 600 : 400 }}>
+                    <td style={{
+                      padding: "0.45rem 0.875rem",
+                      color: row.minutes_since_execution !== null && row.minutes_since_execution > 60 ? "#dc2626" : "#475569",
+                      fontWeight: row.minutes_since_execution !== null && row.minutes_since_execution > 60 ? 600 : 400,
+                    }}>
                       {row.minutes_since_execution ?? "—"}
                     </td>
                     <td style={{ padding: "0.45rem 0.875rem" }}>
-                      <span style={{
-                        fontSize:     "0.65rem",
-                        background:   "#fee2e2",
-                        color:        "#dc2626",
-                        borderRadius: 4,
-                        padding:      "1px 6px",
-                        fontWeight:   600,
-                      }}>
-                        no webhook
-                      </span>
+                      {row.contact_id ? (
+                        <RowActions contactId={row.contact_id} onDone={onRefresh ?? (() => {})} />
+                      ) : (
+                        <span style={{ fontSize: "0.65rem", background: "#fee2e2", color: "#dc2626", borderRadius: 4, padding: "1px 6px", fontWeight: 600 }}>
+                          no webhook
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}

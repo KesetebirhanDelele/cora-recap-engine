@@ -62,7 +62,7 @@ export default function QueueClient() {
       )}
 
       {/* 2 — Webhook delivery failures */}
-      {webhooks && <WebhookFailurePanel data={webhooks} />}
+      {webhooks && <WebhookFailurePanel data={webhooks} onRefresh={load} />}
 
       {/* 3 — Stuck jobs + expired leases */}
       {queue && (
