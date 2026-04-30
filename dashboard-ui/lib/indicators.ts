@@ -79,10 +79,10 @@ type ColorType = "positive" | "negative" | "neutral" | "config";
 
 interface CardMetricConfig {
   key: keyof Omit<CardMetricsResponse, "computed_at">;
-  format: (v: number | string | null | undefined, v2?: number | string | null | undefined) => string;
+  format: (v: number | string | null | undefined, v2?: number | string | null | undefined, v3?: number | string | null | undefined) => string;
   colorType: ColorType;
-  /** Optional second metric appended to the label, e.g. pickup rate alongside call count. */
-  secondaryKey?: keyof Omit<CardMetricsResponse, "computed_at">;
+  secondaryKey?:  keyof Omit<CardMetricsResponse, "computed_at">;
+  tertiaryKey?:   keyof Omit<CardMetricsResponse, "computed_at">;
 }
 
 const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
@@ -96,7 +96,7 @@ const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
   "/voice-performance-v2": { key: "calls_today", secondaryKey: "pickup_rate", format: (v, v2) => `${v ?? "—"} calls · ${pct(v2 as number | null)} pickup`, colorType: "positive" },
   "/engagement-analysis": { key: "meaningful_engagement_rate", format: (v) => `${pct(v as number | null)} engagement`,  colorType: "positive" },
   "/conversion-funnel":  { key: "urgent_leads_count",         format: (v) => `${v ?? "—"} urgent leads`,              colorType: "negative" },
-  "/lead-lifecycle":     { key: "active_leads", secondaryKey: "stale_leads", format: (v, v2) => `${v ?? "—"} active · ${v2 ?? "—"} stale`, colorType: "neutral" },
+  "/lead-lifecycle":     { key: "active_leads", secondaryKey: "stale_leads", tertiaryKey: "finalized_today", format: (v, v2, v3) => `${v ?? "—"} active · ${v2 ?? "—"} stale · ${v3 ?? "—"} finalized`, colorType: "neutral" },
   "/campaign-overview":  { key: "active_leads",               format: (v) => `${fmtK(v as number | null)} leads`,      colorType: "neutral"  },
   "/crm-health":         { key: "sync_success_rate",          format: (v) => `${pct(v as number | null)} sync`,        colorType: "positive" },
   "/system-anomalies":   { key: "anomaly_count",              format: (v) => `${v ?? "—"} anomalies`,     colorType: "negative" },
@@ -117,12 +117,14 @@ export function computeIndicator(
 
   const { value, previous_value } = metric;
 
-  // Secondary metric value (optional — used for combined labels like "47 calls · 68% pickup")
   const secondaryValue = config.secondaryKey
     ? cardMetrics[config.secondaryKey]?.value
     : undefined;
+  const tertiaryValue = config.tertiaryKey
+    ? cardMetrics[config.tertiaryKey]?.value
+    : undefined;
 
-  const text = config.format(value, secondaryValue);
+  const text = config.format(value, secondaryValue, tertiaryValue);
 
   let trend: TrendArrow = "→";
   let color: IndicatorColor = "default";
