@@ -5,6 +5,11 @@ outcome="voicemail" — VM was left; advance tier or finalize if tier 2.
 outcome="no_answer" — call did not connect; retry same tier, or close if
                       lead_state.last_call_status was already a no-answer
                       status (consecutive failure signals terminal).
+
+recover_missed_webhook() — operator provides the Synthflow call_id; fetches
+                           the call from Synthflow API and re-runs the full
+                           process_call_event pipeline exactly as if the
+                           webhook had been delivered.
 """
 from __future__ import annotations
 
@@ -328,3 +333,104 @@ def _write_audit(
         context_json=context,
     ))
     return audit_id
+
+
+# ── Missed-webhook recovery via Synthflow call fetch ─────────────────────────
+
+class WebhookRecoveryError(Exception):
+    pass
+
+
+def recover_missed_webhook(
+    session: Session,
+    contact_id: str,
+    synthflow_call_id: str,
+    operator_id: str,
+    settings: Settings,
+) -> dict[str, Any]:
+    """
+    Fetch a call from the Synthflow API by call_id and replay the full
+    process_call_event pipeline, exactly as if the webhook had been delivered.
+
+    Idempotent: if call_events already has this call_id the job is still
+    scheduled; process_call_event will skip the DB insert via dedupe_key.
+    """
+    from app.adapters.synthflow import SynthflowClient, SynthflowError
+    from app.worker.scheduler import enqueue_now
+
+    # Idempotency guard — abort if a process_call_event job already exists for
+    # this call_id and is still active, to avoid double-processing.
+    existing_job = session.execute(
+        text(
+            "SELECT id FROM scheduled_jobs"
+            " WHERE job_type = 'process_call_event'"
+            "   AND entity_id = :call_id"
+            "   AND status IN ('pending','claimed','running')"
+            " LIMIT 1"
+        ),
+        {"call_id": synthflow_call_id},
+    ).fetchone()
+    if existing_job:
+        raise StaleLeadConflict(
+            f"A process_call_event job for call {synthflow_call_id} is already active"
+        )
+
+    # Fetch call data from Synthflow
+    try:
+        sf = SynthflowClient(settings=settings)
+        call_data = sf.get_call(synthflow_call_id)
+    except SynthflowError as exc:
+        raise WebhookRecoveryError(f"Synthflow fetch failed: {exc}") from exc
+
+    call_status = (call_data.get("status") or "").lower()
+    if not call_status:
+        raise WebhookRecoveryError(
+            f"Synthflow returned no status for call {synthflow_call_id}"
+        )
+
+    # Build a normalized payload that process_call_event can consume.
+    # Mirror the key normalizations from normalize_synthflow_payload() in webhooks.py.
+    agent_raw = (call_data.get("Agent") or call_data.get("agent") or "").lower()
+    if "cold" in agent_raw:
+        campaign_name = "Cold Lead"
+    elif "inbound" in agent_raw:
+        campaign_name = "Inbound"
+    else:
+        campaign_name = "New Lead"
+
+    normalized: dict[str, Any] = {
+        **call_data,
+        "call_id":       synthflow_call_id,
+        "contact_id":    contact_id,
+        "campaign_name": campaign_name,
+        "direction":     call_data.get("direction", "outbound"),
+        "duration_seconds": call_data.get("duration_seconds") or call_data.get("duration"),
+        "source":        "manual_webhook_recovery",
+    }
+
+    # Schedule process_call_event — the worker runs the full pipeline
+    job = schedule_job(
+        session=session,
+        job_type="process_call_event",
+        entity_type="call",
+        entity_id=synthflow_call_id,
+        run_at=datetime.now(timezone.utc),
+        payload=normalized,
+    )
+
+    audit_id = _write_audit(session, contact_id, operator_id, "manual_webhook_recovery", {
+        "synthflow_call_id": synthflow_call_id,
+        "call_status":       call_status,
+        "campaign_name":     campaign_name,
+    })
+    logger.info(
+        "webhook_recovery | contact_id=%s call_id=%s status=%s job_id=%s",
+        contact_id, synthflow_call_id, call_status, job.id if hasattr(job, "id") else job,
+    )
+    return {
+        "action":            "recovery_scheduled",
+        "synthflow_call_id": synthflow_call_id,
+        "call_status":       call_status,
+        "campaign_name":     campaign_name,
+        "audit_log_id":      audit_id,
+    }

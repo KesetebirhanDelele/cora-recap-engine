@@ -388,6 +388,13 @@ export async function advanceStaleLeadAction(
   return post("/dashboard/actions/advance-stale-lead", { contact_id: contactId, outcome });
 }
 
+export async function recoverCallWebhook(
+  contactId: string,
+  callId: string,
+): Promise<{ status: string; action: string; synthflow_call_id: string; call_status: string; campaign_name: string }> {
+  return post("/dashboard/actions/recover-call-webhook", { contact_id: contactId, call_id: callId });
+}
+
 export async function fetchLeadLifecycle(options?: {
   status?:   "all" | "active" | "stale" | "finalized" | "vm" | "dnc";
   campaign?: string;

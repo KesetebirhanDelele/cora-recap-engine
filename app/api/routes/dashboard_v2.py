@@ -785,6 +785,44 @@ def advance_stale_lead(
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+class RecoverCallWebhookRequest(BaseModel):
+    contact_id: str
+    call_id: str  # Synthflow call_id from the Logs page
+
+
+@router.post("/actions/recover-call-webhook")
+def recover_call_webhook(
+    body: RecoverCallWebhookRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Fetch a call from Synthflow by call_id and replay the full processing pipeline.
+
+    Use when a completed call's webhook was never delivered: operator looks up
+    the Synthflow call_id in the Logs page and submits it here.  The call data
+    is fetched from the Synthflow API and a process_call_event job is scheduled,
+    running AI analysis and GHL updates exactly as if the webhook had arrived.
+    """
+    from app.config import get_settings
+    from app.services.stale_recovery import (
+        StaleLeadConflict, WebhookRecoveryError, recover_missed_webhook,
+    )
+
+    operator_id = auth["operator_id"]
+    settings = get_settings()
+
+    try:
+        result = recover_missed_webhook(
+            session, body.contact_id, body.call_id, operator_id, settings
+        )
+        session.commit()
+        return {"status": "ok", **result}
+    except StaleLeadConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except WebhookRecoveryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 class AcknowledgeAlertRequest(BaseModel):
     alert_id: str
     note: str = ""

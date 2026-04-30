@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { WebhookFailuresResponse } from "@/types";
-import { advanceStaleLeadAction } from "@/lib/api";
+import { advanceStaleLeadAction, recoverCallWebhook } from "@/lib/api";
 
 function pctColor(pct: number | null): string {
   if (pct === null) return "#94a3b8";
@@ -29,8 +29,10 @@ function fmtDate(iso: string): string {
 }
 
 function RowActions({ contactId, onDone }: { contactId: string; onDone: () => void }) {
-  const [loading, setLoading] = useState<"voicemail" | "no_answer" | null>(null);
-  const [result, setResult]   = useState<string | null>(null);
+  const [loading, setLoading]       = useState<"voicemail" | "no_answer" | "recover" | null>(null);
+  const [result, setResult]         = useState<string | null>(null);
+  const [showCallInput, setShowCallInput] = useState(false);
+  const [callId, setCallId]         = useState("");
 
   async function act(outcome: "voicemail" | "no_answer") {
     setLoading(outcome);
@@ -53,6 +55,23 @@ function RowActions({ contactId, onDone }: { contactId: string; onDone: () => vo
     }
   }
 
+  async function recover() {
+    const trimmed = callId.trim();
+    if (!trimmed) return;
+    setLoading("recover");
+    setResult(null);
+    try {
+      await recoverCallWebhook(contactId, trimmed);
+      setResult("Processing…");
+      setTimeout(onDone, 1500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult(`Error: ${msg}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
   if (result) {
     return (
       <span style={{
@@ -64,8 +83,10 @@ function RowActions({ contactId, onDone }: { contactId: string; onDone: () => vo
     );
   }
 
+  const busy = loading !== null;
+
   return (
-    <div style={{ display: "flex", gap: "0.3rem", alignItems: "center" }}>
+    <div style={{ display: "flex", gap: "0.3rem", alignItems: "center", flexWrap: "wrap" }}>
       <span style={{
         fontSize: "0.65rem", background: "#fee2e2", color: "#dc2626",
         borderRadius: 4, padding: "1px 6px", fontWeight: 600,
@@ -73,31 +94,87 @@ function RowActions({ contactId, onDone }: { contactId: string; onDone: () => vo
         no webhook
       </span>
       <button
-        disabled={loading !== null}
+        disabled={busy}
         onClick={() => act("voicemail")}
         title="VM was left — advance tier"
         style={{
           fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
           border: "1px solid #16a34a",
           background: loading === "voicemail" ? "#f0fdf4" : "#fff",
-          color: "#16a34a", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600,
+          color: "#16a34a", cursor: busy ? "not-allowed" : "pointer", fontWeight: 600,
         }}
       >
         {loading === "voicemail" ? "…" : "VM Left"}
       </button>
       <button
-        disabled={loading !== null}
+        disabled={busy}
         onClick={() => act("no_answer")}
         title="No answer — retry or close"
         style={{
           fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
           border: "1px solid #f97316",
           background: loading === "no_answer" ? "#fff7ed" : "#fff",
-          color: "#f97316", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600,
+          color: "#f97316", cursor: busy ? "not-allowed" : "pointer", fontWeight: 600,
         }}
       >
         {loading === "no_answer" ? "…" : "No Answer"}
       </button>
+      {!showCallInput ? (
+        <button
+          disabled={busy}
+          onClick={() => setShowCallInput(true)}
+          title="Call completed — fetch from Synthflow and process"
+          style={{
+            fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
+            border: "1px solid #6366f1",
+            background: "#fff",
+            color: "#6366f1", cursor: busy ? "not-allowed" : "pointer", fontWeight: 600,
+          }}
+        >
+          Call Completed
+        </button>
+      ) : (
+        <span style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
+          <input
+            autoFocus
+            value={callId}
+            onChange={e => setCallId(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && recover()}
+            placeholder="Synthflow Call ID"
+            disabled={loading === "recover"}
+            style={{
+              fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4,
+              border: "1px solid #6366f1", width: 160, outline: "none",
+              color: "#0f172a",
+            }}
+          />
+          <button
+            disabled={!callId.trim() || loading === "recover"}
+            onClick={recover}
+            style={{
+              fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
+              border: "1px solid #6366f1",
+              background: loading === "recover" ? "#eef2ff" : "#6366f1",
+              color: loading === "recover" ? "#6366f1" : "#fff",
+              cursor: !callId.trim() || loading === "recover" ? "not-allowed" : "pointer",
+              fontWeight: 600,
+            }}
+          >
+            {loading === "recover" ? "…" : "Fetch →"}
+          </button>
+          <button
+            disabled={loading === "recover"}
+            onClick={() => { setShowCallInput(false); setCallId(""); }}
+            style={{
+              fontSize: "0.65rem", padding: "2px 5px", borderRadius: 4,
+              border: "1px solid #cbd5e1", background: "#fff",
+              color: "#64748b", cursor: "pointer",
+            }}
+          >
+            ✕
+          </button>
+        </span>
+      )}
     </div>
   );
 }
