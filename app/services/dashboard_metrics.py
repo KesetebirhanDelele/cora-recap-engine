@@ -1363,13 +1363,26 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "             AND sj.status IN ('pending', 'claimed', 'running'))",
         {"s": w7d_start},
     ) or 0
-    stale_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state ls"
-        " WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))"
-        " AND ls.do_not_call IS NOT TRUE"
-        " AND NOT EXISTS (SELECT 1 FROM scheduled_jobs sj WHERE sj.entity_id = ls.contact_id"
-        "                 AND sj.status IN ('pending', 'claimed', 'running'))"
-    ) or 0
+    stale_leads = _scalar("""
+        WITH last_activity AS (
+            SELECT DISTINCT ON (entity_id)
+                entity_id, updated_at AS last_at
+            FROM scheduled_jobs
+            WHERE status NOT IN ('pending', 'claimed', 'running')
+            ORDER BY entity_id, updated_at DESC
+        )
+        SELECT COUNT(*) FROM lead_state ls
+        LEFT JOIN last_activity la ON la.entity_id = ls.contact_id
+        WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
+          AND ls.do_not_call IS NOT TRUE
+          AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3')
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj
+              WHERE sj.entity_id = ls.contact_id
+                AND sj.status IN ('pending', 'claimed', 'running')
+          )
+          AND (la.last_at IS NULL OR la.last_at < NOW() - INTERVAL '2 hours')
+    """) or 0
 
     # ── in_vm_sequence ────────────────────────────────────────────────────────
     in_vm_sequence = _scalar("""

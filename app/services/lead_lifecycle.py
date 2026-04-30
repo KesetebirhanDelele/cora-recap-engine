@@ -21,6 +21,13 @@ WITH pending AS (
     FROM scheduled_jobs
     WHERE status IN ('pending', 'claimed', 'running')
     GROUP BY entity_id
+),
+last_activity AS (
+    SELECT DISTINCT ON (entity_id)
+        entity_id, updated_at AS last_at
+    FROM scheduled_jobs
+    WHERE status NOT IN ('pending', 'claimed', 'running')
+    ORDER BY entity_id, updated_at DESC
 )
 SELECT
     COUNT(*)
@@ -32,7 +39,9 @@ SELECT
         FILTER (WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
                   AND ls.do_not_call IS NOT TRUE
                   AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3')
-                  AND p.entity_id IS NULL)              AS stale,
+                  AND p.entity_id IS NULL
+                  AND (la.last_at IS NULL
+                       OR la.last_at < NOW() - INTERVAL '2 hours')) AS stale,
     COUNT(*)
         FILTER (WHERE ls.ai_campaign_value IS NOT NULL
                   AND ls.ai_campaign_value != '3'
@@ -54,7 +63,8 @@ SELECT
         END
     ) AS numeric), 1)                                   AS avg_days_to_close
 FROM lead_state ls
-LEFT JOIN pending p ON p.entity_id = ls.contact_id
+LEFT JOIN pending      p  ON p.entity_id  = ls.contact_id
+LEFT JOIN last_activity la ON la.entity_id = ls.contact_id
 LEFT JOIN LATERAL (
     SELECT MIN(COALESCE(ce.call_started_at, ce.created_at)) AS first_contact
     FROM call_events ce
@@ -70,6 +80,13 @@ WITH has_pending AS (
     FROM scheduled_jobs
     WHERE status IN ('pending', 'claimed', 'running')
     GROUP BY entity_id
+),
+last_activity AS (
+    SELECT DISTINCT ON (entity_id)
+        entity_id, updated_at AS last_at
+    FROM scheduled_jobs
+    WHERE status NOT IN ('pending', 'claimed', 'running')
+    ORDER BY entity_id, updated_at DESC
 ),
 call_agg AS (
     SELECT
@@ -160,11 +177,12 @@ LEFT JOIN msg_agg        ma  ON ma.contact_id  = ls.contact_id
 LEFT JOIN initial_campaign ic ON ic.contact_id = ls.contact_id
 LEFT JOIN switch_count   sc  ON sc.contact_id  = ls.contact_id
 LEFT JOIN has_pending    hp  ON hp.entity_id   = ls.contact_id
+LEFT JOIN last_activity  la  ON la.entity_id   = ls.contact_id
 LEFT JOIN next_job       nj  ON nj.contact_id  = ls.contact_id
 LEFT JOIN finalization   fin ON fin.contact_id = ls.contact_id
 WHERE (:status_filter = 'all'
        OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NOT NULL)
-       OR (:status_filter = 'stale'     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NULL)
+       OR (:status_filter = 'stale'     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NULL AND (la.last_at IS NULL OR la.last_at < NOW() - INTERVAL '2 hours'))
        OR (:status_filter = 'finalized' AND (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE OR ls.ai_campaign_value = '3'))
        OR (:status_filter = 'vm'        AND ls.ai_campaign_value IS NOT NULL AND ls.ai_campaign_value != '3')
        OR (:status_filter = 'dnc'       AND ls.do_not_call IS TRUE))
@@ -180,13 +198,21 @@ WITH has_pending AS (
     FROM scheduled_jobs
     WHERE status IN ('pending', 'claimed', 'running')
     GROUP BY entity_id
+),
+last_activity AS (
+    SELECT DISTINCT ON (entity_id)
+        entity_id, updated_at AS last_at
+    FROM scheduled_jobs
+    WHERE status NOT IN ('pending', 'claimed', 'running')
+    ORDER BY entity_id, updated_at DESC
 )
 SELECT COUNT(*)
 FROM lead_state ls
-LEFT JOIN has_pending hp ON hp.entity_id = ls.contact_id
+LEFT JOIN has_pending   hp ON hp.entity_id = ls.contact_id
+LEFT JOIN last_activity la ON la.entity_id = ls.contact_id
 WHERE (:status_filter = 'all'
        OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NOT NULL)
-       OR (:status_filter = 'stale'     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NULL)
+       OR (:status_filter = 'stale'     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NULL AND (la.last_at IS NULL OR la.last_at < NOW() - INTERVAL '2 hours'))
        OR (:status_filter = 'finalized' AND (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE OR ls.ai_campaign_value = '3'))
        OR (:status_filter = 'vm'        AND ls.ai_campaign_value IS NOT NULL AND ls.ai_campaign_value != '3')
        OR (:status_filter = 'dnc'       AND ls.do_not_call IS TRUE))
