@@ -1799,6 +1799,18 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
                 AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
                 AND ce.created_at <= sj.updated_at + INTERVAL '7 days'
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM lead_state ls
+              WHERE ls.contact_id = sj.payload_json->>'contact_id'
+                AND ls.status IN ('terminal', 'closed')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj2
+              WHERE sj2.entity_id = sj.payload_json->>'contact_id'
+                AND sj2.job_type  = 'launch_outbound_call'
+                AND sj2.id       != sj.id
+                AND sj2.status   IN ('pending', 'claimed', 'running')
+          )
         ORDER BY sj.updated_at DESC
         LIMIT 200
     """)).fetchall()
