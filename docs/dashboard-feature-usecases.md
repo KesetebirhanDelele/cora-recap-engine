@@ -143,20 +143,43 @@ Contacts or entities that have accumulated 2 or more failures in the last 7 days
 
 ## Queue Health (`/queue`)
 
-**Question answered:** Are there jobs stuck in the pipeline that will never run?
+**Question answered:** Are there jobs stuck in the pipeline that will never run? Did any outbound calls complete without a Synthflow webhook arriving?
 
-Shows two lists:
+### Stuck Jobs and Expired Leases
+
 - **Stuck jobs** — jobs whose `run_at` time has passed but that have not been claimed by a worker. Fields: job_id, job_type, contact_id, run_at, lag in seconds. If the row has a `contact_id`, a **Cancel jobs** button appears — clicking it calls `POST /dashboard/actions/cancel` for that contact and re-fetches the page.
 - **Expired leases** — jobs that were claimed by a worker but whose lease expired before completion (worker crashed or timed out). Fields: job_id, job_type, worker_id, lease age in seconds. No action button — expired leases are auto-recovered by the worker's `recover_expired_claims` routine; a note to this effect is displayed.
 
 The home page badge on this card shows `stuck_job_count + expired_lease_count`.
 
-The page fetches data client-side on mount and automatically re-fetches after a successful cancel action.
+### Webhook Delivery — 24h panel
+
+**Question answered:** Did any outbound calls complete without a Synthflow webhook arriving?
+
+This panel detects leads where `launch_outbound_call` completed in the last 24 hours but no `call_events` row exists and no `process_call_event` job is pending. This happens when Synthflow's HTTP webhook step fails transiently (network drop, burst concurrency, Synthflow reliability issue). Without recovery, these leads are stuck indefinitely — no next call scheduled, no AI analysis run, no GHL updates written.
+
+The panel automatically excludes resolved leads (status `terminal` or `closed`) and leads that already have an active pending job. If a row disappears after you click an action button, that is expected — the lead is now either terminal or has a new job scheduled.
+
+Each row shows: phone number, lead state status, VM tier, time since last call attempt, and the last job_type that ran. Three inline action buttons appear:
+
+| Button | When to use | What it does |
+|---|---|---|
+| **VM Left** | Synthflow Logs shows a voicemail was left for this contact | Calls `POST /dashboard/actions/advance-stale-lead` with `outcome=voicemail`. Advances the lead's VM tier (or finalizes the campaign at tier 2) and schedules the next outbound call at the appropriate delay. |
+| **No Answer** | Synthflow Logs shows the call did not connect (rang out, busy, or disconnected immediately) | Calls `POST /dashboard/actions/advance-stale-lead` with `outcome=no_answer`. Schedules a retry call. If this is the second consecutive no-answer for the lead, closes the lead instead. |
+| **Call Completed** | Synthflow Logs shows the call completed with a transcript (conversation happened but the webhook never reached the API) | Expands an inline call_id input field. Get the Synthflow call_id from the Synthflow dashboard Logs page (this is the Synthflow-assigned call ID, not the internal Cora job_id). Paste it in and press Enter or click "Fetch →". Calls `POST /dashboard/actions/recover-call-webhook`, which fetches the call from the Synthflow API and schedules a `process_call_event` job. The full pipeline runs: AI classification, intent detection, GHL field updates — identical to what would have happened if the original webhook had arrived. |
+
+**Dashboard token required:** all three action buttons require the operator token to be set in Settings (`/settings` → Dashboard Token card). Without it, requests return 403.
+
+**For incidents older than 24 hours:** the panel only covers the last 24 hours. Use the detection SQL query and bulk recovery scripts documented in `directives/spec/dashboard/11_runbook.md` → "Leads stuck mid-voicemail sequence".
+
+The page fetches data client-side on mount and automatically re-fetches after a successful cancel or advance action.
 
 **Use cases:**
-- After a worker restart: check whether any leases are in an expired state and whether they have been auto-recovered.
-- When queue lag is elevated (visible on the status bar): open Queue Health to see which specific jobs are causing the lag.
-- Periodic audit: confirm no jobs are silently stuck behind a dead worker.
+- **Daily morning check** — open Queue Health to confirm no calls from the previous day are waiting for webhook recovery.
+- After a known Synthflow outage or burst-concurrency event — check the Webhook Delivery panel first; it will surface all affected leads in one view.
+- After a worker restart — check whether any leases are in an expired state and whether they have been auto-recovered.
+- When queue lag is elevated (visible on the status bar) — open Queue Health to see which specific jobs are causing the lag.
+- Periodic audit — confirm no jobs are silently stuck behind a dead worker.
 - Manually cancel a stuck contact whose jobs will never clear (e.g. incorrect enrollment, terminal state reached outside the pipeline).
 
 ---
@@ -165,21 +188,29 @@ The page fetches data client-side on mount and automatically re-fetches after a 
 
 **Question answered:** What thresholds has the system crossed, and have I acknowledged them?
 
-Alerts are generated automatically by the alerting service when metrics exceed configured thresholds. Five alert types exist:
+Alerts are generated automatically by the alerting service when metrics exceed configured thresholds. Six alert types exist:
 
-| Type | Trigger |
-|---|---|
-| `queue_lag_exceeded` | Queue lag exceeds `ALERT_QUEUE_LAG_THRESHOLD_SECONDS` (default 300s) |
-| `error_rate_spike` | Error rate exceeds `ALERT_ERROR_RATE_THRESHOLD` (default 20%) |
-| `exception_spike` | Open exception count exceeds `ALERT_EXCEPTION_COUNT_THRESHOLD` (default 10) |
-| `worker_offline` | No active workers detected |
-| `ghl_auth_failure` | GHL authentication failing |
+| Type | Severity | Trigger |
+|---|---|---|
+| `queue_lag_exceeded` | critical | Queue lag exceeds `ALERT_QUEUE_LAG_THRESHOLD_SECONDS` (default 300s) |
+| `error_rate_spike` | warning | Error rate exceeds `ALERT_ERROR_RATE_THRESHOLD` (default 20%) |
+| `exception_spike` | warning | Open exception count exceeds `ALERT_EXCEPTION_COUNT_THRESHOLD` (default 10) |
+| `worker_offline` | critical | No active workers detected |
+| `ghl_auth_failure` | critical | GHL authentication failing (open `ghl_auth_failed` exception) |
+| `webhook_drop_detected` | warning | A 10-minute delivery bucket in the last 2 hours has < 80% webhook delivery rate with ≥ 5 calls launched (excludes the most recent 20 minutes to allow in-flight webhooks to arrive) |
 
 Each alert record has a severity (critical / warning), a status (active / resolved / acknowledged), the current metric value, the threshold it crossed, and the alert message. An email is sent when an alert is first triggered.
 
 The page has three tabs: **Active**, **Resolved**, **Acknowledged**.
 
 Active alert rows show an **Acknowledge** button. Clicking it calls `POST /dashboard/actions/acknowledge-alert`, immediately removes the row from the Active tab (optimistic UI), and moves it to the Acknowledged tab. This requires the Dashboard Token to be set in Settings (see `/settings`).
+
+**`webhook_drop_detected` response procedure:**
+1. Open Queue Health (`/queue`) → Webhook Delivery — 24h panel.
+2. For each row, check the Synthflow Logs page to determine what happened on that call.
+3. Use the appropriate action button (VM Left / No Answer / Call Completed) to recover each affected lead.
+4. Once all affected leads are recovered, the alert resolves itself on the next metrics cycle (up to 60 seconds) because the 10-minute bucket now shows ≥ 80% delivery (operator actions count as delivered).
+5. If the alert re-fires after resolution: wait ~30 minutes for the bucket to fall outside the 2-hour lookback window. It will not re-fire once the bucket ages out.
 
 **Use cases:**
 - **Active tab** — the queue to action. Critical alerts (red) require immediate attention. Warning alerts (amber) should be investigated. Use Acknowledge to move a known incident off this list while it is being worked.
