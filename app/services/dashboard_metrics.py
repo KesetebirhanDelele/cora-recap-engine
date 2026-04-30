@@ -1346,18 +1346,29 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         {"a": last_week_start, "b": last_week_end},
     ))
 
-    # ── active_leads ──────────────────────────────────────────────────────────
+    # ── active_leads (has pending job) + stale_leads (no pending job) ────────
     active_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state"
-        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
-        " AND do_not_call IS NOT TRUE"
+        "SELECT COUNT(*) FROM lead_state ls"
+        " WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))"
+        " AND ls.do_not_call IS NOT TRUE"
+        " AND EXISTS (SELECT 1 FROM scheduled_jobs sj WHERE sj.entity_id = ls.contact_id"
+        "             AND sj.status IN ('pending', 'claimed', 'running'))"
     ) or 0
     prev_active_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state"
-        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
-        " AND do_not_call IS NOT TRUE"
-        " AND created_at >= :s",
+        "SELECT COUNT(*) FROM lead_state ls"
+        " WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))"
+        " AND ls.do_not_call IS NOT TRUE"
+        " AND ls.created_at >= :s"
+        " AND EXISTS (SELECT 1 FROM scheduled_jobs sj WHERE sj.entity_id = ls.contact_id"
+        "             AND sj.status IN ('pending', 'claimed', 'running'))",
         {"s": w7d_start},
+    ) or 0
+    stale_leads = _scalar(
+        "SELECT COUNT(*) FROM lead_state ls"
+        " WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))"
+        " AND ls.do_not_call IS NOT TRUE"
+        " AND NOT EXISTS (SELECT 1 FROM scheduled_jobs sj WHERE sj.entity_id = ls.contact_id"
+        "                 AND sj.status IN ('pending', 'claimed', 'running'))"
     ) or 0
 
     # ── in_vm_sequence ────────────────────────────────────────────────────────
@@ -1454,6 +1465,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
         "booking_rate":               _pt(book_curr,               book_prev),
         "active_leads":               _pt(active_leads,            prev_active_leads),
+        "stale_leads":                _pt(stale_leads,             None),
         "in_vm_sequence":             _pt(in_vm_sequence,          prev_in_vm_sequence),
         "finalized_today":            _pt(finalized_today,         finalized_yesterday),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),

@@ -45,6 +45,7 @@ function statusBadge(row: LeadLifecycleRow): { label: string; color: string } {
   if (row.do_not_call) return { label: "DNC", color: "#ef4444" };
   if (row.status === "closed" || row.status === "terminal") return { label: "Finalized", color: "#6b7280" };
   if (row.vm_tier === "3") return { label: "Finalized", color: "#6b7280" };
+  if (!row.next_job_type) return { label: "Stale", color: "#f97316" };
   if (row.vm_tier !== null) return { label: "VM Sequence", color: "#f59e0b" };
   return { label: "Active", color: "#16a34a" };
 }
@@ -91,9 +92,10 @@ const VALUE_STYLE: React.CSSProperties = {
 function SummaryStrip({ summary }: { summary: LeadLifecycleSummary }) {
   const stats = [
     { label: "Active",           value: summary.active,            color: "#16a34a" },
+    { label: "Stale",            value: summary.stale,             color: "#f97316" },
+    { label: "Finalized",        value: summary.finalized,         color: "#6b7280" },
     { label: "In VM Sequence",   value: summary.in_vm_sequence,    color: "#f59e0b" },
     { label: "Campaign Switched",value: summary.campaign_switched, color: "#8b5cf6" },
-    { label: "Finalized",        value: summary.finalized,         color: "#6b7280" },
     { label: "Avg Days to Close",
       value: summary.avg_days_to_close != null ? `${summary.avg_days_to_close}d` : "—",
       color: "#0ea5e9" },
@@ -243,7 +245,7 @@ export default function LeadLifecyclePage() {
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [statusFilter, setStatusFilter]   = useState<"all" | "active" | "finalized" | "vm" | "dnc">("all");
+  const [statusFilter, setStatusFilter]   = useState<"all" | "active" | "stale" | "finalized" | "vm" | "dnc">("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
   const [offset, setOffset]     = useState(0);
   const [drillDown, setDrillDown] = useState<{ contactId: string; phone: string } | null>(null);
@@ -390,9 +392,10 @@ export default function LeadLifecyclePage() {
                 style={{ fontSize: "0.78rem", padding: "3px 6px", borderRadius: 4, border: "1px solid #e2e8f0" }}
               >
                 <option value="all">All</option>
-                <option value="active">Active</option>
-                <option value="vm">In VM Sequence</option>
+                <option value="active">Active (has pending job)</option>
+                <option value="stale">Stale (no pending job)</option>
                 <option value="finalized">Finalized</option>
+                <option value="vm">In VM Sequence</option>
                 <option value="dnc">Do Not Call</option>
               </select>
               <label style={{ fontSize: "0.78rem", color: "#64748b" }}>Campaign</label>

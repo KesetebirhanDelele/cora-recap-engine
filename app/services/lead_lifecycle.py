@@ -16,12 +16,23 @@ from sqlalchemy.orm import Session
 # ── Summary counts ────────────────────────────────────────────────────────────
 
 _SUMMARY_SQL = """
+WITH pending AS (
+    SELECT entity_id
+    FROM scheduled_jobs
+    WHERE status IN ('pending', 'claimed', 'running')
+    GROUP BY entity_id
+)
 SELECT
     COUNT(*)
         FILTER (WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
                   AND ls.do_not_call IS NOT TRUE
-                  AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3'))
-                                                        AS active,
+                  AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3')
+                  AND p.entity_id IS NOT NULL)          AS active,
+    COUNT(*)
+        FILTER (WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
+                  AND ls.do_not_call IS NOT TRUE
+                  AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3')
+                  AND p.entity_id IS NULL)              AS stale,
     COUNT(*)
         FILTER (WHERE ls.ai_campaign_value IS NOT NULL
                   AND ls.ai_campaign_value != '3'
@@ -43,6 +54,7 @@ SELECT
         END
     ) AS numeric), 1)                                   AS avg_days_to_close
 FROM lead_state ls
+LEFT JOIN pending p ON p.entity_id = ls.contact_id
 LEFT JOIN LATERAL (
     SELECT MIN(COALESCE(ce.call_started_at, ce.created_at)) AS first_contact
     FROM call_events ce
@@ -53,7 +65,13 @@ LEFT JOIN LATERAL (
 # ── Per-lead rows ─────────────────────────────────────────────────────────────
 
 _ROWS_SQL = """
-WITH call_agg AS (
+WITH has_pending AS (
+    SELECT entity_id
+    FROM scheduled_jobs
+    WHERE status IN ('pending', 'claimed', 'running')
+    GROUP BY entity_id
+),
+call_agg AS (
     SELECT
         ls.contact_id                                                       AS contact_id,
         MIN(COALESCE(ce.call_started_at, ce.created_at))                   AS first_contact_at,
@@ -141,10 +159,12 @@ LEFT JOIN call_agg       ca  ON ca.contact_id  = ls.contact_id
 LEFT JOIN msg_agg        ma  ON ma.contact_id  = ls.contact_id
 LEFT JOIN initial_campaign ic ON ic.contact_id = ls.contact_id
 LEFT JOIN switch_count   sc  ON sc.contact_id  = ls.contact_id
+LEFT JOIN has_pending    hp  ON hp.entity_id   = ls.contact_id
 LEFT JOIN next_job       nj  ON nj.contact_id  = ls.contact_id
 LEFT JOIN finalization   fin ON fin.contact_id = ls.contact_id
 WHERE (:status_filter = 'all'
-       OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3'))
+       OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NOT NULL)
+       OR (:status_filter = 'stale'     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NULL)
        OR (:status_filter = 'finalized' AND (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE OR ls.ai_campaign_value = '3'))
        OR (:status_filter = 'vm'        AND ls.ai_campaign_value IS NOT NULL AND ls.ai_campaign_value != '3')
        OR (:status_filter = 'dnc'       AND ls.do_not_call IS TRUE))
@@ -155,10 +175,18 @@ OFFSET :offset;
 """
 
 _COUNT_SQL = """
+WITH has_pending AS (
+    SELECT entity_id
+    FROM scheduled_jobs
+    WHERE status IN ('pending', 'claimed', 'running')
+    GROUP BY entity_id
+)
 SELECT COUNT(*)
 FROM lead_state ls
+LEFT JOIN has_pending hp ON hp.entity_id = ls.contact_id
 WHERE (:status_filter = 'all'
-       OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3'))
+       OR (:status_filter = 'active'    AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NOT NULL)
+       OR (:status_filter = 'stale'     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal')) AND ls.do_not_call IS NOT TRUE AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3') AND hp.entity_id IS NULL)
        OR (:status_filter = 'finalized' AND (ls.status IN ('closed', 'terminal') OR ls.do_not_call IS TRUE OR ls.ai_campaign_value = '3'))
        OR (:status_filter = 'vm'        AND ls.ai_campaign_value IS NOT NULL AND ls.ai_campaign_value != '3')
        OR (:status_filter = 'dnc'       AND ls.do_not_call IS TRUE))
@@ -177,10 +205,11 @@ def get_lead_lifecycle(
     summary_row = session.execute(text(_SUMMARY_SQL)).fetchone()
     summary = {
         "active":            int(summary_row[0] or 0),
-        "in_vm_sequence":    int(summary_row[1] or 0),
-        "campaign_switched": int(summary_row[2] or 0),
-        "finalized":         int(summary_row[3] or 0),
-        "avg_days_to_close": float(summary_row[4]) if summary_row[4] is not None else None,
+        "stale":             int(summary_row[1] or 0),
+        "in_vm_sequence":    int(summary_row[2] or 0),
+        "campaign_switched": int(summary_row[3] or 0),
+        "finalized":         int(summary_row[4] or 0),
+        "avg_days_to_close": float(summary_row[5]) if summary_row[5] is not None else None,
     }
 
     params = {

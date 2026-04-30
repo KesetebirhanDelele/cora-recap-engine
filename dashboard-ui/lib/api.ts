@@ -382,7 +382,7 @@ export async function fetchWebhookFailures(): Promise<WebhookFailuresResponse> {
 }
 
 export async function fetchLeadLifecycle(options?: {
-  status?:   "all" | "active" | "finalized" | "vm" | "dnc";
+  status?:   "all" | "active" | "stale" | "finalized" | "vm" | "dnc";
   campaign?: string;
   limit?:    number;
   offset?:   number;

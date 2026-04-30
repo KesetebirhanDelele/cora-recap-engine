@@ -531,6 +531,7 @@ export interface CardMetricsResponse {
   meaningful_engagement_rate: MetricPoint;
   booking_rate:               MetricPoint;
   active_leads:               MetricPoint;
+  stale_leads:                MetricPoint;
   in_vm_sequence:             MetricPoint;
   finalized_today:            MetricPoint;
   sync_success_rate:          MetricPoint;
@@ -594,6 +595,7 @@ export interface IntentCallsResponse {
 
 export interface LeadLifecycleSummary {
   active:            number;
+  stale:             number;
   in_vm_sequence:    number;
   campaign_switched: number;
   finalized:         number;
