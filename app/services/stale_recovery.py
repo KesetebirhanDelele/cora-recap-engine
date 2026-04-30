@@ -389,6 +389,10 @@ def recover_missed_webhook(
             f"Synthflow returned no call record for {synthflow_call_id} — data envelope may be empty or malformed"
         )
     call_status = normalize_synthflow_outcome(call_data)
+    # Synthflow GET /v2/calls/{id} uses "ok" as an API-level success flag, not a
+    # call outcome. Map it to "completed" so the pipeline routes correctly.
+    if call_status == "ok":
+        call_status = "completed"
 
     # Build a normalized payload that process_call_event can consume.
     # Mirror the key normalizations from normalize_synthflow_payload() in webhooks.py.
@@ -408,6 +412,9 @@ def recover_missed_webhook(
         "direction":     call_data.get("direction", "outbound"),
         "duration_seconds": call_data.get("duration_seconds") or call_data.get("duration"),
         "source":        "manual_webhook_recovery",
+        # Explicit override — prevents the API-level "ok" from leaking into
+        # process_call_event's normalize_synthflow_outcome call.
+        "call_status":   call_status,
     }
 
     # Schedule process_call_event — the worker runs the full pipeline
