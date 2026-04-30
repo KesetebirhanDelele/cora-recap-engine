@@ -302,7 +302,7 @@ class SynthflowClient:
         Returns the call record dict (unwrapped from any {"data": ...} envelope).
         Raises SynthflowError on 4xx/5xx or after retries are exhausted.
         """
-        self.settings.validate_for_synthflow()
+        self.settings.validate_for_synthflow_read()
         base = str(self.settings.synthflow_base_url).rstrip("/")
         # synthflow_base_url points to /v2/calls; strip the path and rebuild
         from urllib.parse import urlparse

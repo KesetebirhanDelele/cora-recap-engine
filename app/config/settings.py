@@ -349,8 +349,13 @@ class Settings(BaseSettings):
                 f"OPENAI_BASE_URL must start with 'https://' — got: {self.openai_base_url!r}"
             )
 
+    def validate_for_synthflow_read(self) -> None:
+        """Raise ConfigError if Synthflow API key is missing (read-only operations)."""
+        if not self.synthflow_api_key:
+            raise ConfigError("Synthflow integration requires: SYNTHFLOW_API_KEY")
+
     def validate_for_synthflow(self) -> None:
-        """Raise ConfigError if Synthflow credentials are missing."""
+        """Raise ConfigError if Synthflow credentials are missing (write/launch operations)."""
         missing = []
         if not self.synthflow_api_key:
             missing.append("SYNTHFLOW_API_KEY")
