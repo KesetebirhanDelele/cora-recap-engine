@@ -757,7 +757,7 @@ class AdvanceStaleLeadRequest(BaseModel):
 @router.post("/actions/advance-stale-lead")
 def advance_stale_lead(
     body: AdvanceStaleLeadRequest,
-    auth: DashboardAuth = Depends(require_dashboard_auth),
+    auth: DashboardAuth,
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Manually advance a stale lead whose Synthflow webhook was missed.
