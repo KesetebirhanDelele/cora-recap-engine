@@ -749,6 +749,42 @@ def action_bulk_ignore(
     return {"status": "ok", "ignored_count": ignored_count, "audit_log_id": audit.id}
 
 
+class AdvanceStaleLeadRequest(BaseModel):
+    contact_id: str
+    outcome: str  # "voicemail" | "no_answer"
+
+
+@router.post("/actions/advance-stale-lead")
+def advance_stale_lead(
+    body: AdvanceStaleLeadRequest,
+    auth: DashboardAuth = Depends(require_dashboard_auth),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually advance a stale lead whose Synthflow webhook was missed.
+
+    outcome=voicemail — VM confirmed in Synthflow; advance tier or finalize.
+    outcome=no_answer — no connection confirmed; retry or close on consecutive failure.
+    """
+    from app.config import get_settings
+    from app.services.stale_recovery import (
+        StaleLeadConflict, StaleLeadNotFound, advance_stale_lead as _advance,
+    )
+
+    operator_id = auth["operator_id"]
+    settings = get_settings()
+
+    try:
+        result = _advance(session, body.contact_id, body.outcome, operator_id, settings)
+        session.commit()
+        return {"status": "ok", **result}
+    except StaleLeadNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except StaleLeadConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
 class AcknowledgeAlertRequest(BaseModel):
     alert_id: str
     note: str = ""

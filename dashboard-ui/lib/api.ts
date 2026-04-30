@@ -381,6 +381,13 @@ export async function fetchWebhookFailures(): Promise<WebhookFailuresResponse> {
   return get<WebhookFailuresResponse>("/dashboard/webhook-failures");
 }
 
+export async function advanceStaleLeadAction(
+  contactId: string,
+  outcome: "voicemail" | "no_answer",
+): Promise<{ status: string; action: string; tier_from?: string; tier_to?: string; run_at?: string; reason?: string; last_call_status?: string }> {
+  return post("/dashboard/actions/advance-stale-lead", { contact_id: contactId, outcome });
+}
+
 export async function fetchLeadLifecycle(options?: {
   status?:   "all" | "active" | "stale" | "finalized" | "vm" | "dnc";
   campaign?: string;
