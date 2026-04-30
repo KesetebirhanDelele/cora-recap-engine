@@ -1,24 +1,24 @@
 """
-Finalize tier-2 leads with no pending job.
+Finalize tier-3 leads that never received their _finalize_campaign() call.
 
-Targets leads where:
-  - ai_campaign_value = '2'   (tier 2 = last real VM tier)
-  - no pending/claimed/running job
+Targets all leads where:
+  - ai_campaign_value = '3'   (GHL/DB tier 3 = VM sequence complete)
+  - no pending/claimed/running job in scheduled_jobs
   - status not in ('closed', 'terminal')
 
-Tier 2 is the last substantive VM tier (Cold Lead path: tier 0 -> 1 -> 2 -> terminal).
-A tier-2 lead with no pending job means the tier-2 call completed but the system
-never created the follow-up finalize job.  These leads should be set to 'terminal'.
+Sets status = 'terminal' (VM sequence exhausted).
 
-SAFE: leads that have a pending job (being actively worked) are excluded by SQL.
+NOTE: finalize_stale_leads.py intentionally skips tier-3 leads (it targets only
+tier 0/1/2 leads for DNC/campaign-off closure).  This script handles tier-3 leads
+including any that also carry a DNC flag.
 
 Usage
 -----
   # Dry-run (default):
-  docker compose exec worker-default python execution/finalize_stuck_tier2.py
+  docker compose exec worker-default python execution/finalize_stuck_tier3.py
 
-  # Live -- writes to DB:
-  docker compose exec worker-default python execution/finalize_stuck_tier2.py --live
+  # Live — writes to DB:
+  docker compose exec worker-default python execution/finalize_stuck_tier3.py --live
 """
 from __future__ import annotations
 
@@ -50,14 +50,12 @@ SELECT
     ls.campaign_name,
     ls.do_not_call,
     ls.ai_campaign,
-    ls.last_call_status,
-    ls.status AS current_status
+    ls.status      AS current_status
 FROM lead_state ls
 LEFT JOIN pending p ON p.entity_id = ls.contact_id
 WHERE
-    ls.ai_campaign_value = '2'
+    ls.ai_campaign_value = '3'
     AND (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
-    AND ls.do_not_call IS NOT TRUE
     AND p.entity_id IS NULL
 ORDER BY ls.contact_id
 """
@@ -75,7 +73,7 @@ WHERE contact_id = :contact_id
 
 def main(live: bool) -> None:
     mode = "LIVE" if live else "DRY-RUN"
-    logger.info("finalize_stuck_tier2 starting | mode=%s", mode)
+    logger.info("finalize_stuck_tier3 starting | mode=%s", mode)
 
     from sqlalchemy import text
 
@@ -84,7 +82,11 @@ def main(live: bool) -> None:
     with get_sync_session() as session:
         rows = session.execute(text(_ELIGIBLE_SQL)).fetchall()
 
-    logger.info("Tier-2 stuck leads (no pending job) to finalize: %d", len(rows))
+    dnc_count = sum(1 for r in rows if r.do_not_call)
+    logger.info(
+        "Tier-3 stuck leads to finalize: %d total (do_not_call=%d non_dnc=%d)",
+        len(rows), dnc_count, len(rows) - dnc_count,
+    )
 
     if not rows:
         logger.info("Nothing to do.")
@@ -109,13 +111,13 @@ def main(live: bool) -> None:
                         skipped += 1
                         continue
                 logger.info(
-                    "set terminal | contact_id=%s campaign=%s last_call=%s",
-                    contact_id, row.campaign_name, row.last_call_status,
+                    "set terminal | contact_id=%s campaign=%s dnc=%s",
+                    contact_id, row.campaign_name, row.do_not_call,
                 )
             else:
                 logger.info(
-                    "[dry-run] would set terminal | contact_id=%s campaign=%s last_call=%s",
-                    contact_id, row.campaign_name, row.last_call_status,
+                    "[dry-run] would set terminal | contact_id=%s campaign=%s dnc=%s",
+                    contact_id, row.campaign_name, row.do_not_call,
                 )
             succeeded += 1
 
@@ -130,7 +132,7 @@ def main(live: bool) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Finalize tier-2 no-pending leads as terminal")
+    parser = argparse.ArgumentParser(description="Finalize tier-3 stuck leads as terminal")
     parser.add_argument("--live", action="store_true", help="Commit writes (default: dry-run)")
     args = parser.parse_args()
     main(live=args.live)
