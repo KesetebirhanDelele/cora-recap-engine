@@ -383,10 +383,10 @@ def recover_missed_webhook(
         raise WebhookRecoveryError(f"Synthflow fetch failed: {exc}") from exc
 
     from app.worker.jobs.call_processing import normalize_synthflow_outcome
-    # Sanity check: a valid call record must have an id field
     if not call_data.get("call_id") and not call_data.get("id"):
-        raise WebhookRecoveryError(
-            f"Synthflow returned no call record for {synthflow_call_id} — data envelope may be empty or malformed"
+        logger.warning(
+            "recover_missed_webhook: Synthflow response has no call_id/id | call_id=%s keys=%s",
+            synthflow_call_id, list(call_data.keys()),
         )
     call_status = normalize_synthflow_outcome(call_data)
     # Synthflow GET /v2/calls/{id} uses "ok" as an API-level success flag, not a

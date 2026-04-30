@@ -328,14 +328,26 @@ class SynthflowClient:
                     )
 
                 resp.raise_for_status()
-                data = resp.json() if resp.content else {}
-                # Unwrap {"data": {...}} or {"data": [{...}]} envelope if present
+                raw = resp.json() if resp.content else {}
+                logger.info("Synthflow get_call raw response keys | call_id=%s keys=%s", call_id, list(raw.keys()))
+                logger.debug("Synthflow get_call raw response | call_id=%s body=%s", call_id, raw)
+                # Unwrap envelope — Synthflow may return {"data":{...}}, {"data":[...]},
+                # {"response":{"calls":[...]}}, or a flat response with status="ok"
+                data = raw
                 inner = data.get("data")
                 if isinstance(inner, dict):
                     data = inner
+                    if isinstance(data.get("calls"), list) and data["calls"]:
+                        data = data["calls"][0]
                 elif isinstance(inner, list) and inner:
                     data = inner[0]
-                logger.info("Synthflow get_call | call_id=%s status=%s", call_id, data.get("status") or data.get("call_status"))
+                elif isinstance(data.get("response"), dict):
+                    resp_inner = data["response"]
+                    if isinstance(resp_inner.get("calls"), list) and resp_inner["calls"]:
+                        data = resp_inner["calls"][0]
+                    else:
+                        data = resp_inner
+                logger.info("Synthflow get_call | call_id=%s resolved_keys=%s status=%s", call_id, list(data.keys()), data.get("call_status") or data.get("status"))
                 return data
 
             except httpx.TimeoutException as exc:
