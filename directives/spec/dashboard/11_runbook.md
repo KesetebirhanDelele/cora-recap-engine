@@ -224,7 +224,17 @@ If the card label reverts to "in VM" after a deploy, check that `indicators.ts` 
 ### Leads stuck mid-voicemail sequence (no pending job, no call_event)
 Caused by Synthflow HTTP step webhook drops — either from burst concurrency (all calls firing at exact window-open second) or transient Synthflow reliability failures. See `spec/14_synthflow_integration_addendum.md` for the full diagnosis procedure.
 
-**Detection query**:
+**Preferred recovery path (2026-04-30+)**: Use the **Webhook Delivery — 24h** panel in Queue Health (`/queue`). It automatically surfaces all affected leads within the 24-hour window. Three inline action buttons appear per row:
+
+| Button | When to use | Effect |
+|---|---|---|
+| **VM Left** | Synthflow logs show a voicemail was left | Advances tier (or finalizes at tier 2); schedules next call |
+| **No Answer** | Synthflow logs show call did not connect | Schedules retry; or closes lead on second consecutive no-answer |
+| **Call Completed** | Synthflow logs show call completed with transcript | Expands a call_id input; fetches call from Synthflow API and replays full pipeline (AI analysis, GHL updates) |
+
+For **Call Completed**: get the Synthflow call_id from the Logs page in the Synthflow dashboard (not the internal job_id). Paste it in the inline input and press Enter or "Fetch →".
+
+**Detection query** (for incidents older than 24h or for bulk review):
 ```sql
 SELECT DATE_TRUNC('minute', sj.run_at) AT TIME ZONE 'America/Chicago' AS minute_cst,
        ls.ai_campaign_value AS vm_tier, COUNT(*) AS leads
@@ -244,11 +254,13 @@ WHERE ls.ai_campaign_value IN ('0','1','2')
 GROUP BY 1, 2 ORDER BY 1 DESC, 2;
 ```
 
-**Recovery**:
+**Bulk recovery (incidents > 24h old)**:
 - Tier-2 stuck leads (would have finalized): `execution/finalize_stuck_tier2.py --live`
 - Tier-0/1 stuck leads (need next call): `execution/reschedule_burst_tier1.py --live`
 
 Always dry-run first. Copy scripts into the container with `docker compose cp` since images are baked.
+
+**Panel exclusion logic**: The Webhook Delivery panel automatically hides resolved leads — those with `lead_state.status IN ('terminal', 'closed')` or with an active `pending`/`claimed`/`running` job. If a lead disappears from the panel after an action, that is expected behaviour.
 
 ---
 
@@ -541,6 +553,30 @@ No database migrations are required for frontend-only changes.
 **Fix applied**: Use plain `'...'` string literals (not `E'...'`). Write `{{7,}}` in Python f-strings so the SQL receives `{7,}`.
 
 **Prevention**: See `spec/dashboard/03_constraints.md` — SQL authoring rules section.
+
+---
+
+### "Internal Server Error" on VM Left / No Answer buttons
+**Symptom**: Clicking "VM Left" or "No Answer" in the Webhook Delivery panel returns `Error: Internal Server Error`.
+
+**Root cause (1)**: `_finalize_lead` and `_close_lead` in `stale_recovery.py` called `ghl.update_contact_fields(contact_id, resolved, flags)` — passing `flags` as a positional arg. `mode_flags` is keyword-only in `GHLClient.update_contact_fields` (declared after `*`), raising `TypeError`.
+
+**Fix applied (2026-04-30)**: Changed to `ghl.update_contact_fields(contact_id, resolved, mode_flags=flags)` in both functions.
+
+**Root cause (2)**: `contact_id` in `lead_state` is a phone number (e.g. `+18014002089`). GHL's `PUT /contacts/:id` requires the real UUID. Passing the phone number directly causes GHL 400 `"Contact with id +18014002089 not found"`.
+
+**Fix applied (2026-04-30)**: Added `_resolve_ghl_contact_id(ghl, contact_id)` in `stale_recovery.py` — detects digit-only strings and calls `ghl.search_contact_by_phone()` to get the real UUID before any GHL write. Mirrors the pattern already used in `crm_jobs.py`.
+
+**Prevention**: Any code that writes to GHL using a `contact_id` from `lead_state` must resolve it via `search_contact_by_phone()` first — the DB stores phone numbers, not GHL UUIDs.
+
+---
+
+### Resolved leads reappearing in Webhook Delivery panel after operator action
+**Symptom**: After clicking VM Left, No Answer, or Call Completed, the row disappears momentarily then reappears on the next 30-second refresh.
+
+**Root cause**: The webhook failure query (`get_webhook_failures`) returned all unmatched `launch_outbound_call` jobs in the last 24 hours without checking whether the operator had already resolved them. After a manual advance, the lead is `terminal`/`closed` or has a new pending job — but the old completed job row still exists with no `call_events`, so it kept appearing.
+
+**Fix applied (2026-04-30)**: Both the `failures` list and `summary` row in `get_webhook_failures()` now exclude leads whose `lead_state.status IN ('terminal','closed')` and leads with an active `pending`/`claimed`/`running` `launch_outbound_call` job.
 
 ---
 

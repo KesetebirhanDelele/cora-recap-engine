@@ -862,3 +862,119 @@ Execute an arbitrary SQL statement against the production database and return re
 
 **Frontend**: Accessible at `/db-explorer`. Includes a table browser (left sidebar) and CSV download button. The downloaded `.csv` opens natively in Excel.
 
+---
+
+## GET /dashboard/webhook-failures
+
+Returns Synthflow webhook delivery health for the last 24 hours — calls that completed (`launch_outbound_call` job status = `completed`) but never produced a matching `call_events` row within 7 days after execution.
+
+**Auth**: None (read-only health data).
+
+**Response 200**
+```json
+{
+  "summary": {
+    "total_launched": 660,
+    "got_webhook":    655,
+    "missing":        5,
+    "webhook_pct":    99
+  },
+  "failures": [
+    {
+      "job_id":                  "uuid",
+      "contact_id":              "+15551234567",
+      "campaign":                "Cold Lead",
+      "placed_at":               "2026-04-30T10:42:00Z",
+      "executed_at":             "2026-04-30T10:42:40Z",
+      "minutes_since_execution": 38
+    }
+  ],
+  "window_hours": 24,
+  "recorded_at":  "2026-04-30T11:20:00Z"
+}
+```
+
+**Exclusions (summary and failures list)**:
+- Jobs executed within the last 20 minutes (Synthflow may still be delivering).
+- Leads whose `lead_state.status` is `terminal` or `closed` — already resolved by operator action.
+- Leads with an active `pending`/`claimed`/`running` `launch_outbound_call` job — already being handled (retry scheduled or duplicate-job guard confirmed one exists).
+
+**Frontend**: Rendered as the **Webhook Delivery — 24h** collapsible panel in Queue Health (`/queue`). Header shows delivery %, got/total counts, and a missing badge when `missing > 0`. Expanded drawer shows the failures table with inline action buttons.
+
+---
+
+## POST /dashboard/actions/advance-stale-lead
+
+Manually advance a stale lead whose Synthflow webhook was missed. Operator confirms the outcome in Synthflow logs and clicks the corresponding button in the Webhook Delivery panel.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**
+```json
+{ "contact_id": "+15551234567", "outcome": "voicemail" }
+```
+`outcome` must be `"voicemail"` or `"no_answer"`.
+
+**Response 200 — voicemail, non-tier-2**
+```json
+{ "status": "ok", "action": "advanced", "tier_from": "1", "tier_to": "2", "run_at": "...", "audit_log_id": "uuid" }
+```
+
+**Response 200 — voicemail, tier 2 (finalizes)**
+```json
+{ "status": "ok", "action": "finalized", "tier_from": "2", "reason": "tier_2_voicemail_complete" }
+```
+
+**Response 200 — no_answer, first miss (schedules retry)**
+```json
+{ "status": "ok", "action": "retry_scheduled", "tier": "1", "run_at": "...", "audit_log_id": "uuid" }
+```
+
+**Response 200 — no_answer, consecutive miss (closes)**
+```json
+{ "status": "ok", "action": "closed", "reason": "consecutive_no_answer", "last_call_status": "no_answer" }
+```
+
+**Response 404** — contact_id not found in `lead_state`.
+
+**Response 409** — lead already has a pending/claimed/running job; action cancelled to avoid duplicate.
+
+**Side effects**: Updates `lead_state` (tier, status, last_call_status), schedules a `launch_outbound_call` job (voicemail/retry paths), writes GHL field updates (finalize/close paths), writes `audit_log` row.
+
+**Idempotency**: The 409 guard prevents double-processing. GHL writes resolve phone → UUID via `search_contact_by_phone()`.
+
+---
+
+## POST /dashboard/actions/recover-call-webhook
+
+Fetch a completed call from the Synthflow API by call_id and replay the full `process_call_event` pipeline — exactly as if the webhook had been delivered. Use when a call completed in Synthflow but no webhook arrived.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**
+```json
+{ "contact_id": "+15551234567", "call_id": "synthflow-call-id-from-logs-page" }
+```
+
+**Response 200**
+```json
+{
+  "status":            "ok",
+  "action":            "recovery_scheduled",
+  "synthflow_call_id": "abc123",
+  "call_status":       "completed",
+  "campaign_name":     "Cold Lead",
+  "audit_log_id":      "uuid"
+}
+```
+
+**Response 409** — a `process_call_event` job for this `call_id` is already active.
+
+**Response 502** — Synthflow API returned an error or timed out.
+
+**Pipeline**: Fetches `GET https://api.synthflow.ai/v2/calls/{call_id}` → normalizes payload (infers `campaign_name` from Agent field, injects `contact_id`) → schedules `process_call_event` job → worker runs AI analysis, updates `lead_state`, writes GHL fields.
+
+**Idempotency**: `call_events.dedupe_key = "{call_id}:process_call_event"` (unique constraint) prevents duplicate DB inserts if the endpoint is called twice for the same call.
+
+**Frontend**: "Call Completed" button in the Webhook Delivery panel. Clicking expands an inline input for the Synthflow call_id (found in Synthflow Logs page). Pressing Enter or clicking "Fetch →" submits. Row disappears from the panel once the job is active.
+
