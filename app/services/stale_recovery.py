@@ -216,7 +216,7 @@ def _finalize_lead(session, contact_id, campaign_name, operator_id, settings):
     if field_updates:
         resolved = _resolve_to_field_ids(ghl, field_updates)
         if resolved:
-            ghl.update_contact_fields(contact_id, resolved, flags)
+            ghl.update_contact_fields(contact_id, resolved, mode_flags=flags)
         else:
             log_shadow_action(session, contact_id, "ghl_finalize_skipped",
                               {"reason": "field_resolution_failed"})
@@ -252,7 +252,7 @@ def _close_lead(session, contact_id, campaign_name, operator_id, settings):
     if field_updates:
         resolved = _resolve_to_field_ids(ghl, field_updates)
         if resolved:
-            ghl.update_contact_fields(contact_id, resolved, flags)
+            ghl.update_contact_fields(contact_id, resolved, mode_flags=flags)
         else:
             log_shadow_action(session, contact_id, "ghl_close_skipped",
                               {"reason": "field_resolution_failed"})
