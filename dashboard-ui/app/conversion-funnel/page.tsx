@@ -509,7 +509,11 @@ export default function SalesQueuePage() {
     }
   }, [fromDate, toDate, activeVoiceAgent]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 60_000);
+    return () => clearInterval(interval);
+  }, [load]);
 
   function toggleForm(contactId: string, type: "outcome" | "transcript") {
     setOpenForm((prev) =>
