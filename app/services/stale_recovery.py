@@ -382,11 +382,13 @@ def recover_missed_webhook(
     except SynthflowError as exc:
         raise WebhookRecoveryError(f"Synthflow fetch failed: {exc}") from exc
 
-    call_status = (call_data.get("status") or "").lower()
-    if not call_status:
+    from app.worker.jobs.call_processing import normalize_synthflow_outcome
+    # Sanity check: a valid call record must have an id field
+    if not call_data.get("call_id") and not call_data.get("id"):
         raise WebhookRecoveryError(
-            f"Synthflow returned no status for call {synthflow_call_id}"
+            f"Synthflow returned no call record for {synthflow_call_id} — data envelope may be empty or malformed"
         )
+    call_status = normalize_synthflow_outcome(call_data)
 
     # Build a normalized payload that process_call_event can consume.
     # Mirror the key normalizations from normalize_synthflow_payload() in webhooks.py.

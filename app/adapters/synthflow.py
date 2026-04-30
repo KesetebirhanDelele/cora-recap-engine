@@ -329,10 +329,13 @@ class SynthflowClient:
 
                 resp.raise_for_status()
                 data = resp.json() if resp.content else {}
-                # Unwrap {"data": {...}} envelope if present
-                if isinstance(data.get("data"), dict):
-                    data = data["data"]
-                logger.info("Synthflow get_call | call_id=%s status=%s", call_id, data.get("status"))
+                # Unwrap {"data": {...}} or {"data": [{...}]} envelope if present
+                inner = data.get("data")
+                if isinstance(inner, dict):
+                    data = inner
+                elif isinstance(inner, list) and inner:
+                    data = inner[0]
+                logger.info("Synthflow get_call | call_id=%s status=%s", call_id, data.get("status") or data.get("call_status"))
                 return data
 
             except httpx.TimeoutException as exc:
