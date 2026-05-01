@@ -493,3 +493,24 @@ Expected: 0 after successful recovery.
 
 **Note on within-slot simultaneous drops:** Even with the slot cap correctly at 4/slot, confirmed webhook drops can occur when all 4 calls in a slot share the same `run_at` second (e.g. `04:00:21`, `04:00:21`, `04:00:22`, `04:00:23`). Root cause is the same HTTP step concurrency limit — 4 simultaneous POSTs exceeds it. The within-slot 75-second stagger (deployed 2026-04-29) eliminates this. Already-queued jobs require the manual redistribution SQL above to apply the stagger retroactively.
 
+### Automatic webhook recovery (deployed 2026-05-01)
+
+`app/worker/jobs/webhook_recovery_jobs.py` — `auto_webhook_recovery_job` — runs every 5 minutes and handles webhook drop recovery without operator action.
+
+**How it works:**
+1. Queries `scheduled_jobs` for `launch_outbound_call` jobs completed in the last 24 hours with no matching `call_events` row (same dataset as the Webhook Delivery panel).
+2. Cap: 10 failures per cycle, oldest-first. Remaining failures are picked up on the next 5-minute run.
+3. For each failure, searches Synthflow `GET /v2/calls` filtered by phone number and campaign `model_id`, within a 3-hour window of the job's execution time. Picks the call record with `start_time` closest to execution time (paginates until exhausted).
+4. **Terminal call found** (`completed`, `failed`, `hangup_on_voicemail`, `no_answer`, `left_voicemail`) → `recover_missed_webhook()` — schedules `process_call_event`; runs the full AI + GHL pipeline.
+5. **Non-terminal call found** (`in_progress`, `ringing`, etc.) → skip; recheck in 5 minutes.
+6. **No call found** → `advance_stale_lead(contact_id, "no_answer")` — retries the call or closes the lead per tier policy.
+
+Campaign model IDs used for Synthflow search:
+- Cold Lead: `95fd0659-7446-423c-bc51-764c3060c90f`
+- New Lead:  `2608601d-bce6-4bb8-bc0f-f7df9dbf5971`
+- Inbound:   `f98454c1-2cd4-476c-b6f2-c5c425689e61`
+
+**Panel behavior:** both `recover_missed_webhook` and `advance_stale_lead` write audit entries (`manual_webhook_recovery` / `manual_advance`) that the Webhook Delivery panel already excludes. Recovered leads disappear from the panel automatically on the next refresh.
+
+**When to use manual recovery scripts:** only for incidents older than 24 hours (outside the panel and auto-recovery window), or when a specific call outcome must be forced (e.g., confirmed voicemail from CSV export). The scripts above remain the correct tool for bulk historical incidents.
+

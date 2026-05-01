@@ -170,6 +170,8 @@ Each row shows: phone number, lead state status, VM tier, time since last call a
 
 **Dashboard token required:** all three action buttons require the operator token to be set in Settings (`/settings` → Dashboard Token card). Without it, requests return 403.
 
+**Automatic recovery:** The `auto_webhook_recovery` background job runs every 5 minutes and resolves failures without operator action — it searches Synthflow for the call by phone number, recovers terminal calls through the full AI + GHL pipeline, and reschedules leads where no call is found. Leads resolved automatically disappear from the panel on the next refresh. The manual action buttons remain available for overrides or immediate action.
+
 **For incidents older than 24 hours:** the panel only covers the last 24 hours. Use the detection SQL query and bulk recovery scripts documented in `directives/spec/dashboard/11_runbook.md` → "Leads stuck mid-voicemail sequence".
 
 The page fetches data client-side on mount and automatically re-fetches after a successful cancel or advance action.

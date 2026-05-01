@@ -42,6 +42,24 @@ Two new lifecycle events are defined in `app/core/lifecycle.py`:
 
 Handlers live in `app/core/intent_actions.py`. Live-call routing is wired into `app/worker/jobs/ai_jobs.py` post-analysis, and `app/worker/jobs/voicemail_jobs.py` intent detection is extended to pass `executed_actions` and `duration_seconds`.
 
+## Auto webhook recovery
+
+`app/worker/jobs/webhook_recovery_jobs.py` — `auto_webhook_recovery_job` — runs every 5 minutes (self-rescheduling, same pattern as the nurture scheduler and slot rebalancer). On each run it:
+
+1. Queries `scheduled_jobs` for `launch_outbound_call` jobs that completed in the last 24 hours but have no matching `call_events` row and no prior recovery/advance audit entry — same dataset as the Webhook Delivery panel.
+2. For each failure (cap: 10 per cycle, oldest-first):
+   - Looks up the campaign's Synthflow `model_id` from `_CAMPAIGN_MODEL_IDS` (Cold Lead, New Lead, Inbound).
+   - Calls `SynthflowClient.list_calls()` with the contact phone and a 3-hour window around the job's execution time; paginates until a match is found or pages exhausted; picks the call record with `start_time` closest to the job's `run_at`.
+   - **Terminal status found** (`completed`/`failed`/`hangup_on_voicemail`/`no_answer`/`left_voicemail`) → `recover_missed_webhook()` — schedules `process_call_event`, running the full AI + GHL pipeline exactly as if the webhook had arrived.
+   - **Non-terminal status** (`in_progress`/`ringing`/etc.) → skip; recheck next cycle.
+   - **No call found** → `advance_stale_lead(contact_id, "no_answer")` — retries the call or closes the lead per tier policy.
+
+Fault tolerance: `StaleLeadConflict` (lead already has a pending job) is caught and logged as a skip. Individual errors do not stop the cycle. The job always self-reschedules in the `finally` block, even on failure.
+
+Audit trail: `recover_missed_webhook()` writes `manual_webhook_recovery`; `advance_stale_lead()` writes `manual_advance`. Both are already in the Webhook Delivery panel's exclusion filter — recovered leads disappear from the panel automatically without dashboard changes.
+
+Started automatically at `worker-default` boot via `start_webhook_recovery_scheduler()`.
+
 ## Nurture scheduler
 
 `app/worker/jobs/nurture_scheduler.py` runs every 5 minutes (self-rescheduling). On each run it:

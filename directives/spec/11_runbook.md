@@ -224,15 +224,16 @@ After AI analysis on a completed call, `detect_intent()` is called with the tran
 
 ## Periodic background jobs (started by worker-default at boot)
 
-Three self-rescheduling jobs start automatically when `worker-default` starts:
+Four self-rescheduling jobs start automatically when `worker-default` starts:
 
 | Job type | Interval | Purpose |
 |---|---|---|
 | `run_nurture_scheduler` | 5 min | Graduates `status='nurture'` leads into Cold Lead campaign |
 | `collect_metrics` | 60 s | Writes system_metrics rows; feeds dashboard health tiles and alerts |
 | `rebalance_call_slots` | 5 min | Detects `launch_outbound_call` slots with >4 pending jobs and redistributes them |
+| `auto_webhook_recovery` | 5 min | Scans for `launch_outbound_call` jobs with no matching call event; searches Synthflow for the call and recovers or reschedules up to 10 failures per cycle |
 
-All three appear in `scheduled_jobs` with `status='pending'` and self-reschedule at job completion. If any is missing after a restart, restarting `worker-default` re-creates it.
+All four appear in `scheduled_jobs` with `status='pending'` and self-reschedule at job completion. If any is missing after a restart, restarting `worker-default` re-creates it.
 
 ### Nurture scheduler detail
 - `run_nurture_scheduler` job uses `entity_id='nurture_scheduler'`
@@ -280,6 +281,8 @@ All three appear in `scheduled_jobs` with `status='pending'` and self-reschedule
 - **No rows in `system_metrics`, dashboard shows 0 active alerts** → `collect_metrics_job` never ran. Check worker-default startup logs for: `Could not ensure metrics scheduler on startup`. If present, confirm the `collect_metrics` job exists in `scheduled_jobs` with `status='pending'`; if missing, restart `worker-default` (it calls `start_metrics_scheduler()` on boot).
 
 - **Slot overages not self-correcting** → `rebalance_call_slots_job` should run every 5 min on `worker-default`. Check startup logs for `Slot rebalancer ensured on startup`. Confirm a `rebalance_call_slots` row exists in `scheduled_jobs` with `status='pending'`. If missing, restart `worker-default`.
+
+- **Webhook failures not clearing from panel automatically** → `auto_webhook_recovery_job` should run every 5 min on `worker-default`. Check startup logs for `Webhook recovery scheduler ensured on startup`. Confirm an `auto_webhook_recovery` row exists in `scheduled_jobs` with `status='pending'`. If missing, restart `worker-default`. To inspect recent recovery activity: `SELECT entity_id, action, operator_id, created_at FROM audit_log WHERE operator_id = 'auto_webhook_recovery' ORDER BY created_at DESC LIMIT 20;`
 
 - **Dashboard shows large backlog in Queue Health but 0 active alerts** → The `queue_lag_exceeded` alert fires on `queue_lag_seconds` (age of the oldest overdue pending job), **not** on backlog count. If all pending jobs are future-dated (e.g. voicemail retries scheduled minutes ahead), `queue_lag_seconds` = 0 and no alert fires. Use the diagnostic query below to confirm:
   ```sql

@@ -79,7 +79,7 @@ Dashboard timeline joins on `prompt_family = 'ghl_call_analysis'` to display `le
 ## scheduled_jobs
 Canonical durable job record. Postgres is authoritative; Redis/RQ holds execution handles only.
 - id
-- job_type — process_call_event | process_voicemail_tier | run_call_analysis | launch_outbound_call | send_sms | send_email | create_crm_task | send_student_summary | update_lead_state | run_nurture_scheduler
+- job_type — process_call_event | process_voicemail_tier | run_call_analysis | launch_outbound_call | send_sms | send_email | create_crm_task | send_student_summary | update_lead_state | run_nurture_scheduler | collect_metrics | rebalance_call_slots | update_ghl_after_vm_message | auto_webhook_recovery
 - entity_type — call | lead
 - entity_id — call_id or contact_id depending on job_type
 - run_at

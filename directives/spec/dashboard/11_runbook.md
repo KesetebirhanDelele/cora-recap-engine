@@ -224,7 +224,16 @@ If the card label reverts to "in VM" after a deploy, check that `indicators.ts` 
 ### Leads stuck mid-voicemail sequence (no pending job, no call_event)
 Caused by Synthflow HTTP step webhook drops — either from burst concurrency (all calls firing at exact window-open second) or transient Synthflow reliability failures. See `spec/14_synthflow_integration_addendum.md` for the full diagnosis procedure.
 
-**Preferred recovery path (2026-04-30+)**: Use the **Webhook Delivery — 24h** panel in Queue Health (`/queue`). It automatically surfaces all affected leads within the 24-hour window. Three inline action buttons appear per row:
+**Automatic recovery (2026-05-01+)**: The `auto_webhook_recovery` job runs every 5 minutes and resolves failures automatically. For each webhook failure it:
+1. Searches Synthflow `GET /v2/calls` by phone number + campaign model ID within a 3-hour window of the call's execution time.
+2. Terminal call found → runs the full AI + GHL pipeline via `recover_missed_webhook()`.
+3. No call found → re-schedules the call via `advance_stale_lead("no_answer")`.
+
+Recovered leads disappear from the Webhook Delivery panel on the next page refresh (both `recover_missed_webhook` and `advance_stale_lead` write audit entries that the panel excludes).
+
+The `auto_webhook_recovery` job is visible in `scheduled_jobs` with `job_type='auto_webhook_recovery'` and `entity_id='webhook_recovery'`. If it is missing after a restart, restarting `worker-default` re-creates it.
+
+**Manual recovery (operator-initiated)**: Use the **Webhook Delivery — 24h** panel in Queue Health (`/queue`) when you want to override the auto-recovery decision or act immediately. Three inline action buttons appear per row:
 
 | Button | When to use | Effect |
 |---|---|---|
