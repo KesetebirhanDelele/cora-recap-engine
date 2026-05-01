@@ -330,7 +330,7 @@ def _evaluate_webhook_drop(
                     + (EXTRACT(MINUTE FROM sj.updated_at)::int / 10) * INTERVAL '10 minutes' AS bucket,
                 COUNT(*) AS total,
                 COUNT(
-                    CASE WHEN ce.call_id IS NOT NULL OR recovery.id IS NOT NULL THEN 1 END
+                    CASE WHEN ce.call_id IS NOT NULL OR recovery.id IS NOT NULL OR ignored.id IS NOT NULL THEN 1 END
                 ) AS got_webhook
             FROM scheduled_jobs sj
             LEFT JOIN LATERAL (
@@ -347,6 +347,12 @@ def _evaluate_webhook_drop(
                   AND created_at >= sj.updated_at - INTERVAL '30 minutes'
                 LIMIT 1
             ) recovery ON true
+            LEFT JOIN LATERAL (
+                SELECT id FROM audit_log
+                WHERE entity_id = sj.id
+                  AND action = 'manual_webhook_ignore'
+                LIMIT 1
+            ) ignored ON true
             WHERE sj.job_type  = 'launch_outbound_call'
               AND sj.status    = 'completed'
               AND sj.updated_at >= NOW() - INTERVAL '2 hours'

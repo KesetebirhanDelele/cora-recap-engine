@@ -395,6 +395,13 @@ export async function recoverCallWebhook(
   return post("/dashboard/actions/recover-call-webhook", { contact_id: contactId, call_id: callId });
 }
 
+export async function ignoreWebhookFailure(
+  jobId: string,
+  contactId: string,
+): Promise<{ status: string }> {
+  return post("/dashboard/actions/ignore-webhook-failure", { job_id: jobId, contact_id: contactId });
+}
+
 export async function fetchLeadLifecycle(options?: {
   status?:   "all" | "active" | "stale" | "finalized" | "vm" | "dnc";
   campaign?: string;

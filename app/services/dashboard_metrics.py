@@ -1797,6 +1797,11 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
                 AND sj2.id       != sj.id
                 AND sj2.status   IN ('pending', 'claimed', 'running')
           )
+          AND NOT EXISTS (
+              SELECT 1 FROM audit_log al
+              WHERE al.entity_id = sj.id
+                AND al.action = 'manual_webhook_ignore'
+          )
     """)).fetchone()
 
     total   = int(summary_row[0]) if summary_row else 0
@@ -1834,6 +1839,11 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
                 AND sj2.job_type  = 'launch_outbound_call'
                 AND sj2.id       != sj.id
                 AND sj2.status   IN ('pending', 'claimed', 'running')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM audit_log al
+              WHERE al.entity_id = sj.id
+                AND al.action = 'manual_webhook_ignore'
           )
         ORDER BY sj.updated_at DESC
         LIMIT 200

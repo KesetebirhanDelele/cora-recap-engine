@@ -823,6 +823,40 @@ def recover_call_webhook(
         raise HTTPException(status_code=502, detail=str(exc))
 
 
+class IgnoreWebhookFailureRequest(BaseModel):
+    job_id: str      # scheduled_jobs.id of the launch_outbound_call job
+    contact_id: str
+
+
+@router.post("/actions/ignore-webhook-failure")
+def action_ignore_webhook_failure(
+    body: IgnoreWebhookFailureRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Dismiss a webhook failure row without processing it.
+
+    Writes an audit_log entry keyed on the job_id so the panel exclusion
+    query can filter it out on the next refresh.  Use for butt-dials,
+    duplicate calls, or any case where no recovery action is needed.
+    """
+    import uuid as _uuid
+    from app.models.audit import AuditLog
+
+    operator_id = auth["operator_id"]
+    audit_id = str(_uuid.uuid4())
+    session.add(AuditLog(
+        id=audit_id,
+        entity_type="scheduled_job",
+        entity_id=body.job_id,
+        action="manual_webhook_ignore",
+        operator_id=operator_id,
+        context_json={"contact_id": body.contact_id},
+    ))
+    session.commit()
+    return {"status": "ok", "audit_log_id": audit_id}
+
+
 class AcknowledgeAlertRequest(BaseModel):
     alert_id: str
     note: str = ""

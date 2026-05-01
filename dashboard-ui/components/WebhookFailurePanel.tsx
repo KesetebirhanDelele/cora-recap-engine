@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { WebhookFailuresResponse } from "@/types";
-import { advanceStaleLeadAction, recoverCallWebhook } from "@/lib/api";
+import { advanceStaleLeadAction, recoverCallWebhook, ignoreWebhookFailure } from "@/lib/api";
 
 function pctColor(pct: number | null): string {
   if (pct === null) return "#94a3b8";
@@ -28,8 +28,8 @@ function fmtDate(iso: string): string {
   }
 }
 
-function RowActions({ contactId, onDone }: { contactId: string; onDone: () => void }) {
-  const [loading, setLoading]       = useState<"voicemail" | "no_answer" | "recover" | null>(null);
+function RowActions({ jobId, contactId, onDone }: { jobId: string; contactId: string; onDone: () => void }) {
+  const [loading, setLoading]       = useState<"voicemail" | "no_answer" | "recover" | "ignore" | null>(null);
   const [result, setResult]         = useState<string | null>(null);
   const [showCallInput, setShowCallInput] = useState(false);
   const [callId, setCallId]         = useState("");
@@ -64,6 +64,21 @@ function RowActions({ contactId, onDone }: { contactId: string; onDone: () => vo
       await recoverCallWebhook(contactId, trimmed);
       setResult("Processing…");
       setTimeout(onDone, 1500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult(`Error: ${msg}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  async function ignore() {
+    setLoading("ignore");
+    setResult(null);
+    try {
+      await ignoreWebhookFailure(jobId, contactId);
+      setResult("Ignored");
+      setTimeout(onDone, 1200);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       setResult(`Error: ${msg}`);
@@ -175,6 +190,19 @@ function RowActions({ contactId, onDone }: { contactId: string; onDone: () => vo
           </button>
         </span>
       )}
+      <button
+        disabled={busy}
+        onClick={ignore}
+        title="Dismiss this row — call was already handled or is not actionable"
+        style={{
+          fontSize: "0.65rem", padding: "2px 7px", borderRadius: 4,
+          border: "1px solid #94a3b8",
+          background: loading === "ignore" ? "#f8fafc" : "#fff",
+          color: "#64748b", cursor: busy ? "not-allowed" : "pointer", fontWeight: 600,
+        }}
+      >
+        {loading === "ignore" ? "…" : "Ignore"}
+      </button>
     </div>
   );
 }
@@ -290,7 +318,7 @@ export default function WebhookFailurePanel({ data, onRefresh }: Props) {
                     </td>
                     <td style={{ padding: "0.45rem 0.875rem" }}>
                       {row.contact_id ? (
-                        <RowActions contactId={row.contact_id} onDone={onRefresh ?? (() => {})} />
+                        <RowActions jobId={row.job_id} contactId={row.contact_id} onDone={onRefresh ?? (() => {})} />
                       ) : (
                         <span style={{ fontSize: "0.65rem", background: "#fee2e2", color: "#dc2626", borderRadius: 4, padding: "1px 6px", fontWeight: 600 }}>
                           no webhook
