@@ -396,13 +396,30 @@ def recover_missed_webhook(
 
     # Build a normalized payload that process_call_event can consume.
     # Mirror the key normalizations from normalize_synthflow_payload() in webhooks.py.
+    # Primary: Agent field name; fallback: model_id / voice_agent prefix constants.
     agent_raw = (call_data.get("Agent") or call_data.get("agent") or "").lower()
-    if "cold" in agent_raw:
+    model_raw = (
+        call_data.get("model_id") or call_data.get("voice_agent") or ""
+    ).lower()
+    if "cold" in agent_raw or "95fd0659" in model_raw:
         campaign_name = "Cold Lead"
-    elif "inbound" in agent_raw:
+    elif "inbound" in agent_raw or "f98454c1" in model_raw:
         campaign_name = "Inbound"
-    else:
+    elif "newlead" in agent_raw or "new" in agent_raw or "2608601d" in model_raw:
         campaign_name = "New Lead"
+    else:
+        # Last resort: fall back to lead_state.campaign_name if available
+        ls_row = session.execute(
+            text("SELECT campaign_name FROM lead_state WHERE contact_id = :cid LIMIT 1"),
+            {"cid": contact_id},
+        ).fetchone()
+        campaign_name = (ls_row[0] if ls_row and ls_row[0] else "New Lead")
+        if campaign_name == "New Lead" and not ls_row:
+            logger.warning(
+                "recover_missed_webhook: could not infer campaign | contact_id=%s "
+                "agent=%r model_id=%r — defaulting to New Lead",
+                contact_id, agent_raw, model_raw,
+            )
 
     normalized: dict[str, Any] = {
         **call_data,
