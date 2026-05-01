@@ -68,6 +68,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "collect_metrics":            "rq_default_queue",
     "update_ghl_after_vm_message": "rq_callback_queue",
     "rebalance_call_slots":       "rq_default_queue",
+    "auto_webhook_recovery":      "rq_default_queue",
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -179,6 +180,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
     from app.worker.jobs.slot_rebalancer import rebalance_call_slots_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
+    from app.worker.jobs.webhook_recovery_jobs import auto_webhook_recovery_job
 
     return {
         "process_call_event": process_call_event,
@@ -202,6 +204,8 @@ def get_job_registry() -> dict[str, object]:
         "update_ghl_after_vm_message": update_ghl_after_vm_message,
         # Automatic slot rebalancer
         "rebalance_call_slots": rebalance_call_slots_job,
+        # Auto webhook recovery
+        "auto_webhook_recovery": auto_webhook_recovery_job,
     }
 
 
@@ -265,6 +269,14 @@ def run() -> None:
             logger.info("Slot rebalancer ensured on startup")
         except Exception as exc:
             logger.warning("Could not ensure slot rebalancer on startup: %s", exc)
+
+        # Ensure the auto webhook recovery job is scheduled on startup.
+        try:
+            from app.worker.jobs.webhook_recovery_jobs import start_webhook_recovery_scheduler
+            start_webhook_recovery_scheduler()
+            logger.info("Webhook recovery scheduler ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure webhook recovery scheduler on startup: %s", exc)
 
     try:
         import redis
