@@ -81,7 +81,11 @@ def advance_stale_lead(
         )
 
     tier = lead.ai_campaign_value
-    campaign_name = lead.campaign_name or "Cold Lead"
+    campaign_name = lead.campaign_name
+    if not campaign_name:
+        raise StaleLeadNotFound(
+            f"Lead {contact_id} has no campaign_name — set it in lead_state before advancing"
+        )
     last_call_status = (lead.last_call_status or "").lower()
 
     if outcome == "voicemail":
