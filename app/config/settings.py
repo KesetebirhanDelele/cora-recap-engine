@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     # Per-campaign "Make Call" Catch Webhook URLs — selected based on lead campaign
     synthflow_launch_workflow_url_new: Optional[str] = None   # New Lead campaign
     synthflow_launch_workflow_url_cold: Optional[str] = None  # Cold Lead campaign
+    # Comma-separated phone numbers that must never be dialed as leads.
+    # Add Synthflow agent numbers and any other system/test phones here.
+    blocked_dial_numbers: Optional[str] = None
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None

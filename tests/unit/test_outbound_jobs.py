@@ -1,7 +1,7 @@
 """
-Unit tests for outbound_jobs._compute_window_run_at.
+Unit tests for outbound_jobs.
 
-Covers:
+_compute_window_run_at:
   1. No pending jobs → slot 0 → returns window_start exactly
   2. 9 pending jobs → slot 0 → still returns window_start
   3. 10 pending jobs → slot 1 → returns window_start + 120s
@@ -9,11 +9,17 @@ Covers:
   5. 20 pending jobs → slot 2 → returns window_start + 240s
   6. Jobs outside the 4-hour window are not counted
   7. Completed/failed/cancelled jobs are not counted
+
+launch_outbound_call_job blocked-number guard:
+  8. Phone on BLOCKED_DIAL_NUMBERS → job cancelled + exception created, no Synthflow call
+  9. Phone not on blocklist → guard passes, normal flow continues
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy import create_engine
@@ -116,3 +122,93 @@ def test_claimed_jobs_are_counted(session):
     session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
     assert result == _WINDOW_START + timedelta(seconds=_CALL_SLOT_SECONDS)
+
+
+# ── Blocked dial-number guard ─────────────────────────────────────────────────
+
+def _make_mock_job(phone: str) -> MagicMock:
+    job = MagicMock()
+    job.id = str(uuid.uuid4())
+    job.entity_type = "lead"
+    job.entity_id = "+19592022210"
+    job.payload_json = {
+        "phone_number": phone,
+        "contact_id": "+19592022210",
+        "campaign_name": "Cold Lead",
+        "lead_name": "",
+        "correlation_id": "test-corr",
+    }
+    return job
+
+
+def _make_flags(system_paused: bool = False, shadow_mode: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(system_paused=system_paused, shadow_mode_enabled=shadow_mode)
+
+
+def _make_settings(blocked: str = "") -> SimpleNamespace:
+    return SimpleNamespace(blocked_dial_numbers=blocked)
+
+
+@patch("app.worker.claim.cancel_job")
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_blocked_phone_cancels_job_and_raises_exception(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_cancel,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+16822812224")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings(blocked="+16822812224")
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
+        launch_outbound_call_job(mock_job.id)
+
+    # Guard fired: job cancelled, exception created, Synthflow never called
+    mock_mark_running.assert_not_called()
+    mock_create_exc.assert_called_once()
+    exc_call = mock_create_exc.call_args
+    assert exc_call.kwargs["type"] == "blocked_dial_number"
+    assert exc_call.kwargs["severity"] == "critical"
+    mock_session.commit.assert_called_once()
+
+
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+@patch("app.worker.jobs.outbound_jobs.complete_job")
+def test_non_blocked_phone_passes_guard(
+    mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings(blocked="+16822812224")
+
+    # Shadow mode exits cleanly after mark_running without hitting Synthflow
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags(shadow_mode=True)):
+        with patch("app.worker.shadow.log_shadow_action"):
+            launch_outbound_call_job(mock_job.id)
+
+    # Guard did not fire
+    mock_create_exc.assert_not_called()
+    # mark_running was reached (guard passed)
+    mock_mark_running.assert_called_once()

@@ -101,6 +101,33 @@ def launch_outbound_call_job(job_id: str) -> None:
         correlation_id = payload.get("correlation_id", job_id)
         contact_id = payload.get("contact_id") or phone
 
+        # ── Blocked dial-number guard ─────────────────────────────────────────
+        # Prevents dialing Synthflow agent numbers or other system phones that
+        # were accidentally enrolled as leads (e.g. test contacts in GHL).
+        _blocked = {
+            n.strip()
+            for n in (settings.blocked_dial_numbers or "").split(",")
+            if n.strip()
+        }
+        if phone in _blocked:
+            logger.error(
+                "launch_outbound_call_job: phone is on blocked list — cancelling | "
+                "phone=%s contact_id=%s job_id=%s",
+                phone, contact_id, job_id,
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            create_exception(
+                session,
+                type="blocked_dial_number",
+                severity="critical",
+                context={"phone": phone, "contact_id": contact_id, "job_id": job_id},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            session.commit()
+            return
+
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
         # is nothing to defer.
