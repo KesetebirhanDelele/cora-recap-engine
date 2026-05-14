@@ -150,6 +150,14 @@ docker compose up
 # watch worker process jobs           
 docker compose logs -f worker  
 ```
+docker compose build --no-cache worker-ai api && docker compose up -d --no-deps worker-ai api
+
+docker compose build --no-cache worker-ai worker-callbacks worker-default worker-retries api && docker compose up -d --no-deps worker-ai worker-callbacks worker-default worker-retries api
+
+# Confirm it picked up the change after deploy:
+docker compose logs worker-ai --tail=20
+
+
 
 | Service | URL |
 |---|---|
