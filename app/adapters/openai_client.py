@@ -10,7 +10,9 @@ Model name handling:
 
 Retry policy (mirrors GHLClient):
   Retries on RateLimitError (429), APIStatusError 5xx, APITimeoutError.
-  Bounded by settings.openai_retry_max. Delay doubles per attempt (2^n seconds).
+  Bounded by settings.openai_retry_max (default 1).
+  RateLimitError: minimum 60s wait (OpenAI windows are per-minute).
+  Other errors: exponential backoff from _retry_delay base.
   AuthenticationError is NOT retried — surfaces immediately as OpenAIError.
 
 Injectable _client for tests:
@@ -126,11 +128,14 @@ class OpenAIClient:
 
             except openai.RateLimitError as exc:
                 if attempt < self.settings.openai_retry_max:
+                    # Rate limit windows are ~60s — exponential backoff from 1s base
+                    # is too short. Floor at 60s so we outlast the window.
+                    wait = max(60.0, _retry_delay * (2 ** attempt))
                     logger.warning(
-                        "OpenAI rate limit | attempt=%d/%d model=%s",
-                        attempt + 1, self.settings.openai_retry_max, clean_model,
+                        "OpenAI rate limit | attempt=%d/%d model=%s | retry_in=%.0fs",
+                        attempt + 1, self.settings.openai_retry_max, clean_model, wait,
                     )
-                    time.sleep(_retry_delay * (2**attempt))
+                    time.sleep(wait)
                     continue
                 raise OpenAIError(
                     f"OpenAI rate limit exhausted after {attempt + 1} attempts"

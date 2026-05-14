@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     openai_model_consent_detector: str = "gpt-4o-mini"
     openai_model_vm_content: str = "gpt-4o-mini"
     openai_timeout_seconds: int = 60
-    openai_retry_max: int = 3
+    openai_retry_max: int = 1
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"
