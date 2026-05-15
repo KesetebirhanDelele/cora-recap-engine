@@ -260,6 +260,7 @@ All four appear in `scheduled_jobs` with `status='pending'` and self-reschedule 
 - lost callback → inspect `scheduled_jobs` where `job_type='process_voicemail_tier'`
 - GHL write failure → inspect `GHL_API_KEY` and `GHL_LOCATION_ID` in `.env`
 - exception queue growing → use dashboard retry/cancel/finalize actions
+- **"call analysis failed / OpenAI rate limit exhausted"** → the worker hit OpenAI's per-minute quota. The adapter retries once after a 60s wait (`OPENAI_RETRY_MAX=1`); if it still fails, the exception lands in the queue. Short-term: retry via dashboard. Recurring: check OpenAI usage at `platform.openai.com/usage` — Tier 1 accounts cap at 200K TPM for gpt-4o-mini. Raising to Tier 2 eliminates this. Do not raise `OPENAI_RETRY_MAX` above 1 without also increasing the RQ worker `--job-execution-timeout` — each retry sleeps 60s, so 2 retries = 120s of sleep alone.
 - expired job leases → `recover_expired_claims()` runs on worker restart
 - outbound calls/SMS/email not sending → check `SHADOW_MODE_ENABLED`; if `true`, actions are intercepted and logged to `shadow_actions` instead of executed
 - SMS/email not sending despite shadow mode off → check `inbound_messages` and `lead_state.last_replied_at`; reply detection suppresses sends if either signal is set

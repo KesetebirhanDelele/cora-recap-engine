@@ -141,7 +141,7 @@ constraint before adding workers.
 |---|---|---|
 | GHL (GoHighLevel) | ~100 req/s per location | Backoff + retry in `app/adapters/ghl.py`; queue GHL writes behind a rate-limited dispatcher |
 | Synthflow | HTTP step concurrency limit (undocumented) — simultaneous webhook POSTs are dropped silently. Limit applies per-second, not per-slot. Confirmed: even 2–4 calls completing at the same second can trigger drops. | Never assign the same `run_at` to multiple calls. Use `_compute_window_run_at()` for all rescheduled calls — max 4 calls per 5-min slot, staggered 75 s apart within the slot (+0s, +75s, +150s, +225s). See `spec/14_synthflow_integration_addendum.md` for full details and recovery scripts. |
-| OpenAI | Token/minute and request/minute limits | Exponential backoff already in `app/adapters/openai_client.py`; add per-minute token budget tracking for high volume |
+| OpenAI | Token/minute and request/minute limits (Tier 1: 200K TPM for gpt-4o-mini) | Rate-limit retries use a 60s minimum floor (`max(60, 2^n)`) in `app/adapters/openai_client.py`; `OPENAI_RETRY_MAX=1` caps at one retry to stay within the 180s RQ job timeout. Upgrade to Tier 2+ to raise limits. |
 
 **Rule:** Before scaling workers beyond 3, confirm external API throughput can absorb the increased call rate.
 
