@@ -108,6 +108,23 @@ def create_crm_task(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        # Resolve campaign_name from the linked CallEvent (not in payload directly).
+        if flags.outbound_campaigns_paused:
+            _ce_id = (job.payload_json or {}).get("call_event_id", "")
+            if _ce_id:
+                from app.models.call_event import CallEvent as _CE
+                _ce = session.get(_CE, _ce_id)
+                _campaign = ((_ce.campaign_name if _ce else None) or "").strip().lower()
+                if _campaign in ("new lead", "cold lead"):
+                    logger.info(
+                        "create_crm_task: outbound campaigns paused — releasing | "
+                        "campaign=%r job_id=%s", _campaign, job_id,
+                    )
+                    release_job_to_pending(session, job)
+                    session.commit()
+                    return
+
         mark_running(session, job)
         payload = job.payload_json or {}
         call_event_id = payload.get("call_event_id", "")
@@ -373,6 +390,18 @@ def update_ghl_after_vm_message(job_id: str) -> None:
             release_job_to_pending(session, job)
             session.commit()
             return
+
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "update_ghl_after_vm_message: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job)
+                session.commit()
+                return
 
         mark_running(session, job)
         payload = job.payload_json or {}

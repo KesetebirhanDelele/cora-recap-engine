@@ -1292,6 +1292,7 @@ _ALLOWED_MODE_KEYS = frozenset({
     "ghl_write_campaign_state",
     "ghl_write_finalization",
     "system_paused",
+    "outbound_campaigns_paused",
 })
 
 _BOOL_MODE_KEYS = frozenset({
@@ -1303,6 +1304,7 @@ _BOOL_MODE_KEYS = frozenset({
     "ghl_write_campaign_state",
     "ghl_write_finalization",
     "system_paused",
+    "outbound_campaigns_paused",
 })
 
 
@@ -1557,6 +1559,127 @@ def resume_system(
     session.commit()
     logger.info("System resumed by operator=%s", operator)
     return {"status": "ok", "system_paused": False}
+
+
+@router.post("/mode/pause-outbound-campaigns")
+def pause_outbound_campaigns(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause New Lead and Cold Lead campaign jobs. Inbound processing continues."""
+    import uuid
+    from sqlalchemy import text
+
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+    session.execute(text("""
+        INSERT INTO app_config (key, value, updated_at, updated_by)
+        VALUES ('outbound_campaigns_paused', 'true', :now, :by)
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by
+    """), {"now": now, "by": operator})
+    session.execute(text("""
+        INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+        VALUES (:id, 'app_config', 'outbound_campaigns_paused', 'mode_flag_updated', :by,
+                '{"new_value":"true","reason":"operator pause outbound campaigns","source":"system_controls"}'::jsonb, :now)
+    """), {"id": str(uuid.uuid4()), "by": operator, "now": now})
+    session.commit()
+    logger.warning("OUTBOUND CAMPAIGNS PAUSED by operator=%s", operator)
+    return {"status": "ok", "outbound_campaigns_paused": True}
+
+
+@router.post("/mode/resume-outbound-campaigns")
+def resume_outbound_campaigns(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Resume New Lead and Cold Lead campaign jobs."""
+    import uuid
+    from sqlalchemy import text
+
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+    session.execute(text("""
+        INSERT INTO app_config (key, value, updated_at, updated_by)
+        VALUES ('outbound_campaigns_paused', 'false', :now, :by)
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by
+    """), {"now": now, "by": operator})
+    session.execute(text("""
+        INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+        VALUES (:id, 'app_config', 'outbound_campaigns_paused', 'mode_flag_updated', :by,
+                '{"new_value":"false","reason":"operator resume outbound campaigns","source":"system_controls"}'::jsonb, :now)
+    """), {"id": str(uuid.uuid4()), "by": operator, "now": now})
+    session.commit()
+    logger.info("Outbound campaigns resumed by operator=%s", operator)
+    return {"status": "ok", "outbound_campaigns_paused": False}
+
+
+# ── DB Explorer ───────────────────────────────────────────────────────────────
+
+class DbQueryRequest(BaseModel):
+    sql: str
+
+_ROW_LIMIT = 500
+
+@router.get("/db/tables")
+def list_db_tables(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Return all user tables with row counts. No auth required (read-only metadata)."""
+    from sqlalchemy import text
+    rows = session.execute(text("""
+        SELECT
+            t.table_name,
+            COALESCE(s.n_live_tup, 0) AS row_estimate
+        FROM information_schema.tables t
+        LEFT JOIN pg_stat_user_tables s ON s.relname = t.table_name
+        WHERE t.table_schema = 'public'
+          AND t.table_type = 'BASE TABLE'
+        ORDER BY t.table_name
+    """)).fetchall()
+    return {"tables": [{"name": r[0], "row_estimate": int(r[1])} for r in rows]}
+
+
+@router.post("/db/query")
+def run_db_query(
+    body: DbQueryRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Execute a SQL query and return up to 500 rows. Auth required."""
+    from sqlalchemy import text
+    sql = body.sql.strip()
+    if not sql:
+        raise HTTPException(status_code=400, detail="SQL cannot be empty")
+    try:
+        result = session.execute(text(sql))
+        # DML (INSERT/UPDATE/DELETE) has no cursor description
+        if result.returns_rows:
+            columns = list(result.keys())
+            raw_rows = result.fetchmany(_ROW_LIMIT + 1)
+            truncated = len(raw_rows) > _ROW_LIMIT
+            rows = [
+                [str(v) if v is not None else None for v in row]
+                for row in raw_rows[:_ROW_LIMIT]
+            ]
+            return {
+                "columns": columns,
+                "rows": rows,
+                "row_count": len(rows),
+                "truncated": truncated,
+            }
+        else:
+            session.commit()
+            return {
+                "columns": [],
+                "rows": [],
+                "row_count": result.rowcount,
+                "truncated": False,
+            }
+    except Exception as exc:
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # ── Campaign overview ─────────────────────────────────────────────────────────

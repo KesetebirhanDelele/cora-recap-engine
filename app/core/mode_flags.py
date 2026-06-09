@@ -58,6 +58,7 @@ class ModeFlags:
     ghl_write_campaign_state: bool
     ghl_write_finalization: bool
     system_paused: bool
+    outbound_campaigns_paused: bool  # holds New Lead + Cold Lead jobs; Inbound continues
 
     @property
     def ghl_writes_enabled(self) -> bool:
@@ -75,6 +76,7 @@ class ModeFlags:
             "ghl_write_campaign_state": self.ghl_write_campaign_state,
             "ghl_write_finalization": self.ghl_write_finalization,
             "system_paused": self.system_paused,
+            "outbound_campaigns_paused": self.outbound_campaigns_paused,
             # derived
             "ghl_writes_enabled": self.ghl_writes_enabled,
         }
@@ -130,6 +132,10 @@ def get_mode_flags(session: Session, settings: Settings) -> ModeFlags:
             "system_paused", session, settings,
             fallback=False,
         )
+        outbound_campaigns_paused = get_bool(
+            "outbound_campaigns_paused", session, settings,
+            fallback=False,
+        )
     except Exception:
         logger.warning(
             "get_mode_flags: DB read failed — using safe shadow defaults",
@@ -147,6 +153,7 @@ def get_mode_flags(session: Session, settings: Settings) -> ModeFlags:
         ghl_write_campaign_state=ghl_write_campaign_state,
         ghl_write_finalization=ghl_write_finalization,
         system_paused=system_paused,
+        outbound_campaigns_paused=outbound_campaigns_paused,
     )
 
 
@@ -162,6 +169,7 @@ def _safe_shadow_defaults() -> ModeFlags:
         ghl_write_campaign_state=True,
         ghl_write_finalization=True,
         system_paused=False,
+        outbound_campaigns_paused=False,
     )
 
 

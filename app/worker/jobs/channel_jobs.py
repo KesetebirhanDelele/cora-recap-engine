@@ -101,6 +101,18 @@ def send_sms_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "send_sms_job: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job)
+                session.commit()
+                return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status.
         payload = job.payload_json or {}
@@ -155,6 +167,7 @@ def send_sms_job(job_id: str) -> None:
                     channel="sms",
                     message_body=result.sms_text,
                     message_subject="",
+                    campaign_name=campaign_name,
                 )
                 logger.info(
                     "send_sms_job: SMS generated (shadow) | contact_id=%s length=%d attempt=%d job_id=%s",
@@ -181,6 +194,7 @@ def send_sms_job(job_id: str) -> None:
                 channel="sms",
                 message_body=result.sms_text,
                 message_subject="",
+                campaign_name=campaign_name,
             )
 
             logger.info(
@@ -231,6 +245,18 @@ def send_email_job(job_id: str) -> None:
             release_job_to_pending(session, job)
             session.commit()
             return
+
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "send_email_job: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job)
+                session.commit()
+                return
 
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status.
@@ -288,6 +314,7 @@ def send_email_job(job_id: str) -> None:
                     channel="email",
                     message_body=result.email_html,
                     message_subject=result.email_subject,
+                    campaign_name=campaign_name,
                 )
                 logger.info(
                     "send_email_job: email generated (shadow) | contact_id=%s subject=%r attempt=%d job_id=%s",
@@ -315,6 +342,7 @@ def send_email_job(job_id: str) -> None:
                 channel="email",
                 message_body=result.email_html,
                 message_subject=result.email_subject,
+                campaign_name=campaign_name,
             )
 
             logger.info(
@@ -349,6 +377,7 @@ def _schedule_ghl_vm_update(
     channel: str,
     message_body: str,
     message_subject: str,
+    campaign_name: str = "",
 ) -> None:
     """
     Enqueue update_ghl_after_vm_message immediately after a VM message is generated.
@@ -369,6 +398,7 @@ def _schedule_ghl_vm_update(
                 "channel": channel,
                 "message_body": message_body,
                 "message_subject": message_subject,
+                "campaign_name": campaign_name,
             },
             rq_queue=None,
             rq_job_func=update_ghl_after_vm_message,

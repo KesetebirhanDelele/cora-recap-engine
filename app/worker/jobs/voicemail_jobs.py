@@ -71,6 +71,18 @@ def process_voicemail_tier(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "process_voicemail_tier: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job)
+                session.commit()
+                return
+
         mark_running(session, job)
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")
