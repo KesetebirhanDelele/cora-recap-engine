@@ -474,10 +474,14 @@ INTEGRATION_TESTS=1 pytest tests/integration/
 | `GHL_WRITE_CAMPAIGN_STATE` | `false` | Enable campaign state field writes |
 | `GHL_WRITE_FINALIZATION` | `false` | Enable voicemail finalization writes |
 | `SHADOW_MODE_ENABLED` | `true` | Intercepts all outbound actions (calls, SMS, email); logs to `shadow_actions` instead of executing |
+| `SYSTEM_PAUSED` | `false` | Halts all job execution system-wide (workers claim then immediately release every job) |
+| `OUTBOUND_CAMPAIGNS_PAUSED` | `false` | Pauses New Lead and Cold Lead campaign activity only — outbound calls, voicemail tier, AI analysis, SMS/email, CRM writes, and nurture graduation are all held. **Inbound campaign processing continues normally.** Jobs are re-checked every 60 seconds; they drain automatically when the flag is cleared. |
 
 All mode flags are DB-backed. Changes made on the **System Controls** dashboard page (`/system-controls`) take effect immediately on the next job — no `.env` edit or restart required.
 
 To go live: use the System Controls dashboard to set `GHL_WRITE_MODE=live`, `SHADOW_MODE_ENABLED=false`, and enable each write category. See `directives/spec/dashboard/11_runbook.md` for the full go-live procedure.
+
+To pause outbound campaigns without touching Inbound: use the **Outbound Campaign Pause** section on the System Controls page — orange "Pause" button to hold, green "Resume" to resume. The status banner turns orange while paused.
 
 ---
 

@@ -978,3 +978,47 @@ Fetch a completed call from the Synthflow API by call_id and replay the full `pr
 
 **Frontend**: "Call Completed" button in the Webhook Delivery panel. Clicking expands an inline input for the Synthflow call_id (found in Synthflow Logs page). Pressing Enter or clicking "Fetch →" submits. Row disappears from the panel once the job is active.
 
+---
+
+## POST /dashboard/mode/pause-outbound-campaigns
+
+Pause New Lead and Cold Lead campaign activity system-wide. Inbound campaign processing is unaffected.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**: `{}` (empty)
+
+**Response 200**
+```json
+{ "status": "paused", "outbound_campaigns_paused": true }
+```
+
+**Effect on workers**: Any `launch_outbound_call`, `process_voicemail_tier`, `run_call_analysis`, `send_sms`, `send_email`, `create_crm_task`, or `update_ghl_after_vm_message` job whose payload carries `campaign_name = "New Lead"` or `"Cold Lead"` is claimed by the worker, checked against the flag, and released back to `pending` with `run_at = now() + 60s`. The 60-second defer prevents those jobs from appearing perpetually overdue and triggering false `queue_lag_exceeded` alerts. The `run_nurture_scheduler` job also skips nurture graduation (Cold Lead entry) while this flag is active.
+
+**Effect on Inbound**: No Inbound jobs are affected. All Inbound call processing, AI analysis, and GHL writes continue normally.
+
+**Side effects**: Writes `outbound_campaigns_paused = "true"` to `app_config`; writes one `audit_log` row.
+
+**Frontend**: Orange "Pause" button in the **Outbound Campaign Pause** section of System Controls (`/system-controls`). Status banner turns orange with message "Outbound campaigns paused — New Lead & Cold Lead calls/SMS/email held. Inbound unaffected."
+
+---
+
+## POST /dashboard/mode/resume-outbound-campaigns
+
+Resume New Lead and Cold Lead campaign activity after a pause.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**: `{}` (empty)
+
+**Response 200**
+```json
+{ "status": "resumed", "outbound_campaigns_paused": false }
+```
+
+**Effect**: Clears `outbound_campaigns_paused` in `app_config`. Held jobs have `run_at = now()` (at most 60 s in the future from the last defer cycle) and will be picked up by the scheduler loop within one polling interval (≤ 30 s after their `run_at` is reached). No manual job re-queue is needed.
+
+**Side effects**: Writes `outbound_campaigns_paused = "false"` to `app_config`; writes one `audit_log` row.
+
+**Frontend**: Green "Resume" button in the **Outbound Campaign Pause** section of System Controls. Only visible when `outbound_campaigns_paused = true`. Hidden when `system_paused = true` (a hint is shown instead, since resuming outbound campaigns while the whole system is paused has no effect until system pause is also cleared).
+

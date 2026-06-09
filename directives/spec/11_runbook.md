@@ -239,6 +239,7 @@ All four appear in `scheduled_jobs` with `status='pending'` and self-reschedule 
 - `run_nurture_scheduler` job uses `entity_id='nurture_scheduler'`
 - On worker startup, `ensure_scheduled()` creates the first job automatically
 - Individual lead failures are isolated — one bad row does not stop the batch
+- When `outbound_campaigns_paused = true`, the scheduler **skips graduation** (no leads enter Cold Lead campaign) but still completes and self-reschedules every 5 min so the cadence is never silently lost. Graduation resumes the next cycle after the flag is cleared.
 
 ## Troubleshooting
 
@@ -263,6 +264,8 @@ All four appear in `scheduled_jobs` with `status='pending'` and self-reschedule 
 - **"call analysis failed / OpenAI rate limit exhausted"** → the worker hit OpenAI's per-minute quota. The adapter retries once after a 60s wait (`OPENAI_RETRY_MAX=1`); if it still fails, the exception lands in the queue. Short-term: retry via dashboard. Recurring: check OpenAI usage at `platform.openai.com/usage` — Tier 1 accounts cap at 200K TPM for gpt-4o-mini. Raising to Tier 2 eliminates this. Do not raise `OPENAI_RETRY_MAX` above 1 without also increasing the RQ worker `--job-execution-timeout` — each retry sleeps 60s, so 2 retries = 120s of sleep alone.
 - expired job leases → `recover_expired_claims()` runs on worker restart
 - outbound calls/SMS/email not sending → check `SHADOW_MODE_ENABLED`; if `true`, actions are intercepted and logged to `shadow_actions` instead of executed
+- **New Lead / Cold Lead calls paused but Inbound still processing** → `outbound_campaigns_paused` flag is `true` in `app_config`. This is intentional. Jobs are held and re-deferred every 60 s. Clear the flag from System Controls (`/system-controls`) → "Outbound Campaign Pause" → Resume to unblock.
+- **`queue_lag_exceeded` alert firing while outbound campaigns are paused** → if the running code does not have the `defer_seconds=60` fix in `release_job_to_pending()`, held `launch_outbound_call` jobs retain their original `run_at` (in the past) and the scheduler loop re-enqueues them every 30 s, keeping `queue_lag_seconds` elevated. Fix: `git pull && docker compose build --no-cache worker-default worker-ai worker-callbacks worker-retries && docker compose up -d --no-deps worker-default worker-ai worker-callbacks worker-retries`.
 - SMS/email not sending despite shadow mode off → check `inbound_messages` and `lead_state.last_replied_at`; reply detection suppresses sends if either signal is set
 - nurture lead not graduating to Cold Lead → check `next_action_at` in `lead_state`; check `run_nurture_scheduler` job exists in `scheduled_jobs` with `status=pending`
 - lead unexpectedly moved to Cold Lead after repeated answered calls → `partial_engagement` retry cap reached (2 retries); check `scheduled_jobs` count for `intent_reason='partial_engagement'` on the contact

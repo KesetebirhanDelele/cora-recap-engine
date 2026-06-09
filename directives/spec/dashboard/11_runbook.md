@@ -283,7 +283,8 @@ Always dry-run first. Copy scripts into the container with `docker compose cp` s
 2. Check Redis connectivity: `redis-cli -u $REDIS_URL ping`. If down: restart Redis; worker will reconnect.
 3. Check `stuck_job_count`. If high: review job types. Common cause: a job is repeatedly failing and consuming retry slots.
 4. Check Exceptions section for `call_processing_failed` or `send_sms_failed` spikes that may be blocking the queue.
-5. If workers are running and Redis is healthy but lag persists: scale workers horizontally or investigate a specific job type that is slow.
+5. **Check whether outbound campaigns are paused** — if `outbound_campaigns_paused = true`, held `launch_outbound_call` jobs re-defer themselves every 60 s. Their `run_at` is always within 60 s of `now()`, so `queue_lag_seconds` should be < 60. If you see lag > 300 s alongside an outbound-campaign pause, first confirm the code version has the `defer_seconds=60` fix (`git log --oneline | grep defer`). If the fix is not deployed, held jobs keep their original `run_at` (past) and appear permanently overdue — deploy the fix to clear the alert.
+6. If workers are running and Redis is healthy but lag persists: scale workers horizontally or investigate a specific job type that is slow.
 
 **Resolution**: lag drops below threshold → resolve email sent automatically.
 
@@ -462,6 +463,26 @@ Use when a lead must be removed from all automated follow-up immediately (e.g., 
 3. All `pending` jobs for the lead are marked `cancelled`.
 4. No new outbound calls, SMS, or emails will be scheduled.
 5. Confirm in Queue section: all jobs for that contact_id show `cancelled`.
+
+### Pause outbound campaigns (New Lead / Cold Lead only)
+Use when you need to temporarily halt all New Lead and Cold Lead outbound activity — calls, voicemails, AI analysis, SMS, email, CRM writes, and nurture graduation — while keeping Inbound processing fully live.
+
+1. Navigate to `http://<host>:3000/system-controls`.
+2. Locate the **Outbound Campaign Pause** section.
+3. Click the orange **Pause** button. The status banner turns orange and shows "Outbound campaigns paused — New Lead & Cold Lead calls/SMS/email held. Inbound unaffected."
+4. Workers will detect the flag on the next job pickup (within one scheduler tick, ≤ 30 s). New Lead and Cold Lead jobs are released back to `pending` with `run_at = now() + 60s`; they are not lost.
+5. Inbound call processing, AI analysis, and GHL writes continue without interruption.
+
+**To resume**: Click the green **Resume** button in the same section. Held jobs have `run_at` at most 60 s in the future and drain automatically — no manual re-queue needed.
+
+**While paused**:
+- `queue_lag_seconds` remains 0 — held jobs are re-deferred every 60 s so they are never permanently overdue.
+- The status banner shows `◉ Campaign Paused` (orange) on every dashboard page.
+- The `auto_webhook_recovery` job is unaffected — it checks Synthflow for missed calls and recovers them regardless of this flag.
+
+**Note**: If `system_paused = true`, the Resume button is hidden (resuming outbound campaigns while the whole system is paused has no visible effect). Clear the system pause first.
+
+---
 
 ### Acknowledge an alert
 Use when an alert is active but the underlying issue is already known and being worked. Acknowledging moves the alert off the Active tab so it does not distract from new signals, without suppressing the audit record.
