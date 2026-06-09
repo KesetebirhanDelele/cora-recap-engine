@@ -79,7 +79,7 @@ def process_voicemail_tier(job_id: str) -> None:
                     "process_voicemail_tier: outbound campaigns paused — releasing | "
                     "campaign=%r job_id=%s", _campaign, job_id,
                 )
-                release_job_to_pending(session, job)
+                release_job_to_pending(session, job, defer_seconds=60)
                 session.commit()
                 return
 

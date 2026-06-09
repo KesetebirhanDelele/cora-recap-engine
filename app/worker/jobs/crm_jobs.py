@@ -121,7 +121,7 @@ def create_crm_task(job_id: str) -> None:
                         "create_crm_task: outbound campaigns paused — releasing | "
                         "campaign=%r job_id=%s", _campaign, job_id,
                     )
-                    release_job_to_pending(session, job)
+                    release_job_to_pending(session, job, defer_seconds=60)
                     session.commit()
                     return
 
@@ -399,7 +399,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     "update_ghl_after_vm_message: outbound campaigns paused — releasing | "
                     "campaign=%r job_id=%s", _campaign, job_id,
                 )
-                release_job_to_pending(session, job)
+                release_job_to_pending(session, job, defer_seconds=60)
                 session.commit()
                 return
 
