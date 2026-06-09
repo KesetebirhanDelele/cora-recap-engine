@@ -1445,6 +1445,7 @@ _ALLOWED_MODE_KEYS = frozenset({
     "ghl_write_campaign_state",
     "ghl_write_finalization",
     "system_paused",
+    "outbound_campaigns_paused",
 })
 
 _BOOL_MODE_KEYS = frozenset({
@@ -1456,6 +1457,7 @@ _BOOL_MODE_KEYS = frozenset({
     "ghl_write_campaign_state",
     "ghl_write_finalization",
     "system_paused",
+    "outbound_campaigns_paused",
 })
 
 
@@ -1710,6 +1712,60 @@ def resume_system(
     session.commit()
     logger.info("System resumed by operator=%s", operator)
     return {"status": "ok", "system_paused": False}
+
+
+@router.post("/mode/pause-outbound-campaigns")
+def pause_outbound_campaigns(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Pause New Lead and Cold Lead campaign jobs. Inbound processing continues."""
+    import uuid
+    from sqlalchemy import text
+
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+    session.execute(text("""
+        INSERT INTO app_config (key, value, updated_at, updated_by)
+        VALUES ('outbound_campaigns_paused', 'true', :now, :by)
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by
+    """), {"now": now, "by": operator})
+    session.execute(text("""
+        INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+        VALUES (:id, 'app_config', 'outbound_campaigns_paused', 'mode_flag_updated', :by,
+                '{"new_value":"true","reason":"operator pause outbound campaigns","source":"system_controls"}'::jsonb, :now)
+    """), {"id": str(uuid.uuid4()), "by": operator, "now": now})
+    session.commit()
+    logger.warning("OUTBOUND CAMPAIGNS PAUSED by operator=%s", operator)
+    return {"status": "ok", "outbound_campaigns_paused": True}
+
+
+@router.post("/mode/resume-outbound-campaigns")
+def resume_outbound_campaigns(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Resume New Lead and Cold Lead campaign jobs."""
+    import uuid
+    from sqlalchemy import text
+
+    operator = auth["operator_id"]
+    now = datetime.now(tz=timezone.utc)
+    session.execute(text("""
+        INSERT INTO app_config (key, value, updated_at, updated_by)
+        VALUES ('outbound_campaigns_paused', 'false', :now, :by)
+        ON CONFLICT (key) DO UPDATE
+        SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at, updated_by=EXCLUDED.updated_by
+    """), {"now": now, "by": operator})
+    session.execute(text("""
+        INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+        VALUES (:id, 'app_config', 'outbound_campaigns_paused', 'mode_flag_updated', :by,
+                '{"new_value":"false","reason":"operator resume outbound campaigns","source":"system_controls"}'::jsonb, :now)
+    """), {"id": str(uuid.uuid4()), "by": operator, "now": now})
+    session.commit()
+    logger.info("Outbound campaigns resumed by operator=%s", operator)
+    return {"status": "ok", "outbound_campaigns_paused": False}
 
 
 # ── DB Explorer ───────────────────────────────────────────────────────────────

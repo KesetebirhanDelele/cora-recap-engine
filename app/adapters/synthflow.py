@@ -39,7 +39,8 @@ from app.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
 
-_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# 520–524 are Cloudflare transient errors (origin unreachable/unexpected response)
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 520, 521, 522, 523, 524})
 
 
 class SynthflowError(RuntimeError):
