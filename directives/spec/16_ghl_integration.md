@@ -216,7 +216,7 @@ File: `app/worker/jobs/crm_jobs.py`
 2. Load `CallEvent` by `call_event_id`
 3. **Dedupe check**: if `task_events` has a row with `call_event_id` + `status='created'`, skip
 4. **GHL read**: `GHLClient.get_contact(contact_id)` — fetch live contact to resolve field IDs and get current tags
-5. **AI analysis**: `generate_ghl_call_analysis(transcript, call_start_time_ms, duration_seconds, contact_phone, settings)` → `GhlCallAnalysisResult`
+5. **AI analysis**: `generate_ghl_call_analysis(transcript, call_start_time_ms, duration_seconds, contact_phone, settings, session)` → `GhlCallAnalysisResult`
    - Model: `settings.openai_model_ghl_analysis` (default: `gpt-4o-mini`)
    - On error: fallback result with `create_task=False`, `lead_classification='not_a_lead'`
 6. **GHL contact field writes** (shadow-gated): 5 fields —
@@ -277,7 +277,7 @@ Prompt family: `ghl_call_analysis` / version `v1` — `app/prompts/families/ghl_
 |---|---|---|
 | `task_title` | str | Short task title for GHL (e.g. "Follow up: interested, wants to talk Thursday") |
 | `task_description` | str | Full call narrative for the task body |
-| `assign_to` | str | GHL user ID (Bala=`yIhCTptvoNLixaWkLcRd`, Shveta=`mW2OSEYWWGDSB9JcKBcr`, Taiwo=`93bhNRgb5pzSoHmaSimH`) |
+| `assign_to` | str | GHL user ID — loaded at call time from `admissions_assistants` app_config key (Bala=`yIhCTptvoNLixaWkLcRd` for support, Roselen Flores=`0swBv9tBNeXeYXPYFBSx` for admissions (configurable), Taiwo=`93bhNRgb5pzSoHmaSimH` for IPBC/billing) |
 | `is_lead_classification` | bool | Whether AI classified this as a likely lead |
 | `lead_classification` | str | Tag value for AI Lead Classification field |
 | `create_task` | bool | Whether to create a GHL task (False for do_not_call, enrolled, etc.) |

@@ -347,7 +347,7 @@ def test_duplicate_task_creation_blocked_by_application_layer(session):
     fake_analysis = GhlCallAnalysisResult(
         task_title="Follow-Up: Test",
         task_description="Test description",
-        assign_to="mW2OSEYWWGDSB9JcKBcr",
+        assign_to="0swBv9tBNeXeYXPYFBSx",
         is_lead_classification=True,
         lead_classification="warm_lead",
         create_task=True,

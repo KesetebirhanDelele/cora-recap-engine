@@ -11,7 +11,7 @@ Output JSON keys:
   assign_to               — GHL user ID (blank for not_a_lead / marketing_content)
   is_lead_classification  — true/false
   lead_classification     — warm_lead | cold_lead | not_a_lead | support_call |
-                            marketing_content | escalate_shveta
+                            marketing_content | escalate_admissions
   create_task             — "yes" | "no"
   outbound_call_details   — formatted bullet block
   call_detailed_summary   — 150-200 word narrative
@@ -36,7 +36,7 @@ Output ONLY a valid JSON object with exactly these keys — no text outside JSON
   "task_description": "string",
   "assign_to": "string (GHL user ID, or empty string)",
   "is_lead_classification": true/false,
-  "lead_classification": "warm_lead|cold_lead|not_a_lead|support_call|marketing_content|escalate_shveta",
+  "lead_classification": "warm_lead|cold_lead|not_a_lead|support_call|marketing_content|escalate_admissions",
   "create_task": "yes|no",
   "outbound_call_details": "string (bullet-point block)",
   "call_detailed_summary": "string (150-200 words, use emojis)",
@@ -54,12 +54,12 @@ task_title: Concise title encapsulating the follow-up context.
 
 assign_to (GHL user ID):
   support_call          → yIhCTptvoNLixaWkLcRd
-  admissions            → mW2OSEYWWGDSB9JcKBcr
+  admissions            → ADMISSIONS_GHL_ID_HERE
   IPBC / job readiness / payment / billing → 93bhNRgb5pzSoHmaSimH
   not_a_lead or marketing_content → "" (empty string)
 
 is_lead_classification: true if lead_classification is warm_lead, cold_lead,
-  or escalate_shveta. Otherwise false.
+  or escalate_admissions. Otherwise false.
 
 lead_classification tags:
   warm_lead       — clear interest, books or agrees to book a call
@@ -67,7 +67,7 @@ lead_classification tags:
   not_a_lead      — disinterest, wrong number, under 18, cannot afford
   support_call    — current student/user needing help (not asking about program)
   marketing_content — caller trying to sell to Colaberry (SEO, lead gen, etc.)
-  escalate_shveta — extremely interested or urgent; ready to start / pay now
+  escalate_admissions — extremely interested or urgent; ready to start / pay now
 
 create_task: "yes" if assign_to is not blank OR transcript says someone will follow up.
   Otherwise "no".
@@ -110,7 +110,7 @@ call_detailed_summary:
   agent's responses, decisions or final outcomes. Use emojis. Professional tone.
 
 ai_campaign: "Yes" if lead_classification is warm_lead, cold_lead, or
-  escalate_shveta. Otherwise "No".
+  escalate_admissions. Otherwise "No".
 """
 
 _USER_TEMPLATE = """\

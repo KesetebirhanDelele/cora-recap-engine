@@ -202,6 +202,7 @@ def create_crm_task(job_id: str) -> None:
                 duration_seconds=call_event.duration_seconds,
                 contact_phone=contact_phone,
                 settings=settings,
+                session=session,
             )
 
             logger.info(

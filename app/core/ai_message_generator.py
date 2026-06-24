@@ -250,6 +250,7 @@ def generate_ghl_call_analysis(
     duration_seconds: int | None,
     contact_phone: str,
     settings: Any = None,
+    session: Any = None,
     *,
     _client: Any = None,
 ) -> GhlCallAnalysisResult:
@@ -273,6 +274,11 @@ def generate_ghl_call_analysis(
             duration_seconds=str(duration_seconds or 0),
             contact_phone=contact_phone or "",
             transcript=transcript or "(no transcript)",
+        )
+
+        admissions_ghl_id = _load_admissions_ghl_id(session, settings)
+        messages[0]["content"] = messages[0]["content"].replace(
+            "ADMISSIONS_GHL_ID_HERE", admissions_ghl_id
         )
 
         model = (
@@ -339,6 +345,42 @@ def _truncate_vm_sms(text: str) -> str:
     if last_space > 0:
         truncated = truncated[:last_space]
     return truncated + "..."
+
+
+_ADMISSIONS_FALLBACK_GHL_ID = "0swBv9tBNeXeYXPYFBSx"  # Roselen Flores
+
+
+def _load_admissions_ghl_id(session: Any, settings: Any) -> str:
+    """
+    Return the GHL user ID for the primary admissions assistant.
+
+    Reads the 'admissions_assistants' key from app_config (JSON list of
+    {"name": str, "ghl_id": str}).  The first entry is the active assignee.
+    Falls back to the hardcoded default when the key is absent or unreadable.
+    """
+    import json
+
+    raw = None
+    try:
+        if session is not None:
+            from app.core.app_config import get_str
+            raw = get_str("admissions_assistants", session, settings, "")
+        elif settings is not None:
+            raw = str(getattr(settings, "admissions_assistants", None) or "")
+    except Exception:
+        logger.warning("_load_admissions_ghl_id: failed to read config — using fallback")
+
+    if raw:
+        try:
+            assistants = json.loads(raw)
+            if assistants and isinstance(assistants, list):
+                ghl_id = assistants[0].get("ghl_id", "").strip()
+                if ghl_id:
+                    return ghl_id
+        except (json.JSONDecodeError, AttributeError, IndexError):
+            logger.warning("_load_admissions_ghl_id: malformed JSON — using fallback")
+
+    return _ADMISSIONS_FALLBACK_GHL_ID
 
 
 def _load_brand_context(session: Any, settings: Any) -> dict[str, str]:
