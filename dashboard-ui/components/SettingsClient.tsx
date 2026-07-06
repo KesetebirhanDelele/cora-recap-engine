@@ -721,7 +721,7 @@ export default function SettingsClient() {
                   />
                 </div>
                 <div>
-                  <label style={LABEL}>Shift start (CST)</label>
+                  <label style={LABEL}>Shift start (CST/CDT)</label>
                   <input
                     type="time"
                     value={s.shift_start}
@@ -734,7 +734,7 @@ export default function SettingsClient() {
                   />
                 </div>
                 <div>
-                  <label style={LABEL}>Shift end (CST)</label>
+                  <label style={LABEL}>Shift end (CST/CDT)</label>
                   <input
                     type="time"
                     value={s.shift_end}
