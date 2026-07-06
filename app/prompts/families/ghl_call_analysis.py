@@ -53,9 +53,9 @@ task_title: Concise title encapsulating the follow-up context.
             "No Follow-Up Needed: Not a Lead"
 
 assign_to (GHL user ID):
-  support_call          → yIhCTptvoNLixaWkLcRd
+  support_call          → SUPPORT_GHL_ID_HERE
   admissions            → ADMISSIONS_GHL_ID_HERE
-  IPBC / job readiness / payment / billing → 93bhNRgb5pzSoHmaSimH
+  IPBC / job readiness / payment / billing → IPBC_GHL_ID_HERE
   not_a_lead or marketing_content → "" (empty string)
 
 is_lead_classification: true if lead_classification is warm_lead, cold_lead,

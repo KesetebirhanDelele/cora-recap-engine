@@ -277,8 +277,13 @@ def generate_ghl_call_analysis(
         )
 
         admissions_ghl_id = _load_admissions_ghl_id(session, settings)
-        messages[0]["content"] = messages[0]["content"].replace(
-            "ADMISSIONS_GHL_ID_HERE", admissions_ghl_id
+        support_ghl_id = _load_support_ghl_id(session, settings)
+        ipbc_ghl_id = _load_ipbc_ghl_id(session, settings)
+        messages[0]["content"] = (
+            messages[0]["content"]
+            .replace("ADMISSIONS_GHL_ID_HERE", admissions_ghl_id)
+            .replace("SUPPORT_GHL_ID_HERE", support_ghl_id)
+            .replace("IPBC_GHL_ID_HERE", ipbc_ghl_id)
         )
 
         model = (
@@ -381,6 +386,82 @@ def _load_admissions_ghl_id(session: Any, settings: Any) -> str:
             logger.warning("_load_admissions_ghl_id: malformed JSON — using fallback")
 
     return _ADMISSIONS_FALLBACK_GHL_ID
+
+
+_SUPPORT_FALLBACK_GHL_ID = "yIhCTptvoNLixaWkLcRd"  # Balakrishna
+_IPBC_FALLBACK_GHL_ID = "93bhNRgb5pzSoHmaSimH"  # Taiwo
+
+
+def _load_support_ghl_id(session: Any, settings: Any) -> str:
+    """
+    Return the GHL user ID of whoever is on shift right now for support calls.
+
+    Reads the 'support_staff_roster' key from app_config (JSON list of
+    {"name", "ghl_id", "days", "shift_start", "shift_end"}) and resolves the
+    on-shift assignee via resolve_shift_assignee() — see app/core/staff_roster.py
+    for the overlap/gap rules. Falls back to the hardcoded default when the
+    key is absent, unreadable, or no roster entry covers the current time.
+    """
+    import json
+    from datetime import datetime, timezone
+
+    from app.core.staff_roster import resolve_shift_assignee
+
+    raw = None
+    try:
+        if session is not None:
+            from app.core.app_config import get_str
+            raw = get_str("support_staff_roster", session, settings, "")
+        elif settings is not None:
+            raw = str(getattr(settings, "support_staff_roster", None) or "")
+    except Exception:
+        logger.warning("_load_support_ghl_id: failed to read config — using fallback")
+
+    if raw:
+        try:
+            roster = json.loads(raw)
+            if roster and isinstance(roster, list):
+                tz_name = getattr(settings, "default_timezone", None) or "America/Chicago"
+                ghl_id = resolve_shift_assignee(roster, datetime.now(timezone.utc), tz_name)
+                if ghl_id:
+                    return ghl_id
+        except (json.JSONDecodeError, AttributeError, TypeError, ValueError):
+            logger.warning("_load_support_ghl_id: malformed JSON — using fallback")
+
+    return _SUPPORT_FALLBACK_GHL_ID
+
+
+def _load_ipbc_ghl_id(session: Any, settings: Any) -> str:
+    """
+    Return the GHL user ID for the primary IPBC/payment assignee.
+
+    Reads the 'ipbc_payment_assistants' key from app_config (JSON list of
+    {"name": str, "ghl_id": str}). The first entry is the active assignee.
+    Falls back to the hardcoded default when the key is absent or unreadable.
+    """
+    import json
+
+    raw = None
+    try:
+        if session is not None:
+            from app.core.app_config import get_str
+            raw = get_str("ipbc_payment_assistants", session, settings, "")
+        elif settings is not None:
+            raw = str(getattr(settings, "ipbc_payment_assistants", None) or "")
+    except Exception:
+        logger.warning("_load_ipbc_ghl_id: failed to read config — using fallback")
+
+    if raw:
+        try:
+            assistants = json.loads(raw)
+            if assistants and isinstance(assistants, list):
+                ghl_id = assistants[0].get("ghl_id", "").strip()
+                if ghl_id:
+                    return ghl_id
+        except (json.JSONDecodeError, AttributeError, IndexError):
+            logger.warning("_load_ipbc_ghl_id: malformed JSON — using fallback")
+
+    return _IPBC_FALLBACK_GHL_ID
 
 
 def _load_brand_context(session: Any, settings: Any) -> dict[str, str]:

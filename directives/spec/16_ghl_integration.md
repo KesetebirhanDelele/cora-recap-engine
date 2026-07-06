@@ -277,7 +277,7 @@ Prompt family: `ghl_call_analysis` / version `v1` — `app/prompts/families/ghl_
 |---|---|---|
 | `task_title` | str | Short task title for GHL (e.g. "Follow up: interested, wants to talk Thursday") |
 | `task_description` | str | Full call narrative for the task body |
-| `assign_to` | str | GHL user ID — loaded at call time from `admissions_assistants` app_config key (Bala=`yIhCTptvoNLixaWkLcRd` for support, Roselen Flores=`0swBv9tBNeXeYXPYFBSx` for admissions (configurable), Taiwo=`93bhNRgb5pzSoHmaSimH` for IPBC/billing) |
+| `assign_to` | str | GHL user ID — resolved at call time and substituted into the prompt before it reaches the model (see "Assignee routing" below) |
 | `is_lead_classification` | bool | Whether AI classified this as a likely lead |
 | `lead_classification` | str | Tag value for AI Lead Classification field |
 | `create_task` | bool | Whether to create a GHL task (False for do_not_call, enrolled, etc.) |
@@ -286,6 +286,24 @@ Prompt family: `ghl_call_analysis` / version `v1` — `app/prompts/families/ghl_
 | `ai_campaign` | str | "Yes" / "No" for AI Campaign field |
 | `call_start_time_formatted` | str | Human-readable call start time string |
 | `task_due_date` | str | ISO 8601 due date extracted from transcript ("follow up Thursday at 2pm" → next occurrence) |
+
+### Assignee routing
+
+The AI only classifies the call topic (`support_call` / `admissions` / `IPBC / job readiness / payment / billing` / `not_a_lead` / `marketing_content`). The specific GHL user ID for each bucket is resolved **deterministically in Python** before the prompt is sent — never left to the model — and substituted for a placeholder in the system prompt:
+
+| Bucket | Placeholder | Config key (app_config) | Resolution | Loader |
+|---|---|---|---|---|
+| `admissions` | `ADMISSIONS_GHL_ID_HERE` | `admissions_assistants` — JSON `[{"name","ghl_id"}, ...]` | First entry in the list (primary) | `_load_admissions_ghl_id()` |
+| `support_call` | `SUPPORT_GHL_ID_HERE` | `support_staff_roster` — JSON `[{"name","ghl_id","days","shift_start","shift_end"}, ...]` | Whoever's shift covers the current time (`America/Chicago`) — see below | `_load_support_ghl_id()` |
+| `IPBC / job readiness / payment / billing` | `IPBC_GHL_ID_HERE` | `ipbc_payment_assistants` — JSON `[{"name","ghl_id"}, ...]` | First entry in the list (primary) | `_load_ipbc_ghl_id()` |
+
+All three config keys are edited on the dashboard Campaign Settings page (`dashboard-ui/components/SettingsClient.tsx`) with no schema migration — same flat `app_config` key/value pattern used everywhere else in this file.
+
+**Support staff shift resolution** (`app/core/staff_roster.py::resolve_shift_assignee()`):
+- `days`: list of ints, `0`=Monday .. `6`=Sunday. `shift_start`/`shift_end`: `"HH:MM"` 24-hour, evaluated in `America/Chicago`. `shift_end <= shift_start` is treated as an overnight shift crossing into the next day.
+- **Overlap rule**: if two roster entries are both active at once, the one that started most recently wins (the incoming shift takes over).
+- **Gap rule**: if no roster entry is active, the entry whose shift starts soonest (wrapping into next week if needed) wins.
+- Falls back to a hardcoded default GHL ID when the roster is empty, malformed, or (for support/IPBC) the config key is unset: `_SUPPORT_FALLBACK_GHL_ID` = `yIhCTptvoNLixaWkLcRd` (Balakrishna), `_IPBC_FALLBACK_GHL_ID` = `93bhNRgb5pzSoHmaSimH` (Taiwo), `_ADMISSIONS_FALLBACK_GHL_ID` = `0swBv9tBNeXeYXPYFBSx` (Roselen Flores).
 
 ---
 
