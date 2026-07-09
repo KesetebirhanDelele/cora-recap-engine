@@ -261,16 +261,24 @@ Confirmed via GHL's own validation errors, in order encountered:
   but `GET .../recording` returns `422 "Message does not have recording"`).
 - However, two different externally-hosted audio URLs (one `.mp3`, one `.wav`, both directly
   fetchable in a browser) were both rejected with `422 "Invalid recording URL"` when placed in
-  `attachments`. This is a strong signal — not conclusive, but consistent across two different
-  hosts — that GHL does **not** accept arbitrary external URLs here and instead expects a URL
-  produced by GHL's own **"Upload file attachments" endpoint** (multipart upload, `fileAttachment`
-  field, max 5MB/5 files — documented separately, not yet spiked). **Do not build
-  `write_outbound_call()` assuming a Synthflow recording URL can be passed straight through** —
-  budget for a download-then-reupload step: fetch the bytes from `CallEvent.recording_url`
-  (Synthflow), upload them to GHL's attachment endpoint, then use the URL GHL returns in the
-  `attachments` array of the outbound call write. This needs its own small spike before
-  implementation (confirm the upload endpoint's exact request shape and that its returned URL is
-  accepted here) — flagging as a new Decomposition sub-step rather than guessing further.
+  `attachments`.
+- Followed the lead: spiked GHL's own **"Upload file attachments" endpoint**
+  (`POST /conversations/messages/upload`, multipart, field name `fileAttachment`, plus
+  `contactId`). This worked — `201`, response shape `{"uploadedFiles": {"<filename>":
+  "<hosted_url>"}, "traceId": "..."}` — and returned a real GHL-hosted URL:
+  `https://static-assets.internal.usercontent.site/conversations-assets/location/{locationId}/conversations/contact/{contactId}/{uuid}.wav`.
+  **Using that exact GHL-hosted URL in `attachments` on the outbound-call write still returned the
+  same `422 "Invalid recording URL"`.** Even GHL's own upload endpoint's output fails GHL's own
+  recording validation for a `Call`-type message specifically.
+- **Conclusion: do not build attachment/recording support into `write_outbound_call()` yet.**
+  Three attempts (two external URLs, one GHL-hosted URL from the sanctioned upload endpoint) all
+  failed the same way — this is no longer a "wrong field shape" problem, it's either (a) `Call`-type
+  messages need a completely different attachment mechanism than the generic
+  `attachments: [url]` pattern (e.g. an object shape with `type`/`filename`/`sizeBytes`, per the
+  generic-message docs referenced in spec/19 — not yet tried for `type: "Call"` specifically), or
+  (b) a genuine platform limitation/quirk worth raising with GHL support directly. Not worth
+  further guessing against the sandbox — **ship call metadata (duration/status/to/from) without
+  a recording first**, track attachment support as an explicit, separately-scoped follow-up.
 
 ### Transcript — still unresolved, do not assume a field name
 
@@ -286,14 +294,23 @@ Confirmed via GHL's own validation errors, in order encountered:
 
 ### Updated Decomposition (supersedes §4 steps 4–6)
 
-4a. Add the Company→Location token exchange to `get_valid_access_token()` / the OAuth callback —
-    required before any write will work, not optional hardening.
-4b. Spike the "Upload file attachments" endpoint against the sandbox (multipart, real audio bytes)
-    to confirm its response shape and that the returned URL is accepted by `attachments` on the
-    outbound-call write. Small, isolated, same throwaway-script approach as this spike.
-4c. Implement `write_outbound_call()` using the confirmed schema above (§7), including the
-    download-and-reupload attachment flow from 4b. Transcript omitted for now.
-5. Job wiring — unchanged from §4 step 5.
-6. Transcript — deferred to a dedicated future spike once a correct candidate field/endpoint is
+4a. **DONE** (2026-07-09) — Company→Location token exchange added to
+    `complete_oauth_install()` / `app/services/ghl_oauth.py`, wired into the `/oauth/callback`
+    route. Unit-tested.
+4b. **DONE, negative result** — spiked the "Upload file attachments" endpoint; it works, but its
+    output is not accepted by the outbound-call write's `attachments` field (see above). Attachment
+    support is not unblocked by this — do not attempt 4c's attachment path yet.
+4c. Implement `write_outbound_call()` using the confirmed schema above (§7) **without
+    `attachments`** — `type`, `contactId`, `conversationProviderId`, and the nested `call` object
+    (`callDuration`, `callStatus`, `to`, `from`). This alone delivers the primary win (call
+    duration/status/timestamp visible in GHL Conversations) and is fully unblocked.
+5. Job wiring — unchanged from §4 step 5. Trigger after call completion, shadow-gated, dedupe via
+   `ghl_conversation_log_events`, contact-phone resolution before write (§1 pattern), using
+   `call.to` = the *resolved contact's* phone (not `CallEvent`'s raw payload phone — see §7).
+6. Attachment (recording) delivery — deferred. Needs either: trying an object-shaped attachments
+   entry (`{"type": ..., "url": ..., "filename": ...}`) specifically for `type: "Call"` messages
+   (not yet attempted), or contacting GHL support about why their own upload endpoint's output
+   fails their own recording validation. Not blocking for the primary deliverable.
+7. Transcript — deferred to a dedicated future spike once a correct candidate field/endpoint is
    found (e.g. from GHL support, changelog, or a differently-shaped guess); not blocking for
-   recording + call-metadata delivery, which is the primary goal per spec/19.
+   call-metadata delivery, which is the primary goal per spec/19.
