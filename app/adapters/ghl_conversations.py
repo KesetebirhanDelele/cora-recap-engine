@@ -10,24 +10,35 @@ confirmed against the GHL sandbox (see module docstring note below).
 Auth shape (confirmed against GHL's published OAuth docs — see spec/20):
   Token endpoint:  POST https://services.leadconnectorhq.com/oauth/token
   Content-Type:    application/x-www-form-urlencoded
-  user_type:       "Location" — this app's Target User is Sub-Account
-                   (not "Company"/Agency), so the authorization-code exchange
-                   yields a Location-level token directly, no second
-                   "Get Location Access Token from Agency Token" step needed.
+
+  IMPORTANT — confirmed by live sandbox test, contradicts GHL's own docs for
+  Sub-Account-targeted apps: the authorization-code exchange can return a
+  Company-level token (userType=Company, locationId=None) even though this
+  app's Target User is Sub-Account. get_location_token() handles converting
+  that to a usable Location-level token — see app/services/ghl_oauth.py
+  complete_oauth_install(), which always does this conversion before storing
+  a token. Never assume exchange_code_for_token()'s result is directly usable
+  for the Conversations write endpoint without checking userType first.
 
 Retry policy: same shape as GHLClient._request() (spec/16) — retries on
 429/500/502/503/504 and httpx.TimeoutException, bounded by
 settings.ghl_retry_max, exponential backoff.
 
-NOT YET IMPLEMENTED: write_outbound_call() (the actual call-log write to
-POST /conversations/messages/outbound). GHL's public docs for this specific
-endpoint render the request schema client-side (JS/Swagger UI) and were not
-recoverable via static fetch — the exact field names for attachments,
-conversationProviderId placement, and call duration/status could not be
-confirmed from documentation alone. Per spec/20's decomposition (step 6),
-this must be pinned empirically with one real test call against the
-`Cora Sandbox` GHL account once a stored access token exists, not guessed.
-Do not add this method from assumption — confirm the schema first.
+write_outbound_call() request schema — confirmed via live sandbox spike
+(spec/20 §7), not guessed:
+  - Call fields MUST nest under a "call" object. Flat top-level fields
+    (callDuration/callStatus) are silently ignored by the API, not rejected.
+  - call.to must be the target contact's phone number *exactly as stored on
+    the GHL contact record* — a well-formatted but non-matching number is
+    rejected (CONVERSATIONS_MSG_INVALID_PHONE).
+  - Does NOT currently send `attachments` (recording) or a transcript field.
+    Three different recording URLs (two external hosts, one from GHL's own
+    "Upload file attachments" endpoint) were all rejected as "Invalid
+    recording URL" — this needs further investigation (possibly an
+    object-shaped attachment entry, possibly a GHL support question) before
+    it can be added. Do not add a recording/transcript field here from
+    assumption — see spec/20 §7 for the full investigation trail before
+    attempting either.
 """
 from __future__ import annotations
 
@@ -186,6 +197,77 @@ class GhlConversationsClient:
             data=data,
             headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         )
+
+    def write_outbound_call(
+        self,
+        access_token: str,
+        *,
+        contact_id: str,
+        to_phone: str,
+        from_phone: str,
+        call_duration_seconds: int,
+        call_status: str = "completed",
+    ) -> dict:
+        """
+        Log a completed outbound call into a GHL contact's Conversations
+        activity. Confirmed request schema — see module docstring and
+        spec/20 §7. Does NOT attach a recording or transcript (see caveats).
+
+        access_token: a Location-level token for the target GHL location —
+        NOT this client's own OAuth client credentials. Callers get this via
+        app.services.ghl_oauth.get_valid_access_token().
+
+        to_phone must match the contact's phone number on file exactly (GHL
+        validates this) — resolve/confirm it from the contact record, don't
+        pass an unverified phone string.
+
+        Shadow-gated on settings.ghl_write_conversation_log — independent of
+        ghl_writes_enabled (the Private Integration gate, spec/16); this is a
+        separate OAuth mechanism with its own on/off switch.
+        """
+        payload = {
+            "type": "Call",
+            "contactId": contact_id,
+            "conversationProviderId": self.settings.ghl_conversation_provider_id,
+            "call": {
+                "callDuration": call_duration_seconds,
+                "callStatus": call_status,
+                "to": to_phone,
+                "from": from_phone,
+            },
+        }
+
+        if not self.settings.ghl_write_conversation_log:
+            return self._shadow_write("write_outbound_call", contact_id, payload)
+
+        self.settings.validate_for_ghl_marketplace_oauth()
+        logger.info(
+            "GHL write_outbound_call | contact_id=%s duration=%s status=%s",
+            contact_id, call_duration_seconds, call_status,
+        )
+        return self._request(
+            "POST",
+            "/conversations/messages/outbound",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Version": "2021-07-28",
+            },
+        )
+
+    def _shadow_write(self, operation: str, contact_id: str, payload: dict) -> dict:
+        """
+        Log a would-be write in shadow mode without calling the GHL API.
+
+        Mirrors GHLClient._shadow_write() (spec/16) for consistency.
+        """
+        logger.info(
+            "GHL Marketplace shadow write [%s] | contact_id=%s payload_keys=%s",
+            operation, contact_id, list(payload.keys()),
+        )
+        return {"shadow": True, "operation": operation, "contact_id": contact_id, "payload": payload}
 
     def get_location_token(self, company_access_token: str, company_id: str, location_id: str) -> dict:
         """

@@ -123,6 +123,79 @@ def test_refresh_access_token_request_shape():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# write_outbound_call — confirmed schema (spec/20 §7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_write_outbound_call_shadow_mode_by_default_no_http_call():
+    s = _settings()  # ghl_write_conversation_log defaults False
+    client, mock_http = _make_client(s)
+
+    result = client.write_outbound_call(
+        "location-access-token",
+        contact_id="contact-1",
+        to_phone="+15551234567",
+        from_phone="+15559876543",
+        call_duration_seconds=104,
+    )
+
+    mock_http.request.assert_not_called()
+    assert result["shadow"] is True
+    assert result["operation"] == "write_outbound_call"
+    assert result["payload"]["call"]["to"] == "+15551234567"
+
+
+def test_write_outbound_call_live_mode_request_shape():
+    s = _settings(ghl_write_conversation_log=True)
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(
+        201, {"success": True, "conversationId": "conv-1", "messageId": "msg-1"}
+    )
+
+    result = client.write_outbound_call(
+        "location-access-token",
+        contact_id="contact-1",
+        to_phone="+15551234567",
+        from_phone="+15559876543",
+        call_duration_seconds=104,
+        call_status="completed",
+    )
+
+    call_args = mock_http.request.call_args
+    assert call_args.args == ("POST", "/conversations/messages/outbound")
+    payload = call_args.kwargs["json"]
+    assert payload["type"] == "Call"
+    assert payload["contactId"] == "contact-1"
+    assert payload["conversationProviderId"] == "test-provider-id"
+    # call fields must be nested — flattening them is silently ignored by GHL's API
+    assert payload["call"] == {
+        "callDuration": 104,
+        "callStatus": "completed",
+        "to": "+15551234567",
+        "from": "+15559876543",
+    }
+    assert "attachments" not in payload  # not yet supported — see spec/20 §7
+    assert call_args.kwargs["headers"]["Authorization"] == "Bearer location-access-token"
+    assert result["messageId"] == "msg-1"
+
+
+def test_write_outbound_call_live_mode_requires_config():
+    s = _settings(
+        ghl_write_conversation_log=True,
+        ghl_marketplace_client_id=None,
+        ghl_marketplace_client_secret=None,
+        ghl_conversation_provider_id=None,
+    )
+    client, mock_http = _make_client(s)
+
+    from app.config.settings import ConfigError
+    with pytest.raises(ConfigError):
+        client.write_outbound_call(
+            "token", contact_id="c1", to_phone="+1", from_phone="+2", call_duration_seconds=1,
+        )
+    mock_http.request.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Company -> Location token exchange (spec/20 §7)
 # ─────────────────────────────────────────────────────────────────────────────
 
