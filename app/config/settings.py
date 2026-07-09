@@ -122,6 +122,19 @@ class Settings(BaseSettings):
     ghl_write_campaign_state: bool = False
     ghl_write_finalization: bool = False
 
+    # ── GHL Marketplace OAuth app / Conversation Provider (spec/19, spec/20) ──
+    # Separate mechanism from ghl_api_key above — a Private Integration token
+    # cannot write to GHL Conversations. Used only for call-log writes
+    # (recording URL + transcript into a contact's Conversations activity).
+    ghl_marketplace_client_id: Optional[str] = None
+    ghl_marketplace_client_secret: Optional[str] = None
+    ghl_marketplace_shared_secret: Optional[str] = None
+    ghl_oauth_redirect_uri: Optional[str] = None
+    ghl_conversation_provider_id: Optional[str] = None
+    # Independent shadow gate — not tied to ghl_write_mode/ghl_writes_enabled,
+    # since this is a completely separate auth mechanism. Default off.
+    ghl_write_conversation_log: bool = False
+
     # ── Synthflow ─────────────────────────────────────────────────────────────
     synthflow_base_url: str = "https://api.synthflow.ai/v2/calls"
     synthflow_api_key: Optional[str] = None
@@ -336,6 +349,25 @@ class Settings(BaseSettings):
                 "GHL writes are disabled. "
                 "Set GHL_WRITE_MODE=live and GHL_WRITE_SHADOW_LOG_ONLY=false "
                 "to enable real writes. This change requires explicit approval."
+            )
+
+    def validate_for_ghl_marketplace_oauth(self) -> None:
+        """Raise ConfigError if the GHL Marketplace OAuth app is not configured.
+
+        Required before exchanging an authorization code, refreshing a token,
+        or writing a call-log message to GHL Conversations. Independent of
+        validate_for_ghl_writes() — this is a separate auth mechanism.
+        """
+        missing = []
+        if not self.ghl_marketplace_client_id:
+            missing.append("GHL_MARKETPLACE_CLIENT_ID")
+        if not self.ghl_marketplace_client_secret:
+            missing.append("GHL_MARKETPLACE_CLIENT_SECRET")
+        if not self.ghl_conversation_provider_id:
+            missing.append("GHL_CONVERSATION_PROVIDER_ID")
+        if missing:
+            raise ConfigError(
+                f"GHL Marketplace OAuth integration requires: {', '.join(missing)}"
             )
 
     def validate_for_openai(self) -> None:

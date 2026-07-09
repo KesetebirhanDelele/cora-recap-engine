@@ -48,9 +48,15 @@ documented in `spec/16` (contact fields, tasks, notes). Both mechanisms coexist.
   class for OAuth.** Auth mechanics are fundamentally different (static Bearer token vs. per-location
   access/refresh tokens with expiry) — conflating them risks silently breaking the working
   Private-Integration write paths. Build a separate `app/adapters/ghl_conversations.py`.
-- `app/services/stale_recovery.py::_resolve_ghl_contact_id()` — existing pattern for resolving a
-  phone-derived `lead_state.contact_id` to a real GHL contact ID before any GHL write. Reuse this,
-  don't reinvent it.
+- `app/worker/jobs/crm_jobs.py::create_crm_task()` (~line 201–247) — existing inline pattern for
+  resolving a phone-derived `contact_id` to a real GHL contact ID before any GHL write: a
+  `_looks_like_phone()` check, then `GHLClient.search_contact_by_phone()` as fallback. This is
+  **inline in the job function, not an extracted reusable helper** — earlier project notes claimed
+  a `_resolve_ghl_contact_id()` helper in a `stale_recovery.py` service; that code exists only on
+  the unmerged `feat/production-deployment-hardening` branch, not on `main`. Since this work is
+  based on `main`, replicate the inline pattern from `create_crm_task()` (or extract it into a
+  shared helper as part of this work — reasonable either way, but don't assume the helper already
+  exists).
 - `app/config/settings.py` — existing `ghl_write_mode` / `ghl_writes_enabled` shadow-gate pattern
   (lines ~116, ~300–305). New settings should follow the same naming convention:
   `ghl_marketplace_client_id`, `ghl_marketplace_client_secret`, `GHL_CONVERSATION_PROVIDER_ID`
@@ -114,7 +120,7 @@ documented in `spec/16` (contact fields, tasks, notes). Both mechanisms coexist.
 ### Musts
 
 - Must reuse the shadow-gate pattern: a new `GHL_WRITE_CONVERSATION_LOG` flag, default `false`, following the exact naming/behavior convention of the existing `GHL_WRITE_*` flags in `spec/16`.
-- Must resolve `contact_id` to a real GHL contact ID before any write, reusing `_resolve_ghl_contact_id()` — do not reimplement phone-search resolution.
+- Must resolve `contact_id` to a real GHL contact ID before any write, reusing the phone-search pattern already in `create_crm_task()` (see §1) — do not silently write to a phone-string contact_id.
 - Must store OAuth tokens server-side only (new Postgres table), never log them, never expose them via any API/dashboard response.
 - Must register the new job type in **both** `_JOB_QUEUE_ATTRS` and `get_job_registry()` in `app/worker/main.py` — this exact omission has previously caused a job type to silently starve (`spec/16` alert-system notes).
 - Must be idempotent under retry (dedupe table, per this repo's global concurrency rules).
