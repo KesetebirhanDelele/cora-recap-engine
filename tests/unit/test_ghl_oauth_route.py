@@ -1,45 +1,28 @@
 """
 Unit tests for GET /oauth/callback — app/api/routes/ghl_oauth.py.
 
+The route delegates entirely to app.services.ghl_oauth.complete_oauth_install()
+(spec/20 §7 — that function owns the Company->Location token conversion), so
+these tests mock at that boundary rather than re-testing the service logic
+covered in test_ghl_oauth_service.py.
+
 Covers:
   1.  Missing ?code param → 422 (FastAPI required-query validation)
-  2.  Marketplace app not configured → config-error page, no HTTP call attempted
-  3.  Successful exchange → token stored, success page shows locationId
-  4.  Token exchange failure → connection-failed page, nothing stored
-  5.  Response missing locationId → connection-failed page (store_tokens ValueError)
+  2.  Marketplace app not configured → config-error page, install never attempted
+  3.  Successful install → success page shows the resulting locationId
+  4.  Token exchange failure (GhlConversationsError) → connection-failed page
+  5.  Install failure (ValueError — e.g. no target location configured) → connection-failed page
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
 from app.adapters.ghl_conversations import GhlConversationsError
 from app.config.settings import Settings
-from app.models import Base
-from app.models.ghl_oauth_token import GhlOAuthToken
-
-
-@pytest.fixture(scope="module")
-def db_engine():
-    # StaticPool (not the sqlite default SingletonThreadPool) — TestClient runs
-    # the ASGI app through an anyio portal in a separate thread, and
-    # SingletonThreadPool hands each thread its own :memory: DB (i.e. tables
-    # created in the test thread would be invisible to the route handler).
-    eng = create_engine(
-        "sqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    Base.metadata.create_all(eng)
-    yield eng
-    Base.metadata.drop_all(eng)
-    eng.dispose()
 
 
 def _configured_settings(**overrides) -> Settings:
@@ -64,17 +47,12 @@ def _unconfigured_settings() -> Settings:
     )
 
 
-def _fake_sync_session(session: Session):
-    """A drop-in replacement for app.db.get_sync_session bound to a fixed Session."""
-    @contextmanager
-    def _fake():
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-    return _fake
+@contextmanager
+def _dummy_sync_session():
+    """The route only threads this through to complete_oauth_install, which
+    is itself mocked in these tests — the session object's identity doesn't
+    matter, it just needs to be a valid context manager."""
+    yield SimpleNamespace()
 
 
 def _build_app(settings: Settings):
@@ -94,52 +72,42 @@ def test_unconfigured_app_returns_config_error_page():
     settings = _unconfigured_settings()
     application = _build_app(settings)
 
-    with patch("app.api.routes.ghl_oauth.get_settings", return_value=settings):
+    with patch("app.api.routes.ghl_oauth.get_settings", return_value=settings), \
+         patch("app.api.routes.ghl_oauth.complete_oauth_install") as mock_install:
         with TestClient(application) as c:
             resp = c.get("/oauth/callback", params={"code": "abc"})
 
     assert resp.status_code == 200
     assert "Configuration error" in resp.text
+    mock_install.assert_not_called()
 
 
-def test_successful_exchange_stores_token_and_shows_location(db_engine):
+def test_successful_exchange_shows_location():
     settings = _configured_settings()
     application = _build_app(settings)
-    session = Session(db_engine)
 
-    mock_client = MagicMock()
-    mock_client.exchange_code_for_token.return_value = {
-        "access_token": "at",
-        "refresh_token": "rt",
-        "expires_in": 86399,
-        "locationId": "loc-route-test",
-    }
+    fake_token_row = SimpleNamespace(location_id="loc-route-test")
 
     with patch("app.api.routes.ghl_oauth.get_settings", return_value=settings), \
-         patch("app.api.routes.ghl_oauth.GhlConversationsClient", return_value=mock_client), \
-         patch("app.api.routes.ghl_oauth.get_sync_session", _fake_sync_session(session)):
+         patch("app.api.routes.ghl_oauth.get_sync_session", _dummy_sync_session), \
+         patch("app.api.routes.ghl_oauth.complete_oauth_install", return_value=fake_token_row) as mock_install:
         with TestClient(application) as c:
             resp = c.get("/oauth/callback", params={"code": "valid-code"})
 
     assert resp.status_code == 200
     assert "loc-route-test" in resp.text
     assert "connected" in resp.text.lower()
-
-    stored = session.get(GhlOAuthToken, "loc-route-test")
-    assert stored is not None
-    assert stored.access_token == "at"
-    session.close()
+    assert mock_install.call_args.args[1] == "valid-code"
 
 
 def test_exchange_failure_returns_connection_failed_page():
     settings = _configured_settings()
     application = _build_app(settings)
 
-    mock_client = MagicMock()
-    mock_client.exchange_code_for_token.side_effect = GhlConversationsError("HTTP 400")
-
     with patch("app.api.routes.ghl_oauth.get_settings", return_value=settings), \
-         patch("app.api.routes.ghl_oauth.GhlConversationsClient", return_value=mock_client):
+         patch("app.api.routes.ghl_oauth.get_sync_session", _dummy_sync_session), \
+         patch("app.api.routes.ghl_oauth.complete_oauth_install",
+               side_effect=GhlConversationsError("HTTP 400")):
         with TestClient(application) as c:
             resp = c.get("/oauth/callback", params={"code": "expired-code"})
 
@@ -147,25 +115,16 @@ def test_exchange_failure_returns_connection_failed_page():
     assert "Connection failed" in resp.text
 
 
-def test_missing_location_id_in_response_returns_connection_failed(db_engine):
+def test_install_value_error_returns_connection_failed_page():
     settings = _configured_settings()
     application = _build_app(settings)
-    session = Session(db_engine)
-
-    mock_client = MagicMock()
-    mock_client.exchange_code_for_token.return_value = {
-        "access_token": "at",
-        "refresh_token": "rt",
-        "expires_in": 86399,
-        # locationId deliberately omitted
-    }
 
     with patch("app.api.routes.ghl_oauth.get_settings", return_value=settings), \
-         patch("app.api.routes.ghl_oauth.GhlConversationsClient", return_value=mock_client), \
-         patch("app.api.routes.ghl_oauth.get_sync_session", _fake_sync_session(session)):
+         patch("app.api.routes.ghl_oauth.get_sync_session", _dummy_sync_session), \
+         patch("app.api.routes.ghl_oauth.complete_oauth_install",
+               side_effect=ValueError("no target location configured")):
         with TestClient(application) as c:
             resp = c.get("/oauth/callback", params={"code": "code-no-location"})
 
     assert resp.status_code == 200
     assert "Connection failed" in resp.text
-    session.close()

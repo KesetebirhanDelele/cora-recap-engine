@@ -62,6 +62,45 @@ def store_tokens(session: Session, token_response: dict) -> GhlOAuthToken:
     return row
 
 
+def complete_oauth_install(
+    session: Session,
+    code: str,
+    settings: Settings,
+    *,
+    _client: GhlConversationsClient | None = None,
+) -> GhlOAuthToken:
+    """
+    Full install flow: exchange an authorization code, transparently convert
+    a Company-level token to a Location-level one if needed, and store it.
+
+    This is what the /oauth/callback route should call — never call
+    exchange_code_for_token() + store_tokens() directly, since a raw
+    Company-level response would fail store_tokens()'s locationId check
+    (spec/20 §7 — confirmed this app can return either depending on how the
+    install was authorized, regardless of the app's configured Target User).
+
+    Raises ValueError if a Company-level token is returned and no target
+    location is configured (ghl_oauth_target_location_id / ghl_location_id).
+    """
+    client = _client or GhlConversationsClient(settings=settings)
+    token_response = client.exchange_code_for_token(code)
+
+    if token_response.get("userType") == "Company":
+        company_id = token_response.get("companyId")
+        target_location_id = settings.ghl_oauth_effective_target_location_id
+        if not target_location_id:
+            raise ValueError(
+                "GHL returned a Company-level token but no target location is "
+                "configured (set GHL_OAUTH_TARGET_LOCATION_ID or GHL_LOCATION_ID) "
+                "— cannot convert to a usable Location-level token."
+            )
+        token_response = client.get_location_token(
+            token_response["access_token"], company_id, target_location_id
+        )
+
+    return store_tokens(session, token_response)
+
+
 def get_valid_access_token(
     session: Session,
     location_id: str,

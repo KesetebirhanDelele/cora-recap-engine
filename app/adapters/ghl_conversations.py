@@ -187,6 +187,35 @@ class GhlConversationsClient:
             headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
         )
 
+    def get_location_token(self, company_access_token: str, company_id: str, location_id: str) -> dict:
+        """
+        Exchange a Company-level access token for a Location-level one.
+
+        Confirmed necessary in practice (spec/20 §7): despite this app's
+        Target User being Sub-Account, the initial authorization-code
+        exchange can still return a Company-level token (userType=Company,
+        locationId=None) — GHL's Conversations write endpoint rejects those
+        outright (401 "authClass type is not allowed to access this scope").
+        This second exchange is what actually produces a usable token.
+
+        Endpoint: POST /oauth/locationToken, form-encoded, authenticated with
+        the *company* token (not client_id/secret).
+        """
+        logger.info(
+            "GHL Marketplace OAuth | exchanging company token for location token | location_id=%s",
+            location_id,
+        )
+        return self._request(
+            "POST",
+            "/oauth/locationToken",
+            data={"companyId": company_id, "locationId": location_id},
+            headers={
+                "Authorization": f"Bearer {company_access_token}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+
     # ── Context manager ───────────────────────────────────────────────────────
 
     def close(self) -> None:

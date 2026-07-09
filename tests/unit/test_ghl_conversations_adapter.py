@@ -8,6 +8,7 @@ Covers:
   2.  exchange_code_for_token — includes redirect_uri when configured
   3.  exchange_code_for_token — omits redirect_uri when not configured
   4.  refresh_access_token — correct grant_type, refresh_token field
+  4b. get_location_token — correct URL, form body, Bearer auth with company token
   5.  Retry: retries on HTTP 429, succeeds on second attempt
   6.  Retry: retries on HTTP 500
   7.  Retry: raises GhlConversationsError after exhausting retries
@@ -119,6 +120,28 @@ def test_refresh_access_token_request_shape():
     assert data["refresh_token"] == "old-refresh-token"
     assert data["user_type"] == "Location"
     assert result["access_token"] == "at2"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Company -> Location token exchange (spec/20 §7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_location_token_request_shape():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(
+        201, {"access_token": "loc-at", "refresh_token": "loc-rt", "expires_in": 86400,
+              "userType": "Location", "locationId": "loc-1"}
+    )
+
+    result = client.get_location_token("company-access-token", "company-1", "loc-1")
+
+    call_args = mock_http.request.call_args
+    assert call_args.args == ("POST", "/oauth/locationToken")
+    assert call_args.kwargs["data"] == {"companyId": "company-1", "locationId": "loc-1"}
+    assert call_args.kwargs["headers"]["Authorization"] == "Bearer company-access-token"
+    assert call_args.kwargs["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert result["userType"] == "Location"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

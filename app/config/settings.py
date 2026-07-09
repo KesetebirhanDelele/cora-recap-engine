@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     ghl_marketplace_shared_secret: Optional[str] = None
     ghl_oauth_redirect_uri: Optional[str] = None
     ghl_conversation_provider_id: Optional[str] = None
+    # Target location for the Company->Location token exchange (spec/20 §7).
+    # Falls back to ghl_location_id (the Private Integration's location) if
+    # unset — in practice this is a single-tenant deployment targeting the
+    # same GHL location either way, but kept separate in case that changes.
+    ghl_oauth_target_location_id: Optional[str] = None
     # Independent shadow gate — not tied to ghl_write_mode/ghl_writes_enabled,
     # since this is a completely separate auth mechanism. Default off.
     ghl_write_conversation_log: bool = False
@@ -316,6 +321,11 @@ class Settings(BaseSettings):
     def ghl_writes_enabled(self) -> bool:
         """True only when write mode is 'live' and shadow_log_only is off."""
         return self.ghl_write_mode == "live" and not self.ghl_write_shadow_log_only
+
+    @property
+    def ghl_oauth_effective_target_location_id(self) -> Optional[str]:
+        """ghl_oauth_target_location_id, falling back to ghl_location_id."""
+        return self.ghl_oauth_target_location_id or self.ghl_location_id
 
     # ─────────────────────────────────────────────────────────────────────────
     # Context-aware pre-flight validators

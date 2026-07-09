@@ -23,7 +23,7 @@ from app.adapters.ghl_conversations import GhlConversationsError
 from app.config.settings import Settings
 from app.models import Base
 from app.models.ghl_oauth_token import GhlOAuthToken
-from app.services.ghl_oauth import get_valid_access_token, store_tokens
+from app.services.ghl_oauth import complete_oauth_install, get_valid_access_token, store_tokens
 
 
 @pytest.fixture(scope="module")
@@ -163,3 +163,89 @@ def test_get_valid_access_token_propagates_refresh_failure(session):
 
     with pytest.raises(GhlConversationsError, match="revoked"):
         get_valid_access_token(session, "loc-broken", _settings(), _client=mock_client)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# complete_oauth_install — Company vs Location token handling (spec/20 §7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_complete_oauth_install_stores_location_token_directly(session):
+    """When GHL returns a Location-level token directly, no second exchange happens."""
+    mock_client = MagicMock()
+    mock_client.exchange_code_for_token.return_value = _token_response(
+        locationId="loc-direct", userType="Location"
+    )
+
+    row = complete_oauth_install(session, "auth-code", _settings(), _client=mock_client)
+    session.flush()
+
+    assert row.location_id == "loc-direct"
+    mock_client.get_location_token.assert_not_called()
+
+
+def test_complete_oauth_install_converts_company_token(session):
+    """Company-level response triggers the second exchange before storing."""
+    mock_client = MagicMock()
+    mock_client.exchange_code_for_token.return_value = {
+        "access_token": "company-at",
+        "refresh_token": "company-rt",
+        "expires_in": 86399,
+        "userType": "Company",
+        "companyId": "company-1",
+        # locationId deliberately absent — this is the Company-level shape
+    }
+    mock_client.get_location_token.return_value = _token_response(
+        locationId="loc-converted", access_token="loc-at", refresh_token="loc-rt"
+    )
+
+    settings = _settings()
+    settings.ghl_oauth_target_location_id = "loc-converted"
+
+    row = complete_oauth_install(session, "auth-code", settings, _client=mock_client)
+    session.flush()
+
+    mock_client.get_location_token.assert_called_once_with("company-at", "company-1", "loc-converted")
+    assert row.location_id == "loc-converted"
+    assert row.access_token == "loc-at"
+
+
+def test_complete_oauth_install_falls_back_to_ghl_location_id(session):
+    """ghl_oauth_target_location_id unset -> falls back to the shared ghl_location_id."""
+    mock_client = MagicMock()
+    mock_client.exchange_code_for_token.return_value = {
+        "access_token": "company-at",
+        "refresh_token": "company-rt",
+        "expires_in": 86399,
+        "userType": "Company",
+        "companyId": "company-1",
+    }
+    mock_client.get_location_token.return_value = _token_response(locationId="fallback-loc")
+
+    settings = _settings()
+    settings.ghl_oauth_target_location_id = None
+    settings.ghl_location_id = "fallback-loc"
+
+    complete_oauth_install(session, "auth-code", settings, _client=mock_client)
+
+    mock_client.get_location_token.assert_called_once_with("company-at", "company-1", "fallback-loc")
+
+
+def test_complete_oauth_install_raises_without_target_location(session):
+    """Company token + no configured target location -> explicit error, not a silent bad write."""
+    mock_client = MagicMock()
+    mock_client.exchange_code_for_token.return_value = {
+        "access_token": "company-at",
+        "refresh_token": "company-rt",
+        "expires_in": 86399,
+        "userType": "Company",
+        "companyId": "company-1",
+    }
+
+    settings = _settings()
+    settings.ghl_oauth_target_location_id = None
+    settings.ghl_location_id = None
+
+    with pytest.raises(ValueError, match="target location"):
+        complete_oauth_install(session, "auth-code", settings, _client=mock_client)
+
+    mock_client.get_location_token.assert_not_called()
