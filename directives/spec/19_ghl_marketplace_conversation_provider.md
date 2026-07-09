@@ -122,6 +122,8 @@ Before connecting to the real production Colaberry GHL account, the OAuth flow w
 
 **Conclusion:** the Marketplace app, scopes, redirect URI, and Conversation Provider are all correctly configured and GHL will issue a valid authorization code. The only remaining gap is backend code to receive that code, exchange it for tokens, store them per-location, and use the Conversation Provider ID to write call messages.
 
+**Correction (2026-07-09):** despite Target User = Sub-Account, the authorization-code exchange for this app returns a **Company-level** token (`userType: "Company"`, `locationId: null`), not a Location-level token as GHL's own docs describe for Sub-Account-targeted apps. A second exchange (`POST /oauth/locationToken`) is required to get a usable Location-level token. See `spec/20` §7 for the full confirmed write schema and this token-exchange detail — `get_valid_access_token()` needs updating to handle this before any Conversations write will succeed.
+
 ---
 
 ## Common pitfalls hit during setup (for future reference)

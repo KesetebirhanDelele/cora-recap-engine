@@ -186,5 +186,114 @@ Each chunk should be a separate commit; steps 1–3 and 6 can happen in parallel
 
 ## 6. Open questions carried over from spec/19
 
-- Does GHL's conversation-message write API accept a caller-supplied transcript, or are transcripts only ever GHL-generated from the recording? Must be resolved by the spike in Decomposition step 6 before claiming transcript delivery as done.
 - Is the Conversation Provider Delivery URL actually invoked for a `Call`-type, custom, outbound-only provider, or only for providers that also need to receive inbound messages? Affects whether Decomposition step 7 is needed at all.
+
+---
+
+## 7. Confirmed write schema (spike complete, 2026-07-09)
+
+Verified against the `Cora Sandbox` GHL test account (location `MdXLDwpyhdQ8iAoDnEOC`) with a real
+location-level OAuth token, using `POST /conversations/messages/outbound`. GHL's validation errors
+were specific enough to iterate the exact schema field-by-field.
+
+### Auth gotcha: this app issues a Company-level token, not Location-level
+
+Despite the Marketplace app being configured with Target User = Sub-Account, exchanging the
+authorization code from the sandbox install returned `userType: "Company"`, `locationId: null`.
+The Conversations write endpoint rejects Company-level tokens (`401 "This authClass type is not
+allowed to access this scope"`). A second exchange is required:
+
+```
+POST https://services.leadconnectorhq.com/oauth/locationToken
+Content-Type: application/x-www-form-urlencoded
+Authorization: Bearer {company_access_token}
+Body: companyId={companyId from step 1}, locationId={target location id}
+```
+
+This returns a proper `userType: "Location"` token scoped to that location, valid for the write
+endpoint. **`get_valid_access_token()` (app/services/ghl_oauth.py) does not currently do this
+second step** — it stores and returns whatever token `exchange_code_for_token()` /
+`refresh_access_token()` return directly. This must be added before Step 4/5 implementation:
+after the initial code exchange, if `userType == "Company"`, immediately perform the
+`/oauth/locationToken` exchange and store *that* token (with its own `expires_in`) instead of (or
+in addition to) the company token. Refreshing a location-level token later returns another
+location-level token directly (no repeated two-step dance needed — confirmed the refresh response
+also carries `userType`/`locationId`).
+
+### Confirmed working request body
+
+```json
+{
+  "type": "Call",
+  "contactId": "<real GHL contact id — must be resolved first, not a phone string>",
+  "conversationProviderId": "6a4eebb1f41b5b39ff760caf",
+  "attachments": ["<recording URL — see caveat below>"],
+  "call": {
+    "callDuration": 104,
+    "callStatus": "completed",
+    "to": "<contact's phone, E.164 — MUST exactly match the contact's phone on file>",
+    "from": "<business/caller phone, E.164>"
+  }
+}
+```
+
+Response on success: `HTTP 201 {"success": true, "conversationId": "...", "messageId": "..."}`.
+
+Confirmed via GHL's own validation errors, in order encountered:
+- `contactId` (or `conversationId`) is required at the top level.
+- Call-specific fields (duration/status/to/from) must be nested under a **`call`** object — a
+  flat `callDuration`/`callStatus` at the top level is silently accepted-but-ignored by the API
+  (no error), which is exactly the kind of silent-failure risk this spec warned about — **the
+  `call` nesting is not optional**, don't flatten it.
+- `call.to` is required, must be a validly-formatted E.164 number, **and must match the target
+  contact's phone number on file** — GHL rejects a well-formatted number that doesn't match the
+  contact (`CONVERSATIONS_MSG_INVALID_PHONE`). Implication: the job must fetch/confirm the
+  contact's actual phone before writing, not just pass whatever phone string Cora has locally —
+  use the contact record returned by the phone-resolution step (crm_jobs.py pattern, §1) as the
+  source of truth for `call.to`, not `CallEvent`'s raw payload phone field.
+- `call.from` was accepted without further validation in testing (no equivalent contact-matching
+  check observed) — treat as the Synthflow/business caller number.
+
+### Attachments (recording) — needs the file-upload endpoint, not a raw URL
+
+- `attachments` **must be a top-level field** (array of strings), not nested inside `call`, and
+  not named `recording`/`recordingUrl` — those are silently ignored (message creates successfully
+  but `GET .../recording` returns `422 "Message does not have recording"`).
+- However, two different externally-hosted audio URLs (one `.mp3`, one `.wav`, both directly
+  fetchable in a browser) were both rejected with `422 "Invalid recording URL"` when placed in
+  `attachments`. This is a strong signal — not conclusive, but consistent across two different
+  hosts — that GHL does **not** accept arbitrary external URLs here and instead expects a URL
+  produced by GHL's own **"Upload file attachments" endpoint** (multipart upload, `fileAttachment`
+  field, max 5MB/5 files — documented separately, not yet spiked). **Do not build
+  `write_outbound_call()` assuming a Synthflow recording URL can be passed straight through** —
+  budget for a download-then-reupload step: fetch the bytes from `CallEvent.recording_url`
+  (Synthflow), upload them to GHL's attachment endpoint, then use the URL GHL returns in the
+  `attachments` array of the outbound call write. This needs its own small spike before
+  implementation (confirm the upload endpoint's exact request shape and that its returned URL is
+  accepted here) — flagging as a new Decomposition sub-step rather than guessing further.
+
+### Transcript — still unresolved, do not assume a field name
+
+- Guessed a top-level `transcript` field (arbitrary string) and a `GET
+  /conversations/messages/{id}/locations/{id}/transcription` read endpoint by analogy with the
+  recording endpoint's URL shape. The write was silently accepted (unknown field ignored, same
+  risk pattern as before) and the read endpoint returned a **generic framework 404 ("Cannot GET
+  ...")**, not a structured "no transcription" business error — meaning the guessed path itself is
+  wrong, not that transcripts are confirmed unsupported. This remains exactly the open question
+  spec/19 originally raised. Do not add a transcript field to `write_outbound_call()` until the
+  correct write mechanism (if any) is found — ship recording + call metadata first, treat
+  transcript as a separate follow-up spike.
+
+### Updated Decomposition (supersedes §4 steps 4–6)
+
+4a. Add the Company→Location token exchange to `get_valid_access_token()` / the OAuth callback —
+    required before any write will work, not optional hardening.
+4b. Spike the "Upload file attachments" endpoint against the sandbox (multipart, real audio bytes)
+    to confirm its response shape and that the returned URL is accepted by `attachments` on the
+    outbound-call write. Small, isolated, same throwaway-script approach as this spike.
+4c. Implement `write_outbound_call()` using the confirmed schema above (§7), including the
+    download-and-reupload attachment flow from 4b. Transcript omitted for now.
+5. Job wiring — unchanged from §4 step 5.
+6. Transcript — deferred to a dedicated future spike once a correct candidate field/endpoint is
+   found (e.g. from GHL support, changelog, or a differently-shaped guess); not blocking for
+   recording + call-metadata delivery, which is the primary goal per spec/19.
