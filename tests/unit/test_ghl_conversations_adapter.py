@@ -214,6 +214,7 @@ def test_get_location_token_request_shape():
     assert call_args.kwargs["data"] == {"companyId": "company-1", "locationId": "loc-1"}
     assert call_args.kwargs["headers"]["Authorization"] == "Bearer company-access-token"
     assert call_args.kwargs["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+    assert call_args.kwargs["headers"]["Version"] == "2021-07-28"
     assert result["userType"] == "Location"
 
 

@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _TOKEN_PATH = "/oauth/token"
+_VERSION_HEADER = "2021-07-28"
 
 
 class GhlConversationsError(RuntimeError):
@@ -253,7 +254,7 @@ class GhlConversationsClient:
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Version": "2021-07-28",
+                "Version": _VERSION_HEADER,
             },
         )
 
@@ -295,6 +296,7 @@ class GhlConversationsClient:
                 "Authorization": f"Bearer {company_access_token}",
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "Version": _VERSION_HEADER,
             },
         )
 
