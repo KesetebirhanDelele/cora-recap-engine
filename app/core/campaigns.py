@@ -88,6 +88,21 @@ def enter_campaign(
         )
         return
 
+    # ── Outbound campaign pause check ───────────────────────────────────────
+    # Centralized here (not duplicated per-caller) so every current and future
+    # entry point into cold_lead/new_lead is protected uniformly — this is the
+    # same check nurture_scheduler.py applies before calling enter_campaign();
+    # intent_actions.py's direct calls previously bypassed it entirely.
+    if settings is not None:
+        from app.core.mode_flags import get_mode_flags
+        flags = get_mode_flags(session, settings)
+        if flags.outbound_campaigns_paused:
+            logger.info(
+                "enter_campaign: outbound campaigns paused — skipping entry | "
+                "contact_id=%s campaign=%s", lead.contact_id, campaign_name,
+            )
+            return
+
     # 1. Cancel existing pending jobs (clean slate for the new campaign)
     cancelled = _cancel_pending_jobs(session, lead.contact_id)
     if cancelled:
