@@ -141,8 +141,16 @@ def _make_mock_job(phone: str) -> MagicMock:
     return job
 
 
-def _make_flags(system_paused: bool = False, shadow_mode: bool = False) -> SimpleNamespace:
-    return SimpleNamespace(system_paused=system_paused, shadow_mode_enabled=shadow_mode)
+def _make_flags(
+    system_paused: bool = False,
+    shadow_mode: bool = False,
+    outbound_campaigns_paused: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        system_paused=system_paused,
+        shadow_mode_enabled=shadow_mode,
+        outbound_campaigns_paused=outbound_campaigns_paused,
+    )
 
 
 def _make_settings(blocked: str = "") -> SimpleNamespace:
