@@ -97,7 +97,7 @@ def complete_oauth_install(
                 "configured (set GHL_OAUTH_TARGET_LOCATION_ID or GHL_LOCATION_ID) "
                 "— cannot convert to a usable Location-level token."
             )
-        logger.info(
+        logger.warning(
             "GHL OAuth install | Company token returned | company_id=%s target_location_id=%s",
             company_id, target_location_id,
         )
