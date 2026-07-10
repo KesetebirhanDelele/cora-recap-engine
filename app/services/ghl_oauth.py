@@ -10,6 +10,7 @@ schedule — simplest thing that works, per spec/20's stated preference.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ from sqlalchemy.orm import Session
 from app.adapters.ghl_conversations import GhlConversationsClient
 from app.config import Settings
 from app.models.ghl_oauth_token import GhlOAuthToken
+
+logger = logging.getLogger(__name__)
 
 # Refresh this many seconds before actual expiry, to avoid racing a token
 # that expires mid-request.
@@ -94,6 +97,10 @@ def complete_oauth_install(
                 "configured (set GHL_OAUTH_TARGET_LOCATION_ID or GHL_LOCATION_ID) "
                 "— cannot convert to a usable Location-level token."
             )
+        logger.info(
+            "GHL OAuth install | Company token returned | company_id=%s target_location_id=%s",
+            company_id, target_location_id,
+        )
         token_response = client.get_location_token(
             token_response["access_token"], company_id, target_location_id
         )
