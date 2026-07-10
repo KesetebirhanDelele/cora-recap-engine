@@ -358,3 +358,89 @@ Confirmed via GHL's own validation errors, in order encountered:
 7. Transcript — deferred to a dedicated future spike once a correct candidate field/endpoint is
    found (e.g. from GHL support, changelog, or a differently-shaped guess); not blocking for
    call-metadata delivery, which is the primary goal per spec/19.
+
+---
+
+## 9. Reusable verification procedure (used for AC12, reuse for production install)
+
+This is the exact procedure that produced the passing AC12 run on 2026-07-10. Reuse it verbatim
+(swapping `LOCATION_ID`) for the production Colaberry install once that's approved.
+
+### 9.1 Install / re-authorize
+
+1. Build the consent URL (client ID and scopes are static; only `redirect_uri` changes if the
+   tunnel/domain changed since last time):
+   ```
+   https://marketplace.gohighlevel.com/oauth/chooselocation?response_type=code&client_id=<GHL_MARKETPLACE_CLIENT_ID>&redirect_uri=<url-encoded redirect_uri>&scope=conversations.readonly%20conversations/message.readonly%20conversations/message.write%20contacts.readonly%20contacts.write
+   ```
+2. Open it in a browser logged into the **target** GHL company (double-check the company/agency
+   name shown on the consent screen — see the company/location gotcha in §8).
+3. Approve. The browser lands on `/oauth/callback?code=...`, which triggers the exchange
+   server-side automatically — no separate script needed for the install step itself.
+4. Confirm success two ways:
+   - Page shows "Cora is connected" (not "Connection failed").
+   - `docker compose exec postgres psql -U postgres -d cora -c "SELECT location_id, expires_at, updated_at FROM ghl_oauth_tokens ORDER BY updated_at DESC LIMIT 5;"` shows a fresh row for the target `location_id`.
+
+### 9.2 Push one real write and visually confirm
+
+Run via stdin into the running `api` container (no file needed on the host — the image has no
+bind mount, source is baked in per `docker-compose.yml`):
+
+```bash
+docker compose exec -T api python <<'PYEOF'
+import httpx
+from app.config import get_settings
+from app.db import get_sync_session
+from app.services.ghl_oauth import get_valid_access_token
+from app.adapters.ghl_conversations import GhlConversationsClient
+
+LOCATION_ID = "<target location id>"
+
+settings = get_settings().model_copy(update={"ghl_write_conversation_log": True})
+
+with get_sync_session() as session:
+    access_token = get_valid_access_token(session, LOCATION_ID, settings)
+
+if not access_token:
+    print("No stored token for this location.")
+    raise SystemExit(1)
+
+http = httpx.Client(base_url=settings.ghl_base_url, timeout=settings.ghl_timeout_seconds)
+headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json", "Version": "2021-07-28"}
+
+resp = http.get("/contacts/", params={"locationId": LOCATION_ID, "limit": 5}, headers=headers)
+contacts = resp.json().get("contacts", [])
+test_phone = "+14155552671"
+if not contacts:
+    create_resp = http.post("/contacts/", json={"locationId": LOCATION_ID, "firstName": "Cora", "lastName": "TestCall", "phone": test_phone}, headers={**headers, "Content-Type": "application/json"})
+    contact = create_resp.json()["contact"]
+else:
+    contact = contacts[0]
+    if contact.get("phone") != test_phone:
+        http.put(f"/contacts/{contact['id']}", json={"phone": test_phone}, headers={**headers, "Content-Type": "application/json"})
+        contact["phone"] = test_phone
+
+client = GhlConversationsClient(settings=settings)
+result = client.write_outbound_call(access_token, contact_id=contact["id"], to_phone=contact["phone"], from_phone="+14155552672", call_duration_seconds=97, call_status="completed")
+print(f"write_outbound_call result: {result}")
+http.close()
+client.close()
+PYEOF
+```
+
+`ghl_write_conversation_log` is force-set to `True` in-process only (via `model_copy`) — this does
+not touch `.env` or persist beyond the one-off script, so it's safe to run even when the real
+shadow-gate flag is `false`.
+
+3. Open the contact in the GHL UI → **Conversations** tab → confirm an "Outbound Call" activity
+   entry appears with matching duration/timestamp. This human visual check is Acceptance
+   Criterion 12 / 9's non-automatable step — the API returning `201 success:true` alone is not
+   sufficient per spec/20 §5's evaluation design.
+
+### 9.3 Known-good run (sandbox, for reference)
+
+- Location: `eWe9cRDf0UmSSIBxBMAO` ("Cora S" sandbox agency, company `k7UtA5ILPawzi0wIV2Ty`)
+- Contact: `f7IQkkCdAeY6jUYp0QMw`, phone `+14155552671`
+- Result: `{"success": true, "conversationId": "h0ME6iVkPyWUh1mfQh9n", "messageId": "2U2d8c6baqoSjLWYkYDR"}`
+- Visually confirmed in GHL UI: "Outbound Call" activity bubble on the contact's Conversations
+  timeline, timestamped correctly.
