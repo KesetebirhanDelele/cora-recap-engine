@@ -111,7 +111,7 @@ def run_call_analysis(job_id: str) -> None:
                     "run_call_analysis: outbound campaigns paused — releasing | "
                     "campaign=%r job_id=%s", _campaign, job_id,
                 )
-                release_job_to_pending(session, job)
+                release_job_to_pending(session, job, defer_seconds=60)
                 session.commit()
                 return
 

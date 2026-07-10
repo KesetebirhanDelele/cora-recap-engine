@@ -133,6 +133,160 @@ def get_health(session: Session) -> dict[str, Any]:
     }
 
 
+def get_worker_activity(session: Session) -> dict[str, Any]:
+    """
+    Per-worker throughput and latency over the last 10 minutes.
+
+    Returns every worker seen in a running state or that completed/failed a job
+    in the last 10 minutes. Two queries:
+      1. Per-worker summary: active flag, current job type, job count, avg duration.
+      2. Per-worker per-job-type breakdown for the detail rows.
+    """
+    summary_rows = session.execute(text("""
+        SELECT
+            claimed_by,
+            BOOL_OR(status = 'running' AND lease_expires_at > NOW())        AS is_active,
+            MIN(CASE WHEN status = 'running'
+                      AND lease_expires_at > NOW() THEN job_type END)        AS current_job_type,
+            COUNT(*) FILTER (
+                WHERE status IN ('completed','failed')
+                  AND updated_at >= NOW() - INTERVAL '10 minutes'
+            )                                                                AS jobs_last_10m,
+            ROUND(AVG(
+                GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
+            ) FILTER (
+                WHERE status = 'completed'
+                  AND updated_at >= NOW() - INTERVAL '10 minutes'
+                  AND claimed_at IS NOT NULL
+            )::numeric, 1)                                                   AS avg_duration_s
+        FROM scheduled_jobs
+        WHERE claimed_by IS NOT NULL
+          AND claimed_by LIKE 'worker-%'
+          AND (
+              (status = 'running' AND lease_expires_at > NOW())
+              OR (status IN ('completed','failed')
+                  AND updated_at >= NOW() - INTERVAL '10 minutes')
+          )
+        GROUP BY claimed_by
+        ORDER BY claimed_by
+    """)).fetchall()
+
+    breakdown_rows = session.execute(text("""
+        SELECT
+            claimed_by,
+            job_type,
+            COUNT(*)                                                          AS cnt,
+            ROUND(AVG(
+                GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
+            )::numeric, 1)                                                    AS avg_duration_s
+        FROM scheduled_jobs
+        WHERE status IN ('completed','failed')
+          AND updated_at >= NOW() - INTERVAL '10 minutes'
+          AND claimed_by IS NOT NULL
+          AND claimed_by LIKE 'worker-%'
+          AND claimed_at IS NOT NULL
+        GROUP BY claimed_by, job_type
+        ORDER BY claimed_by, cnt DESC
+    """)).fetchall()
+
+    # Index breakdown by worker
+    breakdown_by_worker: dict[str, list] = {}
+    for r in breakdown_rows:
+        worker_id = r[0]
+        breakdown_by_worker.setdefault(worker_id, []).append({
+            "job_type": r[1],
+            "count": int(r[2]),
+            "avg_duration_s": float(r[3]) if r[3] is not None else None,
+        })
+
+    now = datetime.now(tz=timezone.utc)
+    workers = []
+    for r in summary_rows:
+        worker_id = r[0]
+        # worker_id format: worker-{role}-{host6}  (e.g. worker-default-abc123)
+        # Use as-is for display — it's already compact and human-readable.
+        workers.append({
+            "worker_id": worker_id,
+            "worker_id_short": worker_id,
+            "is_active": bool(r[1]),
+            "current_job_type": r[2],
+            "jobs_last_10m": int(r[3]) if r[3] is not None else 0,
+            "avg_duration_s": float(r[4]) if r[4] is not None else None,
+            "breakdown": breakdown_by_worker.get(worker_id, []),
+        })
+
+    return {
+        "workers": workers,
+        "window_minutes": 10,
+        "recorded_at": now.isoformat(),
+    }
+
+
+def get_worker_activity_trend(session: Session) -> dict[str, Any]:
+    """
+    6-hour per-worker trend in 10-minute buckets.
+
+    Uses PERCENTILE_CONT(0.5) (median) for duration — not average — so a single
+    stuck job does not skew the reported duration for an entire bucket.
+
+    Returns flat points list + a deduped worker_ids index. The frontend pivots
+    points into wide format for recharts stacked-area and multi-line charts.
+    """
+    rows = session.execute(text("""
+        SELECT
+            claimed_by,
+            date_trunc('hour', updated_at)
+                + (EXTRACT(MINUTE FROM updated_at)::int / 10) * INTERVAL '10 minutes'
+                                                                             AS bucket,
+            COUNT(*)                                                          AS jobs,
+            ROUND(
+                (PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY GREATEST(EXTRACT(EPOCH FROM (updated_at - claimed_at)), 0)
+                ) FILTER (WHERE claimed_at IS NOT NULL))::numeric,
+            1)                                                                AS median_duration_s
+        FROM scheduled_jobs
+        WHERE claimed_by IS NOT NULL
+          AND claimed_by LIKE 'worker-%'
+          AND updated_at >= NOW() - INTERVAL '6 hours'
+          AND status IN ('completed', 'failed')
+        GROUP BY
+            claimed_by,
+            date_trunc('hour', updated_at)
+                + (EXTRACT(MINUTE FROM updated_at)::int / 10) * INTERVAL '10 minutes'
+        ORDER BY bucket, claimed_by
+    """)).fetchall()
+
+    seen_workers: dict[str, str] = {}
+    for r in rows:
+        worker_id = r[0]
+        if worker_id not in seen_workers:
+            # worker_id format: worker-{role}-{host6} — use as-is for display.
+            seen_workers[worker_id] = worker_id
+
+    points = [
+        {
+            "bucket": r[1].isoformat() if r[1] else None,
+            "worker_id": r[0],
+            "worker_id_short": seen_workers[r[0]],
+            "jobs": int(r[2]),
+            "median_duration_s": float(r[3]) if r[3] is not None else None,
+        }
+        for r in rows
+    ]
+
+    now = datetime.now(tz=timezone.utc)
+    return {
+        "points": points,
+        "worker_ids": [
+            {"worker_id": wid, "worker_id_short": short}
+            for wid, short in seen_workers.items()
+        ],
+        "window_minutes": 360,
+        "bucket_minutes": 10,
+        "recorded_at": now.isoformat(),
+    }
+
+
 def get_metrics(
     session: Session,
     campaign: str | None = None,
@@ -381,21 +535,9 @@ def get_metrics(
 
 _VM_IN = "('voicemail','hangup_on_voicemail','left_voicemail','voicemail_detected','machine_detected')"
 
-# Booking signal varies by campaign:
-#   All campaigns → GHL native booking action: action_ghl_create_booking with non-null booking_id
-#   Synthflow stores return_value in two formats depending on version:
-#     JSON:   {"booking_id": "...", "error_message": null, "status": "success"}
-#     Python: {'booking_id': '...', 'error_message': None, 'status': 'success'}
-#   Presence of action_ghl_create_booking + booking_id not null = successful booking.
-#   NewLead also fires extract_info action with {'appointment booked': True} as a secondary signal.
+# Booking signal: action_ghl_create_booking fired in executed_actions.
 _BOOKED_COND = """(
-    ce.detected_intent = 'enrolled'
-    OR ce.raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-    OR (
-        ce.raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
-        AND ce.raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
-        AND ce.raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
-    )
+    ce.raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
 )"""
 
 # Unique contact dedup: inbound callers are identified by phone_number_from (the number
@@ -456,6 +598,8 @@ def get_voice_performance(
     from_date: datetime | None = None,
     to_date: datetime | None = None,
     all_time: bool = False,
+    wow_mode: bool = False,
+    wow_shift: bool = False,
 ) -> dict[str, Any]:
     """
     Voice Call Performance analytics — feeds /voice-performance dashboard page.
@@ -467,6 +611,10 @@ def get_voice_performance(
 
     all_time=True: skips the default 28-day floor and queries from the earliest
     record, so KPIs and campaign_breakdown reflect cumulative totals.
+
+    wow_mode=True: wow_changes is computed as this calendar week (Mon–now) vs
+    last calendar week (Mon–Sun, complete), regardless of from_date/to_date.
+    All other response fields still reflect the requested date window.
     """
     now = datetime.now(tz=timezone.utc)
     to_dt = to_date or now
@@ -504,13 +652,82 @@ def get_voice_performance(
             return None
         return round((curr - prev) / abs(prev) * 100, 1)
 
-    wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
+    if wow_mode:
+        # Calendar-week WoW: week containing to_dt (Mon 00:00 → to_dt) vs prior full week.
+        # When to_dt == now (default, no to_date supplied) this is identical to the old behaviour.
+        ref = to_dt
+        weekday = ref.weekday()  # Mon=0 … Sun=6
+        this_week_start = (ref - timedelta(days=weekday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        last_week_start = this_week_start - timedelta(days=7)
+        days_this_week = max(1.0, (ref - this_week_start).total_seconds() / 86400)
+        wow_curr = _compute_voice_kpis(session, this_week_start, ref, days_this_week)
+        wow_prev = _compute_voice_kpis(session, last_week_start, this_week_start, 7.0)
+        wow_changes = {k: _wow(wow_curr.get(k), wow_prev.get(k)) for k in wow_keys}
+
+        # Count-based KPIs use cumulative formula:
+        # WoW% = (total_till_ref - total_till_end_of_last_week) / total_till_end_of_last_week
+        cum_row = session.execute(text(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                ) AS booked_now,
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND created_at < :week_start
+                ) AS booked_prev,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) AS unique_now,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) FILTER (WHERE created_at < :week_start) AS unique_prev
+            FROM call_events ce
+            WHERE NOT ce.report_excluded
+              AND created_at <= :ref_dt
+        """), {"week_start": this_week_start, "ref_dt": ref}).fetchone()
+        if cum_row:
+            wow_changes["booked_appts"]     = _wow(cum_row[0], cum_row[1])
+            wow_changes["unique_contacts"]  = _wow(cum_row[2], cum_row[3])
+    elif wow_shift:
+        # Rate-based KPIs: shift the ENTIRE filter range back 7 days.
+        # Count-based KPIs (unique_contacts, booked_appts): use calendar-week cumulative
+        # formula — COUNT DISTINCT is not meaningful when two large overlapping windows
+        # differ by only 7 days at each boundary.
+        shift = timedelta(days=7)
+        kpis_shifted = _compute_voice_kpis(session, from_dt - shift, to_dt - shift, days)
+        wow_changes = {k: _wow(kpis_curr.get(k), kpis_shifted.get(k)) for k in wow_keys}
+
+        # Override unique_contacts and booked_appts with calendar-week cumulative formula
+        # (same as wow_mode): new contacts/bookings this week vs total before this week.
+        ref = to_dt
+        weekday = ref.weekday()
+        this_week_start = (ref - timedelta(days=weekday)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        cum_row = session.execute(text(f"""
+            SELECT
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                ) AS booked_now,
+                COUNT(*) FILTER (WHERE
+                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+                    AND created_at < :week_start
+                ) AS booked_prev,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) AS unique_now,
+                COUNT(DISTINCT {_UNIQUE_PHONE}) FILTER (WHERE created_at < :week_start) AS unique_prev
+            FROM call_events ce
+            WHERE NOT ce.report_excluded
+              AND created_at <= :ref_dt
+        """), {"week_start": this_week_start, "ref_dt": ref}).fetchone()
+        if cum_row:
+            wow_changes["booked_appts"]    = _wow(cum_row[0], cum_row[1])
+            wow_changes["unique_contacts"] = _wow(cum_row[2], cum_row[3])
+    else:
+        wow_changes = {k: _wow(kpis_curr.get(k), kpis_prev.get(k)) for k in wow_keys}
 
     # ── Weekly time series ────────────────────────────────────────────────────
     # Group by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
     ts_rows = session.execute(text(f"""
         SELECT
-            date_trunc('week', ce.call_started_at)  AS week_start,
+            date_trunc('week', COALESCE(ce.call_started_at, ce.created_at))   AS week_start,
             ce.voice_agent                                                     AS voice_agent,
             COUNT(*)                                                           AS total_calls,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts,
@@ -520,10 +737,10 @@ def get_voice_performance(
             COUNT(*) FILTER (WHERE {_BOOKED_COND})                            AS booked,
             AVG(COALESCE(ce.duration_seconds, 0))                             AS avg_duration
         FROM call_events ce
-        WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
-          AND ce.call_started_at <= :to_dt
+        WHERE COALESCE(ce.call_started_at, ce.created_at) >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND NOT ce.report_excluded
-        GROUP BY date_trunc('week', ce.call_started_at), ce.voice_agent
+        GROUP BY date_trunc('week', COALESCE(ce.call_started_at, ce.created_at)), ce.voice_agent
         ORDER BY week_start ASC, ce.voice_agent
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
 
@@ -531,13 +748,13 @@ def get_voice_performance(
     # double-counting contacts who received calls from multiple campaign types.
     ts_unique_rows = session.execute(text(f"""
         SELECT
-            date_trunc('week', ce.call_started_at)  AS week_start,
+            date_trunc('week', COALESCE(ce.call_started_at, ce.created_at))   AS week_start,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                    AS unique_contacts
         FROM call_events ce
-        WHERE ce.call_started_at >= date_trunc('week', CAST(:from_dt AS timestamptz))
-          AND ce.call_started_at <= :to_dt
+        WHERE COALESCE(ce.call_started_at, ce.created_at) >= date_trunc('week', CAST(:from_dt AS timestamptz))
+          AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND NOT ce.report_excluded
-        GROUP BY date_trunc('week', ce.call_started_at)
+        GROUP BY date_trunc('week', COALESCE(ce.call_started_at, ce.created_at))
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
     # Build a week → true unique count lookup
     week_unique: dict[str, int] = {}
@@ -653,19 +870,34 @@ def get_voice_performance(
 
     # ── Voice agent breakdown for scatter ─────────────────────────────────────
     # Grouped by voice_agent (ColdLead | NewLead | Inbound) — per-call attribute.
+    # Pickup-rate stats (status-filtered) joined to booking count (status-agnostic).
+    # Booking signal fires on NULL-status Inbound records — must be counted separately.
     camp_rows = session.execute(text(f"""
         SELECT
             ce.voice_agent,
             COUNT(*)                                                        AS total_calls,
             COUNT(DISTINCT {_UNIQUE_PHONE})                                 AS unique_contacts,
             COUNT(*) FILTER (WHERE ce.status = 'completed')                AS completed,
-            COUNT(*) FILTER (WHERE {_BOOKED_COND})                         AS booked
+            MAX(COALESCE(bk.booked, 0))                                    AS booked
         FROM call_events ce
+        LEFT JOIN (
+            SELECT voice_agent, COUNT(*) AS booked
+            FROM call_events
+            WHERE NOT report_excluded
+              AND COALESCE(call_started_at, created_at)
+                      >= date_trunc('week', CAST(:from_dt AS timestamptz))
+              AND COALESCE(call_started_at, created_at) <= :to_dt
+              AND voice_agent IS NOT NULL
+              AND raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
+            GROUP BY voice_agent
+        ) bk ON bk.voice_agent = ce.voice_agent
         WHERE COALESCE(ce.call_started_at, ce.created_at)
                   >= date_trunc('week', CAST(:from_dt AS timestamptz))
           AND COALESCE(ce.call_started_at, ce.created_at) <= :to_dt
           AND ce.voice_agent IS NOT NULL
           AND NOT ce.report_excluded
+          AND ce.status IS NOT NULL
+          AND ce.status <> ''
         GROUP BY ce.voice_agent
         ORDER BY total_calls DESC
     """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
@@ -676,12 +908,13 @@ def get_voice_performance(
         u = int(r[2])
         c = int(r[3])
         b = int(r[4])
+        avg_cpd = round(t / max(1.0, days), 1)
         campaign_breakdown.append({
             "campaign": r[0],
             "total_calls": t,
             "pickup_rate": round(c / t * 100, 1) if t else 0.0,
             "booking_rate": round(b / u * 100, 1) if u else 0.0,
-            "avg_calls_per_day": round(t / max(1.0, days), 1),
+            "avg_calls_per_day": avg_cpd,
         })
 
     return {
@@ -983,6 +1216,10 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     w2h_start = now - timedelta(hours=2)
     w7d_start = now - timedelta(days=7)
     w14d_start = now - timedelta(days=14)
+    # Calendar-week anchors (Mon 00:00 UTC)
+    this_week_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+    last_week_start = this_week_start - timedelta(days=7)
+    last_week_end   = this_week_start  # exclusive upper bound
 
     def _scalar(sql: str, params: dict | None = None) -> Any:
         return session.execute(text(sql), params or {}).scalar()
@@ -1005,6 +1242,38 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     stuck = _scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'") or 0
     expired = _scalar("SELECT COUNT(*) FROM scheduled_jobs WHERE status = 'running' AND lease_expires_at < NOW()") or 0
     backlog = stuck + expired
+
+    # ── webhook_delivery_pct (24h outbound call delivery rate) ───────────────
+    wf_row = session.execute(text("""
+        SELECT COUNT(*) AS total, COUNT(ce.call_id) AS got
+        FROM scheduled_jobs sj
+        LEFT JOIN LATERAL (
+            SELECT call_id FROM call_events
+            WHERE contact_id = sj.payload_json->>'contact_id'
+              AND created_at >= sj.updated_at - INTERVAL '10 minutes'
+              AND created_at <= sj.updated_at + INTERVAL '7 days'
+            LIMIT 1
+        ) ce ON true
+        WHERE sj.job_type = 'launch_outbound_call'
+          AND sj.status   = 'completed'
+          AND sj.updated_at >= NOW() - INTERVAL '24 hours'
+          AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+          AND NOT EXISTS (
+              SELECT 1 FROM lead_state ls
+              WHERE ls.contact_id = sj.payload_json->>'contact_id'
+                AND ls.status IN ('terminal', 'closed')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj2
+              WHERE sj2.entity_id = sj.payload_json->>'contact_id'
+                AND sj2.job_type  = 'launch_outbound_call'
+                AND sj2.id       != sj.id
+                AND sj2.status   IN ('pending', 'claimed', 'running')
+          )
+    """)).fetchone()
+    wf_total = int(wf_row[0]) if wf_row else 0
+    wf_got   = int(wf_row[1]) if wf_row else 0
+    webhook_delivery_pct = round(wf_got / wf_total, 4) if wf_total > 0 else None
 
     # ── active_alerts ─────────────────────────────────────────────────────────
     active_alerts = _scalar("SELECT COUNT(*) FROM alert_events WHERE status = 'active'") or 0
@@ -1067,53 +1336,65 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         {"a": w48_start, "b": w24_start},
     ))
 
-    # ── booking_rate (booked / unique phones) ────────────────────────────────
+    # ── booking_rate WoW: this calendar week (Mon–now) vs last full week (Mon–Sun) ──
     book_curr = _r(_scalar(
         """SELECT COUNT(*) FILTER (WHERE
-                detected_intent = 'enrolled'
-                OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-                OR (
-                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
-                    AND raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
-                    AND raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
-                )
+                raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
            )::float / NULLIF(COUNT(DISTINCT CASE
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
            END), 0)
            FROM call_events WHERE created_at >= :s""",
-        {"s": w24_start},
+        {"s": this_week_start},
     ))
     book_prev = _r(_scalar(
         """SELECT COUNT(*) FILTER (WHERE
-                detected_intent = 'enrolled'
-                OR raw_payload_json->>'executed_actions' LIKE '%appointment booked%True%'
-                OR (
-                    raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
-                    AND raw_payload_json->>'executed_actions' NOT LIKE '%"booking_id": null%'
-                    AND raw_payload_json->>'executed_actions' NOT LIKE '%''booking_id'': None%'
-                )
+                raw_payload_json->>'executed_actions' LIKE '%action_ghl_create_booking%'
            )::float / NULLIF(COUNT(DISTINCT CASE
                 WHEN lower(direction) = 'inbound' THEN raw_payload_json->>'phone_number_from'
                 ELSE raw_payload_json->>'phone_number_to'
            END), 0)
-           FROM call_events WHERE created_at BETWEEN :a AND :b""",
-        {"a": w48_start, "b": w24_start},
+           FROM call_events WHERE created_at >= :a AND created_at < :b""",
+        {"a": last_week_start, "b": last_week_end},
     ))
 
-    # ── active_leads ──────────────────────────────────────────────────────────
+    # ── active_leads (has pending job) + stale_leads (no pending job) ────────
     active_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state"
-        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
-        " AND do_not_call IS NOT TRUE"
+        "SELECT COUNT(*) FROM lead_state ls"
+        " WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))"
+        " AND ls.do_not_call IS NOT TRUE"
+        " AND EXISTS (SELECT 1 FROM scheduled_jobs sj WHERE sj.entity_id = ls.contact_id"
+        "             AND sj.status IN ('pending', 'claimed', 'running'))"
     ) or 0
     prev_active_leads = _scalar(
-        "SELECT COUNT(*) FROM lead_state"
-        " WHERE (status IS NULL OR status NOT IN ('closed', 'terminal'))"
-        " AND do_not_call IS NOT TRUE"
-        " AND created_at >= :s",
+        "SELECT COUNT(*) FROM lead_state ls"
+        " WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))"
+        " AND ls.do_not_call IS NOT TRUE"
+        " AND ls.created_at >= :s"
+        " AND EXISTS (SELECT 1 FROM scheduled_jobs sj WHERE sj.entity_id = ls.contact_id"
+        "             AND sj.status IN ('pending', 'claimed', 'running'))",
         {"s": w7d_start},
     ) or 0
+    stale_leads = _scalar("""
+        WITH last_activity AS (
+            SELECT DISTINCT ON (entity_id)
+                entity_id, updated_at AS last_at
+            FROM scheduled_jobs
+            WHERE status NOT IN ('pending', 'claimed', 'running')
+            ORDER BY entity_id, updated_at DESC
+        )
+        SELECT COUNT(*) FROM lead_state ls
+        LEFT JOIN last_activity la ON la.entity_id = ls.contact_id
+        WHERE (ls.status IS NULL OR ls.status NOT IN ('closed', 'terminal'))
+          AND ls.do_not_call IS NOT TRUE
+          AND (ls.ai_campaign_value IS NULL OR ls.ai_campaign_value != '3')
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj
+              WHERE sj.entity_id = ls.contact_id
+                AND sj.status IN ('pending', 'claimed', 'running')
+          )
+          AND (la.last_at IS NULL OR la.last_at < NOW() - INTERVAL '2 hours')
+    """) or 0
 
     # ── in_vm_sequence ────────────────────────────────────────────────────────
     in_vm_sequence = _scalar("""
@@ -1135,12 +1416,12 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     # ── finalized_today (resets at midnight America/Chicago) ──────────────────
     finalized_today = int(_scalar(
         f"SELECT COUNT(*) FROM lead_state"
-        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3')"
         f"   AND updated_at >= {_midnight_cst}"
     ) or 0)
     finalized_yesterday = int(_scalar(
         f"SELECT COUNT(*) FROM lead_state"
-        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE)"
+        f" WHERE (status IN ('closed', 'terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3')"
         f"   AND updated_at >= {_yesterday_start}"
         f"   AND updated_at < {_midnight_cst}"
     ) or 0)
@@ -1200,6 +1481,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "events_per_min":             _pt(round(ev_curr / 5, 1),  round(ev_prev / 5, 1)),
         "open_exceptions":            _pt(open_exc,                prev_open_exc),
         "backlog_size":               _pt(backlog,                 None),
+        "webhook_delivery_pct":       _pt(webhook_delivery_pct,    None),
         "active_alerts":              _pt(active_alerts,           None),
         "lookup_rate":                _pt(lookup_curr,             lookup_prev),
         "config_health":              _pt(config_health,           config_health),
@@ -1208,6 +1490,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "meaningful_engagement_rate": _pt(mer_curr,                mer_prev),
         "booking_rate":               _pt(book_curr,               book_prev),
         "active_leads":               _pt(active_leads,            prev_active_leads),
+        "stale_leads":                _pt(stale_leads,             None),
         "in_vm_sequence":             _pt(in_vm_sequence,          prev_in_vm_sequence),
         "finalized_today":            _pt(finalized_today,         finalized_yesterday),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),
@@ -1308,7 +1591,7 @@ def get_recent_calls(
             COALESCE(
                 -- Primary: raw_payload_json->>'Name' unless it looks like a phone number
                 CASE
-                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ '^\+?[\d\s\-\(\)\.]{{7,}}$'
+                    WHEN TRIM(ce.raw_payload_json->>'Name') ~ '^\\+?[\\d\\s\\-\\(\\)\\.]{{7,}}$'
                       OR TRIM(ce.raw_payload_json->>'Name') = ''
                       OR ce.raw_payload_json->>'Name' IS NULL
                     THEN NULL
@@ -1474,4 +1757,117 @@ def get_intent_calls(
         "campaign_filter": campaign,
         "total": len(calls),
         "calls": calls,
+    }
+
+
+def get_webhook_failures(session: Session) -> dict[str, Any]:
+    """
+    Return webhook delivery failures for launch_outbound_call jobs in the last 24 hours.
+
+    A failure is a completed launch_outbound_call with no matching call_events row
+    within 4 hours after execution. Jobs executed within the last 20 minutes are
+    excluded — Synthflow may still be delivering those webhooks.
+    """
+    summary_row = session.execute(text("""
+        SELECT
+            COUNT(*)                     AS total_launched,
+            COUNT(ce.call_id)            AS got_webhook,
+            COUNT(*) - COUNT(ce.call_id) AS missing
+        FROM scheduled_jobs sj
+        LEFT JOIN LATERAL (
+            SELECT call_id FROM call_events
+            WHERE contact_id = sj.payload_json->>'contact_id'
+              AND created_at >= sj.updated_at - INTERVAL '10 minutes'
+              AND created_at <= sj.updated_at + INTERVAL '7 days'
+            LIMIT 1
+        ) ce ON true
+        WHERE sj.job_type  = 'launch_outbound_call'
+          AND sj.status    = 'completed'
+          AND sj.updated_at >= NOW() - INTERVAL '24 hours'
+          AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+          AND NOT EXISTS (
+              SELECT 1 FROM lead_state ls
+              WHERE ls.contact_id = sj.payload_json->>'contact_id'
+                AND ls.status IN ('terminal', 'closed')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj2
+              WHERE sj2.entity_id = sj.payload_json->>'contact_id'
+                AND sj2.job_type  = 'launch_outbound_call'
+                AND sj2.id       != sj.id
+                AND sj2.status   IN ('pending', 'claimed', 'running')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM audit_log al
+              WHERE al.entity_id = sj.id
+                AND al.action = 'manual_webhook_ignore'
+          )
+    """)).fetchone()
+
+    total   = int(summary_row[0]) if summary_row else 0
+    got     = int(summary_row[1]) if summary_row else 0
+    missing = int(summary_row[2]) if summary_row else 0
+    webhook_pct = round(100.0 * got / total) if total > 0 else None
+
+    rows = session.execute(text("""
+        SELECT
+            sj.id                                                         AS job_id,
+            sj.payload_json->>'contact_id'                                AS contact_id,
+            sj.payload_json->>'campaign_name'                             AS campaign,
+            sj.run_at                                                     AS placed_at,
+            sj.updated_at                                                 AS executed_at,
+            ROUND(EXTRACT(EPOCH FROM (NOW() - sj.updated_at)) / 60)::int AS minutes_since_execution
+        FROM scheduled_jobs sj
+        WHERE sj.job_type  = 'launch_outbound_call'
+          AND sj.status    = 'completed'
+          AND sj.updated_at >= NOW() - INTERVAL '24 hours'
+          AND sj.updated_at <= NOW() - INTERVAL '20 minutes'
+          AND NOT EXISTS (
+              SELECT 1 FROM call_events ce
+              WHERE ce.contact_id = sj.payload_json->>'contact_id'
+                AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
+                AND ce.created_at <= sj.updated_at + INTERVAL '7 days'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM lead_state ls
+              WHERE ls.contact_id = sj.payload_json->>'contact_id'
+                AND ls.status IN ('terminal', 'closed')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM scheduled_jobs sj2
+              WHERE sj2.entity_id = sj.payload_json->>'contact_id'
+                AND sj2.job_type  = 'launch_outbound_call'
+                AND sj2.id       != sj.id
+                AND sj2.status   IN ('pending', 'claimed', 'running')
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM audit_log al
+              WHERE al.entity_id = sj.id
+                AND al.action = 'manual_webhook_ignore'
+          )
+        ORDER BY sj.updated_at DESC
+        LIMIT 200
+    """)).fetchall()
+
+    failures = []
+    for r in rows:
+        failures.append({
+            "job_id":                  r[0],
+            "contact_id":              r[1],
+            "campaign":                r[2],
+            "placed_at":               r[3].isoformat() if r[3] and hasattr(r[3], "isoformat") else str(r[3]),
+            "executed_at":             r[4].isoformat() if r[4] and hasattr(r[4], "isoformat") else str(r[4]),
+            "minutes_since_execution": int(r[5]) if r[5] is not None else None,
+        })
+
+    return {
+        "summary": {
+            "total_launched": total,
+            "got_webhook":    got,
+            "missing":        missing,
+            "webhook_pct":    webhook_pct,
+        },
+        "failures":     failures,
+        "window_hours": 24,
+        "recorded_at":  datetime.now(tz=timezone.utc).isoformat(),
     }

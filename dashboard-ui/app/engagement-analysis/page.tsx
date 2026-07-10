@@ -397,6 +397,11 @@ export default function EngagementAnalysisPage() {
 
   useEffect(() => {
     load(fromDate, toDate, activeCampaign, activeVoiceAgent, activeDirection);
+    const interval = setInterval(
+      () => load(fromDate, toDate, activeCampaign, activeVoiceAgent, activeDirection),
+      60_000,
+    );
+    return () => clearInterval(interval);
   }, [fromDate, toDate, activeCampaign, activeVoiceAgent, activeDirection, load]);
 
   async function handleIntentClick(intentRaw: string) {

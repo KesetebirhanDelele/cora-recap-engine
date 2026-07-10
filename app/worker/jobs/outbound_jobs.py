@@ -20,7 +20,7 @@ The Synthflow call completion arrives separately via:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
@@ -28,6 +28,39 @@ from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, m
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
+
+_CALL_BATCH_SIZE = 4     # calls per slot
+_CALL_SLOT_SECONDS = 300  # 5-minute slot window
+# Spacing between individual calls within a slot: 300 / 4 = 75 s.
+# Calls in the same batch fire at +0s, +75s, +150s, +225s — never simultaneously.
+_CALL_WITHIN_SLOT_SPACING = _CALL_SLOT_SECONDS // _CALL_BATCH_SIZE  # 75 s
+
+
+def _compute_window_run_at(session, window_start: datetime) -> datetime:
+    """
+    Assign a slot-based run_at that spreads calls within the slot window.
+
+    Each pending job increments the position counter. The slot index
+    (pending // batch_size) selects the 5-minute window; the within-slot
+    offset (pending % batch_size) * 75s staggers individual calls so they
+    never fire simultaneously. Maximum 4 calls per 5-minute slot, separated
+    by 75 seconds each.
+    """
+    from sqlalchemy import func, select
+
+    from app.models.scheduled_job import ScheduledJob
+
+    pending = session.scalar(
+        select(func.count()).select_from(ScheduledJob).where(
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.status.in_(["pending", "claimed"]),
+            ScheduledJob.run_at >= window_start,
+            ScheduledJob.run_at < window_start + timedelta(hours=4),
+        )
+    ) or 0
+    slot = pending // _CALL_BATCH_SIZE
+    within_slot = (pending % _CALL_BATCH_SIZE) * _CALL_WITHIN_SLOT_SPACING
+    return window_start + timedelta(seconds=slot * _CALL_SLOT_SECONDS + within_slot)
 
 
 def launch_outbound_call_job(job_id: str) -> None:
@@ -67,7 +100,7 @@ def launch_outbound_call_job(job_id: str) -> None:
                     "launch_outbound_call_job: outbound campaigns paused — releasing | "
                     "campaign=%r job_id=%s", _campaign, job_id,
                 )
-                release_job_to_pending(session, job)
+                release_job_to_pending(session, job, defer_seconds=60)
                 session.commit()
                 return
 
@@ -80,6 +113,33 @@ def launch_outbound_call_job(job_id: str) -> None:
         campaign_name = payload.get("campaign_name", "New_Lead")
         correlation_id = payload.get("correlation_id", job_id)
         contact_id = payload.get("contact_id") or phone
+
+        # ── Blocked dial-number guard ─────────────────────────────────────────
+        # Prevents dialing Synthflow agent numbers or other system phones that
+        # were accidentally enrolled as leads (e.g. test contacts in GHL).
+        _blocked = {
+            n.strip()
+            for n in (settings.blocked_dial_numbers or "").split(",")
+            if n.strip()
+        }
+        if phone in _blocked:
+            logger.error(
+                "launch_outbound_call_job: phone is on blocked list — cancelling | "
+                "phone=%s contact_id=%s job_id=%s",
+                phone, contact_id, job_id,
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            create_exception(
+                session,
+                type="blocked_dial_number",
+                severity="critical",
+                context={"phone": phone, "contact_id": contact_id, "job_id": job_id},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            session.commit()
+            return
 
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
@@ -97,10 +157,12 @@ def launch_outbound_call_job(job_id: str) -> None:
             contact_tz = get_contact_timezone(session, contact_id, settings)
             if not is_campaign_active(campaign_name, now, settings, contact_tz, session):
                 next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
+                run_at = _compute_window_run_at(session, next_open)
                 logger.info(
                     "launch_outbound_call_job: outside active window — deferring | "
-                    "campaign=%s contact_tz=%s job_id=%s rescheduled_for=%s",
-                    campaign_name, contact_tz, job_id, next_open.isoformat(),
+                    "campaign=%s contact_tz=%s job_id=%s rescheduled_for=%s slot_offset_s=%d",
+                    campaign_name, contact_tz, job_id, run_at.isoformat(),
+                    int((run_at - next_open).total_seconds()),
                 )
                 cancel_job(session, job.id)
                 schedule_job(
@@ -108,7 +170,7 @@ def launch_outbound_call_job(job_id: str) -> None:
                     job_type="launch_outbound_call",
                     entity_type=job.entity_type,
                     entity_id=job.entity_id,
-                    run_at=next_open,
+                    run_at=run_at,
                     payload=payload,
                 )
                 return

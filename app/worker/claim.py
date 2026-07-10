@@ -33,8 +33,23 @@ DEFAULT_LEASE_SECONDS = 300  # 5 minutes
 
 
 def get_worker_id() -> str:
-    """Return a unique identifier for the current worker process."""
-    return f"{socket.gethostname()}-{os.getpid()}"
+    """
+    Return a stable, human-readable identifier for the current worker process.
+
+    Format: worker-{role}-{host6}
+      - role  : WORKER_ROLE env var (set per service in docker-compose.yml)
+      - host6 : first 6 chars of the container hostname (unique per replica)
+
+    Examples:
+      worker-ai-abc123
+      worker-default-def456   ← replica 1
+      worker-default-ghi789   ← replica 2
+      worker-callbacks-jkl012
+      worker-retries-mno345
+    """
+    role = os.environ.get("WORKER_ROLE", "worker")
+    host = socket.gethostname()[:6]
+    return f"worker-{role}-{host}"
 
 
 def claim_job(
@@ -214,24 +229,36 @@ def cancel_job(session: Session, job_id: str) -> bool:
     return cancelled
 
 
-def release_job_to_pending(session: Session, job: ScheduledJob) -> None:
+def release_job_to_pending(
+    session: Session,
+    job: ScheduledJob,
+    defer_seconds: int = 0,
+) -> None:
     """
     Release a claimed job back to 'pending' without executing it.
 
-    Used by the system-pause check: when system_paused=true a worker claims
-    the job (to prevent other workers from double-claiming), then immediately
-    releases it back to pending so it will be re-picked up once the system
-    is resumed.
+    Used by the system-pause and campaign-pause checks: a worker claims the
+    job (to prevent double-claiming), then immediately releases it so it will
+    be re-picked up once the pause is lifted.
+
+    defer_seconds: when > 0, bumps run_at forward by that many seconds so
+    the scheduler loop does not immediately re-enqueue the job on the next
+    tick. Pass 0 (default) for system_paused — jobs should resume the instant
+    the system is unpaused. Pass ~60 for outbound_campaigns_paused — jobs
+    can wait a polling interval between re-checks without triggering false
+    queue-lag alerts.
 
     This is safe under concurrent workers — the version check ensures only
     the worker that holds the claim can release it.
     """
     now = datetime.now(tz=timezone.utc)
+    new_run_at = now + timedelta(seconds=defer_seconds) if defer_seconds > 0 else job.run_at
     result: CursorResult = session.execute(  # type: ignore[assignment]
         update(ScheduledJob)
         .where(ScheduledJob.id == job.id, ScheduledJob.version == job.version)
         .values(
             status="pending",
+            run_at=new_run_at,
             claimed_by=None,
             claimed_at=None,
             lease_expires_at=None,
@@ -242,8 +269,8 @@ def release_job_to_pending(session: Session, job: ScheduledJob) -> None:
     session.flush()
     if result.rowcount > 0:
         logger.info(
-            "release_job_to_pending: released (system paused) | job_id=%s job_type=%s",
-            job.id, job.job_type,
+            "release_job_to_pending: released | job_id=%s job_type=%s defer_seconds=%d",
+            job.id, job.job_type, defer_seconds,
         )
     else:
         logger.warning(

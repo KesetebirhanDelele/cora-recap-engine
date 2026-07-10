@@ -352,3 +352,165 @@ Mitigation: explicitly inspect `executed_actions` and never assume success.
 ### Risk: provider-specific statuses drift from internal routing semantics
 Mitigation: centralize normalization rules and persist both raw and normalized values.
 
+---
+
+## Known operational constraint: HTTP step concurrency limit
+
+**Observed 2026-04-27 (production incident).**
+
+### What happens
+Synthflow's HTTP step — the step inside the completed-call workflow that POSTs to `POST /v1/webhooks/calls` — has an undocumented concurrency limit. When a large number of calls complete simultaneously, the HTTP step drops webhooks silently. The call happened in Synthflow; Cora never receives the completion event. Affected leads are left with:
+- `launch_outbound_call` job status = `completed` (call was launched successfully)
+- No `call_event` row created (webhook never arrived)
+- Voicemail tier not advanced
+- No next call scheduled
+
+### Root cause
+All rescheduled calls deferred to the next active window (e.g. 9 AM CDT) were previously assigned `run_at = window_start` exactly, causing all of them to fire at the same second. On 2026-04-27, 366 calls fired simultaneously at 14:00:00 UTC, overwhelming the HTTP step.
+
+### Fix implemented (2026-04-27, tightened 2026-04-29, within-slot spread 2026-04-29)
+`_compute_window_run_at(session, window_start)` in `app/worker/jobs/outbound_jobs.py` assigns a slot-based `run_at` at reschedule time:
+- Counts all pending `launch_outbound_call` jobs in the 4-hour window
+- Slot index = `pending // _CALL_BATCH_SIZE` → selects the 5-minute window
+- Within-slot offset = `(pending % _CALL_BATCH_SIZE) * _CALL_WITHIN_SLOT_SPACING` → staggers individual calls by 75 s each
+- Returns `window_start + slot * 300s + within_slot_offset`
+
+Effect: 4 calls per 5-minute slot, separated by 75 seconds each (at +0s, +75s, +150s, +225s). No two calls in the same slot fire simultaneously. 100 deferred calls spread over ~2 hours.
+
+**History of tightening:**
+- 2026-04-27: `_CALL_BATCH_SIZE = 10`, `_CALL_SLOT_SECONDS = 120` (initial)
+- 2026-04-29: tightened to 4/300 — April 28 confirmed 10/2-min still exceeded Synthflow HTTP step capacity
+- 2026-04-29: added within-slot 75-second stagger — confirmed that 4 calls sharing the same `run_at` second still triggered drops even under the 4/slot cap
+
+### Design rule
+**Never assign `run_at = window_start` directly for rescheduled calls.** Always call `_compute_window_run_at(session, window_start)` so slot-based spacing and within-slot staggering are both applied.
+
+### Slot-aware voicemail retry scheduling (deployed 2026-04-29)
+
+`_schedule_retry_outbound_call()` previously used `now + delay_minutes` directly. A burst of calls at time T would produce a burst of retries at T+delay, recreating the concurrency spike at the next tier.
+
+**Fix (2026-04-29):** `_slot_aware_run_at(session, delay_minutes)` in `app/worker/jobs/voicemail_jobs.py` rounds `raw_run_at` down to the nearest 5-minute slot boundary and calls `_compute_window_run_at()`. All retries from the same burst share the same slot counter and are distributed at ≤4 per 5-minute slot at schedule time.
+
+Residual risk: two workers scheduling retries within the same millisecond may both read the pending count before either commits, producing a slot count of 5–7. This is handled automatically by the slot rebalancer below.
+
+### Automatic slot rebalancer (deployed 2026-04-29)
+
+`app/worker/jobs/slot_rebalancer.py` — `rebalance_call_slots_job` — runs every 5 minutes on the `default` queue. It:
+1. Counts 5-minute slots with > 4 pending `launch_outbound_call` jobs
+2. If any found: runs the redistribution UPDATE and logs the row count
+3. Reschedules itself at `now + 5 min`
+
+Started automatically at `worker-default` boot via `start_slot_rebalancer()`. No manual intervention needed for slot overages — they self-correct within 5 minutes.
+
+**Manual redistribution SQL** (if needed outside the rebalancer window, or to apply within-slot stagger to already-queued jobs):
+```sql
+WITH ranked AS (
+    SELECT id, ROW_NUMBER() OVER (ORDER BY run_at ASC, id ASC) - 1 AS rn
+    FROM scheduled_jobs
+    WHERE job_type = 'launch_outbound_call' AND status = 'pending' AND run_at >= NOW()
+),
+base AS (SELECT MIN(run_at) AS t FROM ranked r JOIN scheduled_jobs sj ON sj.id = r.id)
+UPDATE scheduled_jobs sj
+SET run_at = b.t
+           + (FLOOR(r.rn / 4) * INTERVAL '5 minutes')
+           + ((r.rn % 4)       * INTERVAL '75 seconds')
+FROM ranked r, base b
+WHERE sj.id = r.id;
+```
+Run as a SELECT COUNT(*) first to preview. Only updates `pending` jobs. The `75 seconds` within-slot offset matches `_CALL_WITHIN_SLOT_SPACING` in `outbound_jobs.py` — update both if `_CALL_BATCH_SIZE` or `_CALL_SLOT_SECONDS` ever changes.
+
+### Detection query
+```sql
+-- Calls launched in a burst with no webhook return:
+SELECT DATE_TRUNC('minute', sj.run_at) AT TIME ZONE 'America/Chicago' AS minute_cst,
+       ls.ai_campaign_value AS vm_tier, COUNT(*) AS leads
+FROM lead_state ls
+JOIN LATERAL (
+    SELECT run_at FROM scheduled_jobs
+    WHERE entity_id = ls.contact_id
+      AND job_type  = 'launch_outbound_call'
+      AND status    = 'completed'
+    ORDER BY run_at DESC LIMIT 1
+) sj ON TRUE
+WHERE ls.ai_campaign_value IN ('0','1','2')
+  AND (ls.status IS NULL OR ls.status NOT IN ('closed','terminal'))
+  AND ls.do_not_call IS NOT TRUE
+  AND NOT EXISTS (SELECT 1 FROM scheduled_jobs WHERE entity_id = ls.contact_id
+                    AND job_type = 'launch_outbound_call' AND status IN ('pending','claimed'))
+  AND NOT EXISTS (SELECT 1 FROM call_events ce WHERE ce.contact_id = ls.contact_id
+                    AND ce.created_at >= sj.run_at)
+GROUP BY 1, 2 ORDER BY 1 DESC, 2;
+```
+A large spike at a single minute in the results confirms a burst event.
+
+### Recovery procedures
+
+**Recovery scripts (one per incident date):**
+
+| Date | Script | Contacts recovered | Notes |
+|---|---|---|---|
+| 2026-04-28 | `execution/recover_webhook_drop_20260428.py` | ~134 finalized + ~450 rescheduled | Tier 1→2 specific |
+| 2026-04-29 | `execution/recover_webhook_drop_20260429.py` | 38 (5 Path A + 33 Path B) | General tier (any tier) |
+
+Both scripts follow the same two-path model:
+- **Path A** (call found in CSV — completed/failed/no-answer): creates call_event; queues `run_call_analysis` for completed calls
+- **Path B** (no CSV match — assumed hangup_on_voicemail): advances voicemail tier from any current tier, schedules next call if not terminal (slot-aware run_at)
+
+```bash
+# Copy CSV to container and run
+docker compose exec worker-default mkdir -p /app/tmp
+docker compose cp /path/to/calls.csv worker-default:/app/tmp/calls.csv
+docker compose exec worker-default python execution/recover_webhook_drop_20260429.py        # dry run
+docker compose exec worker-default python execution/recover_webhook_drop_20260429.py --live # live
+```
+
+For a new incident, copy `recover_webhook_drop_20260429.py`, update:
+- `_INCIDENT_START` / `_INCIDENT_END` to the UTC window of the burst
+- `_DEFAULT_CSV` path
+- source labels (`webhook_recovery_YYYYMMDD`) and Path B `call_id` prefix
+
+Key parameters:
+- NOT EXISTS window: `INTERVAL '7 days'` — prevents re-detecting already-recovered contacts on re-runs
+- CSV column fallbacks: supports both `Duration (s)` and `Duration`, `Recording Link` and `Recording URL`
+- For failed calls with empty `To` field: falls back to `From` (Synthflow outbound: `From` = contact's number)
+
+**Verification after recovery:**
+```sql
+-- Confirm no contacts remain stuck
+SELECT COUNT(*) FROM scheduled_jobs sj
+WHERE sj.job_type = 'launch_outbound_call' AND sj.status = 'completed'
+  AND sj.updated_at >= :incident_start AND sj.updated_at <= :incident_end
+  AND NOT EXISTS (
+      SELECT 1 FROM call_events ce
+      WHERE ce.contact_id = sj.payload_json->>'contact_id'
+        AND ce.created_at >= sj.updated_at - INTERVAL '10 minutes'
+        AND ce.created_at <= sj.updated_at + INTERVAL '7 days'
+  );
+```
+Expected: 0 after successful recovery.
+
+**Note on the CSV requirement:** The recovery script makes the CSV optional. If `--csv` path does not exist, Path A is skipped and all contacts recover via Path B (hangup_on_voicemail). Pass `--live` without `--csv` when all outcomes are known to be voicemail.
+
+**Note on within-slot simultaneous drops:** Even with the slot cap correctly at 4/slot, confirmed webhook drops can occur when all 4 calls in a slot share the same `run_at` second (e.g. `04:00:21`, `04:00:21`, `04:00:22`, `04:00:23`). Root cause is the same HTTP step concurrency limit — 4 simultaneous POSTs exceeds it. The within-slot 75-second stagger (deployed 2026-04-29) eliminates this. Already-queued jobs require the manual redistribution SQL above to apply the stagger retroactively.
+
+### Automatic webhook recovery (deployed 2026-05-01)
+
+`app/worker/jobs/webhook_recovery_jobs.py` — `auto_webhook_recovery_job` — runs every 5 minutes and handles webhook drop recovery without operator action.
+
+**How it works:**
+1. Queries `scheduled_jobs` for `launch_outbound_call` jobs completed in the last 24 hours with no matching `call_events` row (same dataset as the Webhook Delivery panel).
+2. Cap: 10 failures per cycle, oldest-first. Remaining failures are picked up on the next 5-minute run.
+3. For each failure, searches Synthflow `GET /v2/calls` filtered by phone number and campaign `model_id`, within a 3-hour window of the job's execution time. Picks the call record with `start_time` closest to execution time (paginates until exhausted).
+4. **Terminal call found** (`completed`, `failed`, `hangup_on_voicemail`, `no_answer`, `left_voicemail`) → `recover_missed_webhook()` — schedules `process_call_event`; runs the full AI + GHL pipeline.
+5. **Non-terminal call found** (`in_progress`, `ringing`, etc.) → skip; recheck in 5 minutes.
+6. **No call found** → `advance_stale_lead(contact_id, "no_answer")` — retries the call or closes the lead per tier policy.
+
+Campaign model IDs used for Synthflow search:
+- Cold Lead: `95fd0659-7446-423c-bc51-764c3060c90f`
+- New Lead:  `2608601d-bce6-4bb8-bc0f-f7df9dbf5971`
+- Inbound:   `f98454c1-2cd4-476c-b6f2-c5c425689e61`
+
+**Panel behavior:** both `recover_missed_webhook` and `advance_stale_lead` write audit entries (`manual_webhook_recovery` / `manual_advance`) that the Webhook Delivery panel already excludes. Recovered leads disappear from the panel automatically on the next refresh.
+
+**When to use manual recovery scripts:** only for incidents older than 24 hours (outside the panel and auto-recovery window), or when a specific call outcome must be forced (e.g., confirmed voicemail from CSV export). The scripts above remain the correct tool for bulk historical incidents.
+

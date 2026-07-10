@@ -250,6 +250,7 @@ def generate_voicemail_content(
         messages=messages,
         model=model,
         response_format={"type": "json_object"},
+        max_tokens=600,  # ~450 words — sufficient for subject + brief HTML email + SMS
         _retry_delay=0.0 if settings.app_env == "test" else 1.0,
     )
 

@@ -121,7 +121,7 @@ def create_crm_task(job_id: str) -> None:
                         "create_crm_task: outbound campaigns paused — releasing | "
                         "campaign=%r job_id=%s", _campaign, job_id,
                     )
-                    release_job_to_pending(session, job)
+                    release_job_to_pending(session, job, defer_seconds=60)
                     session.commit()
                     return
 
@@ -202,6 +202,7 @@ def create_crm_task(job_id: str) -> None:
                 duration_seconds=call_event.duration_seconds,
                 contact_phone=contact_phone,
                 settings=settings,
+                session=session,
             )
 
             logger.info(
@@ -399,7 +400,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     "update_ghl_after_vm_message: outbound campaigns paused — releasing | "
                     "campaign=%r job_id=%s", _campaign, job_id,
                 )
-                release_job_to_pending(session, job)
+                release_job_to_pending(session, job, defer_seconds=60)
                 session.commit()
                 return
 
@@ -464,8 +465,11 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                         contact_id, _read_exc,
                     )
 
-            # Ticket #2 carries a brief identifier; Message carries the full body
+            # Ticket #2 carries a brief identifier; Message carries the full body.
+            # GHL text fields cap around 2000 chars — truncate to avoid 400 errors.
+            _GHL_MSG_MAX = 2000
             ticket_2_value = message_subject if channel == "email" else message_body[:200]
+            message_body_ghl = message_body[:_GHL_MSG_MAX]
 
             # Build with label keys first, then resolve labels → UUIDs.
             label_updates: dict[str, str] = {}
@@ -473,8 +477,8 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                 label_updates[settings.ghl_field_mark_as_lead] = "Yes"
             if settings.ghl_field_support_ticket_2 and ticket_2_value:
                 label_updates[settings.ghl_field_support_ticket_2] = ticket_2_value
-            if settings.ghl_field_message and message_body:
-                label_updates[settings.ghl_field_message] = message_body
+            if settings.ghl_field_message and message_body_ghl:
+                label_updates[settings.ghl_field_message] = message_body_ghl
             if settings.ghl_field_ai_campaign:
                 label_updates[settings.ghl_field_ai_campaign] = "Yes"
 

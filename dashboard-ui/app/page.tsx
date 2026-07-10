@@ -20,14 +20,16 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
   {
     label: "Operations",
     category: "operations",
-    cols: 3,
+    cols: 4,
     items: [
       { href: "/activity",        title: "Live Activity",       icon: "⚡",  description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
       { href: "/exceptions",      title: "Exceptions Monitor",  icon: "⚠️",  description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
       { href: "/queue",           title: "Queue Health",        icon: "⚙️",  description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
       { href: "/alerts",          title: "Alerts",              icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
       { href: "/contact-lookup",  title: "Contact Drill-Down",  icon: "🔍", description: "Inspect all data for a single contact.", category: "operations" },
+      { href: "/lead-lifecycle",  title: "Lead Lifecycle",      icon: "🗺️", description: "Per-lead journey: campaign, VM tier, touchpoints & finalization.", category: "operations" },
       { href: "/settings",        title: "Settings",            icon: "⚙", description: "Calling windows, delays & brand identity.", category: "operations" },
+      { href: "/db-explorer",     title: "DB Explorer",         icon: "🗄️", description: "Browse tables and run SQL queries.", category: "operations" },
     ],
   },
   {
@@ -35,11 +37,10 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
     category: "analytics",
     cols: 2,
     items: [
-      { href: "/voice-performance",   title: "Voice Performance",   icon: "🎙️", description: "Trends, WoW & call efficiency.", category: "analytics" },
-      { href: "/lead-lifecycle",      title: "Lead Lifecycle",      icon: "🗺️", description: "Per-lead journey: campaign, VM tier, touchpoints & finalization.", category: "analytics" },
+      { href: "/voice-performance-v2", title: "Voice Performance", icon: "🎙️", description: "Date-filtered trends, WoW & call efficiency.", category: "analytics" },
       { href: "/engagement-analysis",  title: "Engagement Analysis", icon: "🤖", description: "Intent, consent & engagement metrics.", category: "analytics" },
       { href: "/conversion-funnel",   title: "Sales Queue",         icon: "📞", description: "Priority-ranked calls with scoring, recording & outcome logging.", category: "analytics" },
-      { href: "/campaign-overview",   title: "Campaign Overview",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
+      { href: "/campaign-overview",   title: "Scheduled Actions",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
     ],
   },
   {
@@ -142,7 +143,7 @@ export default async function HomePage() {
           height: 320,
           padding: "0 1.5rem 0.875rem",
           display: "grid",
-          gridTemplateColumns: "5fr 4fr 2fr",
+          gridTemplateColumns: "6fr 4fr 2fr",
           gap: "0.75rem",
           overflow: "hidden",
         }}

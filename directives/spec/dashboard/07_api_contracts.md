@@ -541,15 +541,28 @@ Returns compact current + previous metric pairs for every navigation card indica
   "active_leads":               {"value": 1240,  "previous_value": 1180},
   "sync_success_rate":          {"value": 0.97,  "previous_value": 0.95},
   "anomaly_count":              {"value": 2,     "previous_value": 0},
+  "webhook_delivery_pct":       {"value": 0.94,  "previous_value": 1.0},
   "computed_at": "2026-04-10T14:00:00Z"
 }
 ```
 
 **Fields**:
 - `urgent_leads_count`: calls in the last 7 days with a high-intent `detected_intent` (enrolled, callback_request, callback_with_time, re_engaged, human_transfer_request), duration ≥ 30s, transcript and recording present. Color semantics: 0 = green, high = red.
+- `active_leads`: count of `lead_state` rows where `status NOT IN ('closed','terminal')` and `do_not_call IS NOT TRUE`. Used as the Lead Lifecycle nav card primary metric (replaces `in_vm_sequence` as of 2026-04-28).
+- `in_vm_sequence`: leads in active voicemail tier (tier 0–2 only; tier 3 excluded as it is terminal/finalized).
+- `finalized_today`: leads where `status IN ('closed','terminal') OR do_not_call IS TRUE OR ai_campaign_value = '3'` and `updated_at >= midnight CST`. Includes tier-3 leads as finalized (updated 2026-04-28).
+- `webhook_delivery_pct`: fraction of `launch_outbound_call` jobs completed in the last 24 hours (excluding the most recent 20 minutes) that have a matching `call_event`. Value is 0–1. `null` when no qualifying jobs exist. Displayed on the Queue Health nav card alongside backlog size. Color semantics: ≥ 0.7 = green, ≥ 0.4 = yellow, < 0.4 = red. Added 2026-04-29 following the April 28 Synthflow HTTP step burst incident.
 - All numeric rate fields are 0–1 (not 0–100).
 - `config_health` is a string enum: `"healthy"` | `"warning"` | `"error"`.
 - `previous_value` is the corresponding metric from the prior 24-hour window (used for trend arrow direction).
+
+**Nav card mapping** (as of 2026-04-29):
+
+| Page | Primary metric | Secondary metric | Display format |
+|---|---|---|---|
+| `/queue` | `backlog_size` | `webhook_delivery_pct` | `{n} backlog · {pct}% webhooks` |
+| `/lead-lifecycle` | `active_leads` | `finalized_today` | `{n} active · {n} finalized` |
+| `/campaign-overview` | `active_leads` | — | `{n} leads` |
 
 ---
 
@@ -604,6 +617,70 @@ Returns calls with duration ≥ 30s that have a transcript and recording URL. Ea
 - Base score: per-intent table (0–100). `enrolled`/`human_transfer_request` = 100, `callback_request`/`callback_with_time`/`re_engaged` = 90, `interested_not_now` = 70, `failed_booking` = 65, `partial_engagement` = 40, all others ≤ 30.
 - Recency bonus: +10 if `last_call_minutes_ago < 30`; +5 if `< 120`.
 - Thresholds: `urgent` ≥ 80, `review` ≥ 40, `none` < 40.
+
+---
+
+## GET /dashboard/lead-lifecycle
+
+Returns per-lead campaign journey data for the Lead Lifecycle Monitor page.
+
+**Auth**: Optional
+
+**Query params**:
+- `status` (optional): `all` | `active` | `finalized` | `vm` | `dnc`. Default: `all`.
+- `campaign` (optional): `all` | `Cold Lead` | `New Lead` | `Inbound`. Default: `all`.
+- `limit` (optional): integer, default 100.
+- `offset` (optional): integer, default 0.
+
+**Response 200**
+```json
+{
+  "summary": {
+    "active": 1447,
+    "in_vm_sequence": 1305,
+    "campaign_switched": 1,
+    "finalized": 18,
+    "avg_days_to_close": 5.8
+  },
+  "total": 1465,
+  "rows": [
+    {
+      "contact_id": "+16025550101",
+      "lead_name": "Sarah Johnson",
+      "phone": "+16025550101",
+      "current_campaign": "Cold Lead",
+      "initial_campaign": "New Lead",
+      "vm_tier": "2",
+      "status": null,
+      "do_not_call": false,
+      "first_contact_at": "2026-04-21T14:00:00Z",
+      "last_contact_at": "2026-04-27T14:06:00Z",
+      "days_active": 6,
+      "total_calls": 4,
+      "total_sms": 3,
+      "total_email": 1,
+      "last_intent": "partial_engagement",
+      "campaign_switches": 1,
+      "next_job_type": "launch_outbound_call",
+      "next_run_at": "2026-04-28T14:02:00Z",
+      "finalization_reason": null,
+      "finalized_at": null
+    }
+  ],
+  "filters": {"status": "all", "campaign": "all"}
+}
+```
+
+**Finalized classification rules** (applied identically in summary counts, row filter, and `statusBadge` on the frontend):
+- `do_not_call IS TRUE` → DNC
+- `status IN ('closed', 'terminal')` → Finalized
+- `ai_campaign_value = '3'` → Finalized (terminal voicemail tier — GHL finalization writes have been made)
+- `ai_campaign_value IN ('0','1','2')` → VM Sequence
+- All others → Active
+
+**Important**: `ai_campaign_value = '3'` is treated as Finalized even if `lead_state.status` is not `'closed'` — `_finalize_campaign()` writes to GHL but does not update `status`. Never treat tier-3 leads as active.
+
+**Implementation**: `app/services/lead_lifecycle.py` — `get_lead_lifecycle()`
 
 ---
 
@@ -716,3 +793,232 @@ Log a post-call sales outcome from the Sales Queue view. Updates `lead_state` wi
   "fallback_url": "/dashboard/events"
 }
 ```
+
+---
+
+## GET /dashboard/db/tables
+
+Returns all Postgres user tables with live row estimates.
+
+**Auth**: None required (read-only metadata)
+
+**Response 200**
+```json
+{
+  "tables": [
+    { "name": "call_events", "row_estimate": 23500 },
+    { "name": "lead_state",  "row_estimate": 1028 }
+  ]
+}
+```
+
+**Notes**:
+- Row estimates come from `pg_stat_user_tables.n_live_tup` — they are approximate (updated by autovacuum) and may lag slightly behind the true count.
+- Tables are sorted alphabetically.
+
+---
+
+## POST /dashboard/db/query
+
+Execute an arbitrary SQL statement against the production database and return results as JSON.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}`
+
+**Request body**
+```json
+{ "sql": "SELECT * FROM lead_state LIMIT 10;" }
+```
+
+**Response 200 — SELECT**
+```json
+{
+  "columns": ["contact_id", "campaign_name", "status"],
+  "rows": [
+    ["+17204925394", "Cold Lead", null],
+    ["+13616494022", "Cold Lead", null]
+  ],
+  "row_count": 2,
+  "truncated": false
+}
+```
+
+**Response 200 — DML (INSERT / UPDATE / DELETE)**
+```json
+{
+  "columns": [],
+  "rows": [],
+  "row_count": 3,
+  "truncated": false
+}
+```
+`row_count` is the number of rows affected. DML is auto-committed.
+
+**Response 400** — SQL syntax error or runtime error. `detail` contains the Postgres error message.
+
+**Limits**:
+- Maximum 500 rows returned for SELECT queries. If the result set exceeds 500 rows, `truncated: true` is set and only the first 500 rows are returned.
+- `null` values in rows are returned as JSON `null`.
+- All non-null cell values are coerced to strings.
+
+**Frontend**: Accessible at `/db-explorer`. Includes a table browser (left sidebar) and CSV download button. The downloaded `.csv` opens natively in Excel.
+
+---
+
+## GET /dashboard/webhook-failures
+
+Returns Synthflow webhook delivery health for the last 24 hours — calls that completed (`launch_outbound_call` job status = `completed`) but never produced a matching `call_events` row within 7 days after execution.
+
+**Auth**: None (read-only health data).
+
+**Response 200**
+```json
+{
+  "summary": {
+    "total_launched": 660,
+    "got_webhook":    655,
+    "missing":        5,
+    "webhook_pct":    99
+  },
+  "failures": [
+    {
+      "job_id":                  "uuid",
+      "contact_id":              "+15551234567",
+      "campaign":                "Cold Lead",
+      "placed_at":               "2026-04-30T10:42:00Z",
+      "executed_at":             "2026-04-30T10:42:40Z",
+      "minutes_since_execution": 38
+    }
+  ],
+  "window_hours": 24,
+  "recorded_at":  "2026-04-30T11:20:00Z"
+}
+```
+
+**Exclusions (summary and failures list)**:
+- Jobs executed within the last 20 minutes (Synthflow may still be delivering).
+- Leads whose `lead_state.status` is `terminal` or `closed` — already resolved by operator action.
+- Leads with an active `pending`/`claimed`/`running` `launch_outbound_call` job — already being handled (retry scheduled or duplicate-job guard confirmed one exists).
+
+**Frontend**: Rendered as the **Webhook Delivery — 24h** collapsible panel in Queue Health (`/queue`). Header shows delivery %, got/total counts, and a missing badge when `missing > 0`. Expanded drawer shows the failures table with inline action buttons.
+
+---
+
+## POST /dashboard/actions/advance-stale-lead
+
+Manually advance a stale lead whose Synthflow webhook was missed. Operator confirms the outcome in Synthflow logs and clicks the corresponding button in the Webhook Delivery panel.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**
+```json
+{ "contact_id": "+15551234567", "outcome": "voicemail" }
+```
+`outcome` must be `"voicemail"` or `"no_answer"`.
+
+**Response 200 — voicemail, non-tier-2**
+```json
+{ "status": "ok", "action": "advanced", "tier_from": "1", "tier_to": "2", "run_at": "...", "audit_log_id": "uuid" }
+```
+
+**Response 200 — voicemail, tier 2 (finalizes)**
+```json
+{ "status": "ok", "action": "finalized", "tier_from": "2", "reason": "tier_2_voicemail_complete" }
+```
+
+**Response 200 — no_answer, first miss (schedules retry)**
+```json
+{ "status": "ok", "action": "retry_scheduled", "tier": "1", "run_at": "...", "audit_log_id": "uuid" }
+```
+
+**Response 200 — no_answer, consecutive miss (closes)**
+```json
+{ "status": "ok", "action": "closed", "reason": "consecutive_no_answer", "last_call_status": "no_answer" }
+```
+
+**Response 404** — contact_id not found in `lead_state`.
+
+**Response 409** — lead already has a pending/claimed/running job; action cancelled to avoid duplicate.
+
+**Side effects**: Updates `lead_state` (tier, status, last_call_status), schedules a `launch_outbound_call` job (voicemail/retry paths), writes GHL field updates (finalize/close paths), writes `audit_log` row.
+
+**Idempotency**: The 409 guard prevents double-processing. GHL writes resolve phone → UUID via `search_contact_by_phone()`.
+
+---
+
+## POST /dashboard/actions/recover-call-webhook
+
+Fetch a completed call from the Synthflow API by call_id and replay the full `process_call_event` pipeline — exactly as if the webhook had been delivered. Use when a call completed in Synthflow but no webhook arrived.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**
+```json
+{ "contact_id": "+15551234567", "call_id": "synthflow-call-id-from-logs-page" }
+```
+
+**Response 200**
+```json
+{
+  "status":            "ok",
+  "action":            "recovery_scheduled",
+  "synthflow_call_id": "abc123",
+  "call_status":       "completed",
+  "campaign_name":     "Cold Lead",
+  "audit_log_id":      "uuid"
+}
+```
+
+**Response 409** — a `process_call_event` job for this `call_id` is already active.
+
+**Response 502** — Synthflow API returned an error or timed out.
+
+**Pipeline**: Fetches `GET https://api.synthflow.ai/v2/calls/{call_id}` → normalizes payload (infers `campaign_name` from Agent field, injects `contact_id`) → schedules `process_call_event` job → worker runs AI analysis, updates `lead_state`, writes GHL fields.
+
+**Idempotency**: `call_events.dedupe_key = "{call_id}:process_call_event"` (unique constraint) prevents duplicate DB inserts if the endpoint is called twice for the same call.
+
+**Frontend**: "Call Completed" button in the Webhook Delivery panel. Clicking expands an inline input for the Synthflow call_id (found in Synthflow Logs page). Pressing Enter or clicking "Fetch →" submits. Row disappears from the panel once the job is active.
+
+---
+
+## POST /dashboard/mode/pause-outbound-campaigns
+
+Pause New Lead and Cold Lead campaign activity system-wide. Inbound campaign processing is unaffected.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**: `{}` (empty)
+
+**Response 200**
+```json
+{ "status": "paused", "outbound_campaigns_paused": true }
+```
+
+**Effect on workers**: Any `launch_outbound_call`, `process_voicemail_tier`, `run_call_analysis`, `send_sms`, `send_email`, `create_crm_task`, or `update_ghl_after_vm_message` job whose payload carries `campaign_name = "New Lead"` or `"Cold Lead"` is claimed by the worker, checked against the flag, and released back to `pending` with `run_at = now() + 60s`. The 60-second defer prevents those jobs from appearing perpetually overdue and triggering false `queue_lag_exceeded` alerts. The `run_nurture_scheduler` job also skips nurture graduation (Cold Lead entry) while this flag is active.
+
+**Effect on Inbound**: No Inbound jobs are affected. All Inbound call processing, AI analysis, and GHL writes continue normally.
+
+**Side effects**: Writes `outbound_campaigns_paused = "true"` to `app_config`; writes one `audit_log` row.
+
+**Frontend**: Orange "Pause" button in the **Outbound Campaign Pause** section of System Controls (`/system-controls`). Status banner turns orange with message "Outbound campaigns paused — New Lead & Cold Lead calls/SMS/email held. Inbound unaffected."
+
+---
+
+## POST /dashboard/mode/resume-outbound-campaigns
+
+Resume New Lead and Cold Lead campaign activity after a pause.
+
+**Auth**: Required — `Authorization: Bearer {SECRET_KEY}` + `X-Operator-Id` header.
+
+**Request body**: `{}` (empty)
+
+**Response 200**
+```json
+{ "status": "resumed", "outbound_campaigns_paused": false }
+```
+
+**Effect**: Clears `outbound_campaigns_paused` in `app_config`. Held jobs have `run_at = now()` (at most 60 s in the future from the last defer cycle) and will be picked up by the scheduler loop within one polling interval (≤ 30 s after their `run_at` is reached). No manual job re-queue is needed.
+
+**Side effects**: Writes `outbound_campaigns_paused = "false"` to `app_config`; writes one `audit_log` row.
+
+**Frontend**: Green "Resume" button in the **Outbound Campaign Pause** section of System Controls. Only visible when `outbound_campaigns_paused = true`. Hidden when `system_paused = true` (a hint is shown instead, since resuming outbound campaigns while the whole system is paused has no effect until system pause is also cleared).
+

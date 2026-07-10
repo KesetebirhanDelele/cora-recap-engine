@@ -18,13 +18,15 @@ Note: Google Sheets shadow sync is out of scope. No Sheets setup required.
 ### Infrastructure
 - Hetzner CX22 (2 vCPU, 4 GB RAM, Ubuntu 22.04)
 - Docker CE + Docker Compose plugin
-- All services run in Docker Compose: postgres, redis, migrate, api, dashboard-api, frontend, worker-default, worker-ai, worker-callbacks, worker-retries
+- All services run in Docker Compose: postgres, redis, pgbouncer, migrate, api, dashboard-api, frontend, worker-default, worker-ai, worker-callbacks, worker-retries
 
 ### Key .env values for production
 
 ```
 APP_ENV=production
-DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
+POSTGRES_USERNAME=postgres
+POSTGRES_PASSWORD=<PASSWORD>
+POSTGRES_DATABASE=cora
 REDIS_HOST=redis
 DASHBOARD_API_URL=http://<server-ip>:8001
 WS_URL=ws://<server-ip>:8001/ws
@@ -45,7 +47,9 @@ Synthflow routing rules:
 - `JylDXjF8QB0Skr5cQzGGm` must never be used — it is a test workflow that silently drops calls
 
 Rules:
-- `DATABASE_URL` must use Docker service name `postgres:5432` (not `localhost` or `host.docker.internal`)
+- App services (api, dashboard-api, workers) connect via PgBouncer: `DATABASE_URL=postgresql+psycopg2://...@pgbouncer:5432/cora` — set directly in `docker-compose.yml`, not in `.env`
+- `migrate` and `adminer` connect directly to `postgres:5432` (hardcoded in `docker-compose.yml`, bypasses PgBouncer)
+- Never set `DATABASE_URL` to `localhost` or `host.docker.internal` in any service
 - `DASHBOARD_API_URL` must be the public server IP — baked into Next.js bundle at build time
 - `docker-compose.override.yml` must NOT be present on the server — it is local dev only
 - Settings validator blocks boot if `SECRET_KEY` or `WEBHOOK_SHARED_SECRET` is `changeme` when `APP_ENV=production`
@@ -57,6 +61,7 @@ cd /opt/cora-recap-engine
 git pull origin main
 docker compose up -d --build
 docker compose logs migrate       # verify exits 0
+docker compose logs pgbouncer     # verify "pgbouncer: listening on 0.0.0.0:5432"
 docker compose ps                 # all services healthy/running
 ```
 
@@ -217,18 +222,30 @@ After AI analysis on a completed call, `detect_intent()` is called with the tran
 - **Lead unexpectedly moved to Cold Lead** — caused by `low_confidence_audio` detection. Check transcript in `call_events` and `classification_results`. If the classification was incorrect, use `cancel-future-jobs` to stop the queued Cold Lead call, then manually set `lead_state.campaign_name = 'New Lead'` and `ai_campaign_value = NULL`.
 - **Duplicate follow-up calls scheduled** — `_schedule_outbound_call` in `intent_actions.py` has an idempotency guard; inspect `scheduled_jobs` for `launch_outbound_call` rows with status `pending` for the contact. Cancel duplicates via the dashboard `cancel-future-jobs` endpoint.
 
-## Nurture scheduler
+## Periodic background jobs (started by worker-default at boot)
 
-The nurture scheduler runs every 5 minutes and graduates `status='nurture'` leads whose `next_action_at` has passed into the Cold Lead campaign.
+Four self-rescheduling jobs start automatically when `worker-default` starts:
 
-- `run_nurture_scheduler` job appears in `scheduled_jobs` with `entity_id='nurture_scheduler'`
+| Job type | Interval | Purpose |
+|---|---|---|
+| `run_nurture_scheduler` | 5 min | Graduates `status='nurture'` leads into Cold Lead campaign |
+| `collect_metrics` | 60 s | Writes system_metrics rows; feeds dashboard health tiles and alerts |
+| `rebalance_call_slots` | 5 min | Detects `launch_outbound_call` slots with >4 pending jobs and redistributes them |
+| `auto_webhook_recovery` | 5 min | Scans for `launch_outbound_call` jobs with no matching call event; searches Synthflow for the call and recovers or reschedules up to 10 failures per cycle |
+
+All four appear in `scheduled_jobs` with `status='pending'` and self-reschedule at job completion. If any is missing after a restart, restarting `worker-default` re-creates it.
+
+### Nurture scheduler detail
+- `run_nurture_scheduler` job uses `entity_id='nurture_scheduler'`
 - On worker startup, `ensure_scheduled()` creates the first job automatically
 - Individual lead failures are isolated — one bad row does not stop the batch
-- If no `run_nurture_scheduler` job is pending, the worker may have been restarted without running `ensure_scheduled()` — restart the worker or manually insert a job
+- When `outbound_campaigns_paused = true`, the scheduler **skips graduation** (no leads enter Cold Lead campaign) but still completes and self-reschedules every 5 min so the cadence is never silently lost. Graduation resumes the next cycle after the flag is cleared.
 
 ## Troubleshooting
 
 ### Production / Docker Compose issues
+- **PgBouncer fails to start or app services can't connect** → check `docker compose logs pgbouncer`; most common cause is auth mismatch — `POSTGRES_PASSWORD` in `.env` doesn't match how Postgres was initialized. Postgres 16 defaults to `scram-sha-256`; PgBouncer must be configured with `AUTH_TYPE: scram-sha-256` in `docker-compose.yml` (not `md5`). Fallback: temporarily set all app service `DATABASE_URL` back to `postgres:5432` and remove `pgbouncer` from `depends_on` to restore access while diagnosing.
+- **"too many clients already" after PgBouncer is deployed** → PgBouncer is not routing correctly; verify `docker compose ps pgbouncer` shows healthy and app service logs show connections to `pgbouncer:5432` not `postgres:5432`. Check `PGBOUNCER_DEFAULT_POOL_SIZE` — raise to 30 if Postgres still shows high connection count.
 - `migrate` fails with `host.docker.internal` → `docker-compose.override.yml` is present on server or `.env` has `DATABASE_URL` pointing to localhost; remove override file, fix `DATABASE_URL` to use `postgres:5432`
 - frontend shows `Couldn't find pages or app directory` → dev Dockerfile used; `docker compose build --no-cache frontend && docker compose up -d frontend`
 - `TypeError: Failed to fetch` on all dashboard pages → `DASHBOARD_API_URL` baked as localhost at build time; set correct server IP in `.env` then rebuild frontend with `--no-cache`
@@ -244,8 +261,11 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - lost callback → inspect `scheduled_jobs` where `job_type='process_voicemail_tier'`
 - GHL write failure → inspect `GHL_API_KEY` and `GHL_LOCATION_ID` in `.env`
 - exception queue growing → use dashboard retry/cancel/finalize actions
+- **"call analysis failed / OpenAI rate limit exhausted"** → the worker hit OpenAI's per-minute quota. The adapter retries once after a 60s wait (`OPENAI_RETRY_MAX=1`); if it still fails, the exception lands in the queue. Short-term: retry via dashboard. Recurring: check OpenAI usage at `platform.openai.com/usage` — Tier 1 accounts cap at 200K TPM for gpt-4o-mini. Raising to Tier 2 eliminates this. Do not raise `OPENAI_RETRY_MAX` above 1 without also increasing the RQ worker `--job-execution-timeout` — each retry sleeps 60s, so 2 retries = 120s of sleep alone.
 - expired job leases → `recover_expired_claims()` runs on worker restart
 - outbound calls/SMS/email not sending → check `SHADOW_MODE_ENABLED`; if `true`, actions are intercepted and logged to `shadow_actions` instead of executed
+- **New Lead / Cold Lead calls paused but Inbound still processing** → `outbound_campaigns_paused` flag is `true` in `app_config`. This is intentional. Jobs are held and re-deferred every 60 s. Clear the flag from System Controls (`/system-controls`) → "Outbound Campaign Pause" → Resume to unblock.
+- **`queue_lag_exceeded` alert firing while outbound campaigns are paused** → if the running code does not have the `defer_seconds=60` fix in `release_job_to_pending()`, held `launch_outbound_call` jobs retain their original `run_at` (in the past) and the scheduler loop re-enqueues them every 30 s, keeping `queue_lag_seconds` elevated. Fix: `git pull && docker compose build --no-cache worker-default worker-ai worker-callbacks worker-retries && docker compose up -d --no-deps worker-default worker-ai worker-callbacks worker-retries`.
 - SMS/email not sending despite shadow mode off → check `inbound_messages` and `lead_state.last_replied_at`; reply detection suppresses sends if either signal is set
 - nurture lead not graduating to Cold Lead → check `next_action_at` in `lead_state`; check `run_nurture_scheduler` job exists in `scheduled_jobs` with `status=pending`
 - lead unexpectedly moved to Cold Lead after repeated answered calls → `partial_engagement` retry cap reached (2 retries); check `scheduled_jobs` count for `intent_reason='partial_engagement'` on the contact
@@ -255,11 +275,18 @@ The nurture scheduler runs every 5 minutes and graduates `status='nurture'` lead
 - lead showing wrong campaign in Campaign Overview or Lead Journey → check `call_events.raw_payload_json->>'Agent'`; if it contains 'ColdLead' but `lead_state.campaign_name = 'New Lead'`, the lead was processed before the `Agent`-field normalisation fix; correct manually or re-process
 - lead not visible in Lead Journey by phone number → `lead_state.normalized_phone` may be null (lead created by `update_lead_state` before the normalised_phone fix on 2026-03-31); Lead Journey will fall back to `call_events.raw_payload_json` phone match, but if no call_events exist the lead won't resolve
 - voicemail tier not advancing after shadow mode was on → shadow mode intercepted `launch_outbound_call` without placing a real call; Synthflow never sent a callback; re-trigger from tier 0 once shadow mode is disabled
+- **leads stuck mid-voicemail sequence with no pending job and no call_event** → Synthflow HTTP step webhook drop, either from burst concurrency or transient failure. Diagnose with the detection query in `spec/14_synthflow_integration_addendum.md`. Use `execution/recover_webhook_drop_20260428.py` with a Synthflow CSV export — it handles both tier advancement (Path B) and AI queuing for completed calls (Path A). Always dry-run first. The NOT EXISTS window in both the recovery script and `get_webhook_failures()` is 7 days to prevent re-detecting already-recovered contacts on re-runs.
+- **large count of leads stuck at same minute** (burst pattern) → all rescheduled calls landed at `run_at = window_start` exactly; `_compute_window_run_at()` was not used. Confirm fix is deployed, then run recovery scripts above.
+- **burst pattern repeats at +24h or +48h after a prior burst** → as of 2026-04-29 this is handled automatically: `_slot_aware_run_at()` in `voicemail_jobs.py` spreads new retries at schedule time, and `rebalance_call_slots_job` auto-corrects any race-condition overages every 5 minutes. If overages persist beyond 10 minutes, check `docker compose logs worker-default` for `rebalance_call_slots` errors. Manual fallback: run the slot redistribution SQL in `spec/14_synthflow_integration_addendum.md`.
 - Lead Journey shows only 1 event despite multiple outreach attempts → SMS and outbound calls in shadow mode are in `shadow_actions`, not `outbound_messages`; they are not currently displayed in Lead Journey timeline
 
 ### Alerting / metrics collector issues
 
 - **No rows in `system_metrics`, dashboard shows 0 active alerts** → `collect_metrics_job` never ran. Check worker-default startup logs for: `Could not ensure metrics scheduler on startup`. If present, confirm the `collect_metrics` job exists in `scheduled_jobs` with `status='pending'`; if missing, restart `worker-default` (it calls `start_metrics_scheduler()` on boot).
+
+- **Slot overages not self-correcting** → `rebalance_call_slots_job` should run every 5 min on `worker-default`. Check startup logs for `Slot rebalancer ensured on startup`. Confirm a `rebalance_call_slots` row exists in `scheduled_jobs` with `status='pending'`. If missing, restart `worker-default`.
+
+- **Webhook failures not clearing from panel automatically** → `auto_webhook_recovery_job` should run every 5 min on `worker-default`. Check startup logs for `Webhook recovery scheduler ensured on startup`. Confirm an `auto_webhook_recovery` row exists in `scheduled_jobs` with `status='pending'`. If missing, restart `worker-default`. To inspect recent recovery activity: `SELECT entity_id, action, operator_id, created_at FROM audit_log WHERE operator_id = 'auto_webhook_recovery' ORDER BY created_at DESC LIMIT 20;`
 
 - **Dashboard shows large backlog in Queue Health but 0 active alerts** → The `queue_lag_exceeded` alert fires on `queue_lag_seconds` (age of the oldest overdue pending job), **not** on backlog count. If all pending jobs are future-dated (e.g. voicemail retries scheduled minutes ahead), `queue_lag_seconds` = 0 and no alert fires. Use the diagnostic query below to confirm:
   ```sql

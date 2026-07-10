@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     # Per-campaign "Make Call" Catch Webhook URLs — selected based on lead campaign
     synthflow_launch_workflow_url_new: Optional[str] = None   # New Lead campaign
     synthflow_launch_workflow_url_cold: Optional[str] = None  # Cold Lead campaign
+    # Comma-separated phone numbers that must never be dialed as leads.
+    # Add Synthflow agent numbers and any other system/test phones here.
+    blocked_dial_numbers: Optional[str] = None
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None
@@ -171,7 +174,7 @@ class Settings(BaseSettings):
     openai_model_consent_detector: str = "gpt-4o-mini"
     openai_model_vm_content: str = "gpt-4o-mini"
     openai_timeout_seconds: int = 60
-    openai_retry_max: int = 3
+    openai_retry_max: int = 1
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"
@@ -391,8 +394,13 @@ class Settings(BaseSettings):
                 f"OPENAI_BASE_URL must start with 'https://' — got: {self.openai_base_url!r}"
             )
 
+    def validate_for_synthflow_read(self) -> None:
+        """Raise ConfigError if Synthflow API key is missing (read-only operations)."""
+        if not self.synthflow_api_key:
+            raise ConfigError("Synthflow integration requires: SYNTHFLOW_API_KEY")
+
     def validate_for_synthflow(self) -> None:
-        """Raise ConfigError if Synthflow credentials are missing."""
+        """Raise ConfigError if Synthflow credentials are missing (write/launch operations)."""
         missing = []
         if not self.synthflow_api_key:
             missing.append("SYNTHFLOW_API_KEY")

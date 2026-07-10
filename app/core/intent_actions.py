@@ -314,6 +314,13 @@ def _handle_partial_engagement(session, contact_id, phone, entities, settings) -
             )
             return
 
+        if lead.status in ("closed", "terminal"):
+            logger.info(
+                "partial_engagement cap reached: lead already %s — skipping cold_lead escalation | contact_id=%s",
+                lead.status, contact_id,
+            )
+            return
+
         transition_lead_state(session, lead, "low_confidence")
         session.refresh(lead)
         enter_campaign(session, lead, "cold_lead", settings=settings)
@@ -371,6 +378,13 @@ def _handle_low_confidence_audio(session, contact_id, phone, entities, settings)
         logger.warning(
             "_handle_low_confidence_audio: no lead_state for contact_id=%s — skipping",
             contact_id,
+        )
+        return
+
+    if lead.status in ("closed", "terminal"):
+        logger.info(
+            "low_confidence_audio: lead already %s — skipping cold_lead escalation | contact_id=%s",
+            lead.status, contact_id,
         )
         return
 

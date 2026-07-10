@@ -152,6 +152,8 @@ export default function SettingsClient() {
   const [liveOpenHouseLink, setLiveOpenHouseLink] = useState("");
   const [explainerVideoLink, setExplainerVideoLink] = useState("");
 
+  const [admissionsAssistants, setAdmissionsAssistants] = useState<Array<{ name: string; ghl_id: string }>>([]);
+
   const applyConfig = useCallback((c: Record<string, string>) => {
     setCfg(c);
     setNlDays(daysFromStr(getString(c, "new_lead_active_days", "0,1,2,3,4,5,6")));
@@ -177,6 +179,12 @@ export default function SettingsClient() {
     setNextClassStart(getString(c, "next_class_start", "upcoming"));
     setLiveOpenHouseLink(getString(c, "live_open_house_link", ""));
     setExplainerVideoLink(getString(c, "explainer_open_house_video_link", ""));
+    try {
+      const raw = c["admissions_assistants"];
+      setAdmissionsAssistants(raw ? JSON.parse(raw) : []);
+    } catch {
+      setAdmissionsAssistants([]);
+    }
   }, []);
 
   useEffect(() => {
@@ -239,6 +247,7 @@ export default function SettingsClient() {
           next_class_start: nextClassStart.trim(),
           live_open_house_link: liveOpenHouseLink.trim(),
           explainer_open_house_video_link: explainerVideoLink.trim(),
+          admissions_assistants: JSON.stringify(admissionsAssistants),
         },
       });
       setSaveMsg({ ok: true, text: "Settings saved. Changes are now live." });
@@ -519,6 +528,85 @@ export default function SettingsClient() {
           <input type="url" value={explainerVideoLink}
             onChange={(e) => setExplainerVideoLink(e.target.value)} style={INPUT} />
         </div>
+      </div>
+
+      {/* ── Admissions Assistants ── */}
+      <div style={SECTION_CARD}>
+        <div>
+          <p style={SECTION_TITLE}>Admissions Assistants</p>
+          <p style={SECTION_CAPTION}>
+            GHL tasks for admissions calls are assigned to the first person in this list.
+            Add or remove people here instead of editing code. Name is display-only; GHL User ID is what gets written to GHL.
+          </p>
+        </div>
+
+        {admissionsAssistants.length === 0 && (
+          <p style={{ margin: 0, fontSize: "0.82rem", color: "#94a3b8" }}>
+            No assistants configured — fallback default will be used.
+          </p>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {admissionsAssistants.map((a, i) => (
+            <div key={i} style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              {i === 0 && (
+                <span style={{
+                  fontSize: "0.68rem", fontWeight: 700, color: "#1d4ed8",
+                  background: "#eff6ff", border: "1px solid #bfdbfe",
+                  borderRadius: 4, padding: "0.1rem 0.4rem", whiteSpace: "nowrap" as const,
+                }}>
+                  PRIMARY
+                </span>
+              )}
+              <input
+                type="text"
+                value={a.name}
+                placeholder="Full name"
+                onChange={(e) => {
+                  const updated = [...admissionsAssistants];
+                  updated[i] = { ...updated[i], name: e.target.value };
+                  setAdmissionsAssistants(updated);
+                }}
+                style={{ ...INPUT, flex: 1 }}
+              />
+              <input
+                type="text"
+                value={a.ghl_id}
+                placeholder="GHL User ID"
+                onChange={(e) => {
+                  const updated = [...admissionsAssistants];
+                  updated[i] = { ...updated[i], ghl_id: e.target.value };
+                  setAdmissionsAssistants(updated);
+                }}
+                style={{ ...INPUT, flex: 1, fontFamily: "monospace", fontSize: "0.8rem" }}
+              />
+              <button
+                type="button"
+                onClick={() => setAdmissionsAssistants(admissionsAssistants.filter((_, j) => j !== i))}
+                style={{
+                  padding: "0.35rem 0.7rem", background: "#fef2f2", color: "#991b1b",
+                  border: "1px solid #fecaca", borderRadius: 6, fontSize: "0.8rem",
+                  fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const,
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setAdmissionsAssistants([...admissionsAssistants, { name: "", ghl_id: "" }])}
+          style={{
+            alignSelf: "flex-start",
+            padding: "0.35rem 0.9rem", background: "#f0fdf4", color: "#15803d",
+            border: "1px solid #bbf7d0", borderRadius: 6, fontSize: "0.82rem",
+            fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          + Add assistant
+        </button>
       </div>
 
       <div style={DIVIDER} />

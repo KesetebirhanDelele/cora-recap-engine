@@ -4,6 +4,53 @@
  * All timestamps are ISO 8601 UTC strings.
  */
 
+// ── Worker Activity ───────────────────────────────────────────────────────────
+
+export interface WorkerJobBreakdown {
+  job_type: string;
+  count: number;
+  avg_duration_s: number | null;
+}
+
+export interface WorkerSummary {
+  worker_id: string;
+  worker_id_short: string;
+  is_active: boolean;
+  current_job_type: string | null;
+  jobs_last_10m: number;
+  avg_duration_s: number | null;
+  breakdown: WorkerJobBreakdown[];
+}
+
+export interface WorkerActivityResponse {
+  workers: WorkerSummary[];
+  window_minutes: number;
+  recorded_at: string;
+}
+
+// ── Worker Activity Trend ─────────────────────────────────────────────────────
+
+export interface WorkerTrendPoint {
+  bucket: string;
+  worker_id: string;
+  worker_id_short: string;
+  jobs: number;
+  median_duration_s: number | null;
+}
+
+export interface WorkerTrendWorker {
+  worker_id: string;
+  worker_id_short: string;
+}
+
+export interface WorkerTrendResponse {
+  points: WorkerTrendPoint[];
+  worker_ids: WorkerTrendWorker[];
+  window_minutes: number;
+  bucket_minutes: number;
+  recorded_at: string;
+}
+
 // ── Health ────────────────────────────────────────────────────────────────────
 
 export interface HealthResponse {
@@ -475,6 +522,7 @@ export interface CardMetricsResponse {
   events_per_min:             MetricPoint;
   open_exceptions:            MetricPoint;
   backlog_size:               MetricPoint;
+  webhook_delivery_pct:       MetricPoint;
   active_alerts:              MetricPoint;
   lookup_rate:                MetricPoint;
   config_health:              MetricPoint;
@@ -483,6 +531,7 @@ export interface CardMetricsResponse {
   meaningful_engagement_rate: MetricPoint;
   booking_rate:               MetricPoint;
   active_leads:               MetricPoint;
+  stale_leads:                MetricPoint;
   in_vm_sequence:             MetricPoint;
   finalized_today:            MetricPoint;
   sync_success_rate:          MetricPoint;
@@ -546,6 +595,7 @@ export interface IntentCallsResponse {
 
 export interface LeadLifecycleSummary {
   active:            number;
+  stale:             number;
   in_vm_sequence:    number;
   campaign_switched: number;
   finalized:         number;
@@ -587,3 +637,28 @@ export interface LeadLifecycleResponse {
 export type WebSocketMessage =
   | StreamEvent
   | { type: "error"; code: string; fallback_url: string };
+
+// ── Webhook Failures ──────────────────────────────────────────────────────────
+
+export interface WebhookFailureRow {
+  job_id:                  string;
+  contact_id:              string | null;
+  campaign:                string | null;
+  placed_at:               string;
+  executed_at:             string;
+  minutes_since_execution: number | null;
+}
+
+export interface WebhookFailureSummary {
+  total_launched: number;
+  got_webhook:    number;
+  missing:        number;
+  webhook_pct:    number | null;
+}
+
+export interface WebhookFailuresResponse {
+  summary:      WebhookFailureSummary;
+  failures:     WebhookFailureRow[];
+  window_hours: number;
+  recorded_at:  string;
+}

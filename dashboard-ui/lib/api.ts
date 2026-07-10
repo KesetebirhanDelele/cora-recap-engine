@@ -37,6 +37,9 @@ import type {
   SaveSettingsRequest,
   SaveSettingsResponse,
   VoicePerformanceResponse,
+  WebhookFailuresResponse,
+  WorkerActivityResponse,
+  WorkerTrendResponse,
 } from "@/types";
 
 // Server-side (SSR/RSC): use full internal URL to reach dashboard-api directly.
@@ -91,6 +94,14 @@ export class ApiError extends Error {
 
 export async function fetchHealth(): Promise<HealthResponse> {
   return get<HealthResponse>("/dashboard/health");
+}
+
+export async function fetchWorkerActivity(): Promise<WorkerActivityResponse> {
+  return get<WorkerActivityResponse>("/dashboard/worker-activity");
+}
+
+export async function fetchWorkerActivityTrend(): Promise<WorkerTrendResponse> {
+  return get<WorkerTrendResponse>("/dashboard/worker-activity-trend");
 }
 
 export async function fetchMetrics(options?: {
@@ -182,12 +193,21 @@ export async function fetchVoicePerformance(options?: {
   from_date?: string;
   to_date?: string;
   all_time?: boolean;
+  wow_mode?: boolean;
+  wow_shift?: boolean;
 }): Promise<VoicePerformanceResponse> {
   const params: Record<string, string> = {};
   if (options?.from_date) params.from_date = options.from_date;
   if (options?.to_date) params.to_date = options.to_date;
   if (options?.all_time) params.all_time = "true";
+  if (options?.wow_mode) params.wow_mode = "true";
+  if (options?.wow_shift) params.wow_shift = "true";
   return get<VoicePerformanceResponse>("/dashboard/voice-performance", params);
+}
+
+export async function fetchVoicePerformanceEarliestDate(): Promise<string | null> {
+  const res = await get<{ monday: string | null }>("/dashboard/voice-performance/earliest-date");
+  return res.monday;
 }
 
 export async function fetchCampaignOverview(options?: {
@@ -353,8 +373,46 @@ export async function fetchIntentCalls(options: {
   return get<IntentCallsResponse>("/dashboard/intent-calls", params);
 }
 
+export async function fetchDbTables(): Promise<{ tables: { name: string; row_estimate: number }[] }> {
+  return get("/dashboard/db/tables");
+}
+
+export async function runDbQuery(sql: string): Promise<{
+  columns: string[];
+  rows: (string | null)[][];
+  row_count: number;
+  truncated: boolean;
+}> {
+  return post("/dashboard/db/query", { sql });
+}
+
+export async function fetchWebhookFailures(): Promise<WebhookFailuresResponse> {
+  return get<WebhookFailuresResponse>("/dashboard/webhook-failures");
+}
+
+export async function advanceStaleLeadAction(
+  contactId: string,
+  outcome: "voicemail" | "no_answer",
+): Promise<{ status: string; action: string; tier_from?: string; tier_to?: string; run_at?: string; reason?: string; last_call_status?: string }> {
+  return post("/dashboard/actions/advance-stale-lead", { contact_id: contactId, outcome });
+}
+
+export async function recoverCallWebhook(
+  contactId: string,
+  callId: string,
+): Promise<{ status: string; action: string; synthflow_call_id: string; call_status: string; campaign_name: string }> {
+  return post("/dashboard/actions/recover-call-webhook", { contact_id: contactId, call_id: callId });
+}
+
+export async function ignoreWebhookFailure(
+  jobId: string,
+  contactId: string,
+): Promise<{ status: string }> {
+  return post("/dashboard/actions/ignore-webhook-failure", { job_id: jobId, contact_id: contactId });
+}
+
 export async function fetchLeadLifecycle(options?: {
-  status?:   "all" | "active" | "finalized" | "vm" | "dnc";
+  status?:   "all" | "active" | "stale" | "finalized" | "vm" | "dnc";
   campaign?: string;
   limit?:    number;
   offset?:   number;

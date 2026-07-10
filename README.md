@@ -18,9 +18,17 @@ Provides durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates,
 │  POST /exceptions   │    │    ai                  │
 └────────┬────────────┘    │    callbacks           │
          │                 │    retries             │
-         ▼                 │    sheet_mirror        │
-┌─────────────────────┐    └────────────┬───────────┘
-│   Postgres          │◄───────────────┘
+         ▼                 └────────────┬───────────┘
+┌─────────────────────┐                │
+│   PgBouncer         │◄───────────────┘
+│   (connection pool) │
+│   transaction mode  │
+│   20 server conns   │
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
+│   Postgres          │
 │   (authoritative    │
 │    state store)     │
 └─────────────────────┘
@@ -142,6 +150,14 @@ docker compose up
 # watch worker process jobs           
 docker compose logs -f worker  
 ```
+docker compose build --no-cache worker-ai api && docker compose up -d --no-deps worker-ai api
+
+docker compose build --no-cache worker-ai worker-callbacks worker-default worker-retries api && docker compose up -d --no-deps worker-ai worker-callbacks worker-default worker-retries api
+
+# Confirm it picked up the change after deploy:
+docker compose logs worker-ai --tail=20
+
+
 
 | Service | URL |
 |---|---|
@@ -458,10 +474,14 @@ INTEGRATION_TESTS=1 pytest tests/integration/
 | `GHL_WRITE_CAMPAIGN_STATE` | `false` | Enable campaign state field writes |
 | `GHL_WRITE_FINALIZATION` | `false` | Enable voicemail finalization writes |
 | `SHADOW_MODE_ENABLED` | `true` | Intercepts all outbound actions (calls, SMS, email); logs to `shadow_actions` instead of executing |
+| `SYSTEM_PAUSED` | `false` | Halts all job execution system-wide (workers claim then immediately release every job) |
+| `OUTBOUND_CAMPAIGNS_PAUSED` | `false` | Pauses New Lead and Cold Lead campaign activity only — outbound calls, voicemail tier, AI analysis, SMS/email, CRM writes, and nurture graduation are all held. **Inbound campaign processing continues normally.** Jobs are re-checked every 60 seconds; they drain automatically when the flag is cleared. |
 
 All mode flags are DB-backed. Changes made on the **System Controls** dashboard page (`/system-controls`) take effect immediately on the next job — no `.env` edit or restart required.
 
 To go live: use the System Controls dashboard to set `GHL_WRITE_MODE=live`, `SHADOW_MODE_ENABLED=false`, and enable each write category. See `directives/spec/dashboard/11_runbook.md` for the full go-live procedure.
+
+To pause outbound campaigns without touching Inbound: use the **Outbound Campaign Pause** section on the System Controls page — orange "Pause" button to hold, green "Resume" to resume. The status banner turns orange while paused.
 
 ---
 
@@ -540,7 +560,6 @@ Copy your working local `.env` to the server, then adjust these values:
 
 ```
 APP_ENV=production
-DATABASE_URL=postgresql+psycopg2://postgres:<PASSWORD>@postgres:5432/cora
 REDIS_HOST=redis
 DASHBOARD_API_URL=http://<server-ip>:8001
 WS_URL=ws://<server-ip>:8001/ws
@@ -548,7 +567,8 @@ ALLOW_ORIGINS=http://<server-ip>:3000
 ```
 
 **Critical rules:**
-- `DATABASE_URL` must use the Docker service name `postgres:5432`, NOT `localhost` or `host.docker.internal`
+- App services connect through PgBouncer — `DATABASE_URL` is set to `pgbouncer:5432` directly in `docker-compose.yml` and does not need to be in `.env`. Only `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, and `POSTGRES_DATABASE` are needed in `.env`.
+- `migrate` and `adminer` connect directly to `postgres:5432` (bypassing PgBouncer) — this is hardcoded in `docker-compose.yml` and requires no `.env` entry.
 - `DASHBOARD_API_URL` must be the **public server IP** (not localhost) — it is baked into the Next.js bundle at build time and used by the browser
 - `ALLOW_ORIGINS` must match the origin the browser uses to open the dashboard
 - Do NOT copy `docker-compose.override.yml` to the server — it is local dev only
@@ -559,6 +579,7 @@ ALLOW_ORIGINS=http://<server-ip>:3000
 cd /opt/cora-recap-engine
 docker compose up -d --build
 docker compose logs migrate       # verify migrations ran (should exit 0)
+docker compose logs pgbouncer     # verify "listening on 0.0.0.0:5432"
 docker compose ps                 # all services should be healthy/running
 ```
 
@@ -613,6 +634,25 @@ docker compose logs worker-ai --tail=30
 | Dashboard shows CORS error in browser | `ALLOW_ORIGINS` set to `localhost:3000` but browser hits `<server-ip>:3000` | Set `ALLOW_ORIGINS=http://<server-ip>:3000` in `.env`, restart `dashboard-api` |
 | All data shows zeros / null | No call events in DB yet | Normal on fresh deploy — send real calls via Synthflow first |
 | Worker not processing jobs | Redis not healthy | `docker compose logs redis` — restart if needed; worker reconnects automatically |
+
+### Adminer — browser-based DB UI (port 8080)
+
+Adminer is included in `docker-compose.yml` as an optional service that provides a full browser-based SQL interface (table browser + query runner + CSV export). It connects to the Postgres container over Docker's internal network.
+
+It is bound to `127.0.0.1:8080` only (not publicly exposed). Access it via an SSH tunnel:
+
+```bash
+# From your local machine:
+ssh -L 8080:127.0.0.1:8080 root@<server-ip>
+# Then open: http://localhost:8080
+```
+
+Login credentials:
+- **System**: PostgreSQL
+- **Server**: `postgres`
+- **Username / Password / Database**: from your `.env` (`POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`)
+
+Alternatively, use the **DB Explorer** page (`/db-explorer`) built into the dashboard — no SSH tunnel required.
 
 ### Querying Postgres on the server
 
@@ -733,7 +773,7 @@ Open http://localhost:3000 in your browser.
 | `/contact-lookup` | Search any contact by phone or ID to view full detail and pipeline state |
 | `/exceptions` | Exceptions Monitor — open issue queue with Resolve / Ignore / Bulk-Ignore actions, trend chart, date/type/severity filters |
 | `/system-anomalies` | Spike detection, recurring issues table, failure clusters, 14-day frequency trend |
-| `/queue` | Stuck jobs and expired worker leases |
+| `/queue` | Stuck jobs, expired worker leases, and **Webhook Delivery — 24h** panel: surfaces leads whose outbound call completed but no Synthflow webhook arrived, with inline recovery buttons (VM Left / No Answer / Call Completed) |
 | `/alerts` | Threshold alerts (queue lag, error rate, exception spike, worker offline, GHL auth failure) |
 | `/voice-performance` | Single-screen voice analytics: KPI sidebar, stacked trends chart, WoW waterfall, efficiency scatter |
 | `/ai-performance` | AI quality metrics, intent distribution, consent distribution, intent→outcome table, error trends |
@@ -742,6 +782,7 @@ Open http://localhost:3000 in your browser.
 | `/crm-health` | GHL task and VM update success rates, shadow write count |
 | `/lead/[id]` | Per-contact pipeline trace — full job history, shadow flags, failure reasons |
 | `/settings` | Runtime settings management — brand config, messaging config, thresholds |
+| `/db-explorer` | Embedded SQL query runner — browse all tables with row estimates, write and run queries, download results as CSV (opens in Excel) |
 
 ### Dashboard API endpoints (port 8001)
 
@@ -771,6 +812,12 @@ Open http://localhost:3000 in your browser.
 | `POST` | `/dashboard/actions/resolve` | Resolve a specific exception |
 | `POST` | `/dashboard/actions/ignore` | Ignore a specific exception |
 | `POST` | `/dashboard/actions/bulk-ignore` | Ignore all open exceptions of a given type |
+| `GET` | `/dashboard/db/tables` | List all Postgres tables with row estimates (no auth required) |
+| `POST` | `/dashboard/db/query` | Execute arbitrary SQL and return up to 500 rows as JSON (auth required) |
+| `GET` | `/dashboard/lead-lifecycle` | Per-lead journey table (campaign, VM tier, call/SMS/email counts, status) |
+| `GET` | `/dashboard/webhook-failures` | Leads whose outbound call completed in the last 24 h with no Synthflow webhook received (excludes terminal/resolved leads) |
+| `POST` | `/dashboard/actions/advance-stale-lead` | Manually advance a stale lead: `outcome=voicemail` advances tier or finalizes; `outcome=no_answer` schedules retry or closes (auth required) |
+| `POST` | `/dashboard/actions/recover-call-webhook` | Fetch a call from Synthflow by `call_id` and replay the full pipeline (AI analysis + GHL updates) as if the webhook had arrived (auth required) |
 
 ### Environment variables for dashboard
 
@@ -783,6 +830,7 @@ Open http://localhost:3000 in your browser.
 | `ALERT_QUEUE_LAG_THRESHOLD_SECONDS` | `300` | Queue lag threshold for `queue_lag_exceeded` alert |
 | `ALERT_ERROR_RATE_THRESHOLD` | `0.2` | Error rate threshold for `error_rate_spike` alert |
 | `ALERT_EXCEPTION_COUNT_THRESHOLD` | `10` | Open exception count threshold for `exception_spike` alert |
+| `ALERT_DEDUP_WINDOW_SECONDS` | `3600` | Suppress re-fire of the same alert type within this window |
 | `SMTP_ENABLED` | `false` | Enable email delivery for threshold alerts |
 | `SMTP_HOST` | `smtp.gmail.com` | SMTP server hostname |
 | `SMTP_PORT` | `587` | SMTP port (587 for TLS/STARTTLS) |
@@ -799,6 +847,26 @@ The metrics collector (`collect_metrics_job`) runs every 60 seconds as a self-re
 **Alert trigger metric:** `queue_lag_exceeded` fires on `queue_lag_seconds` — the age of the *oldest* overdue pending job — not on raw backlog count. A large backlog of future-dated jobs does not trigger the alert.
 
 See the Alerting / metrics collector troubleshooting section in `directives/spec/11_runbook.md` for common issues.
+
+### Webhook failure recovery
+
+When Synthflow completes an outbound call but its webhook never reaches the API (network drop, burst-concurrency spike, transient Synthflow failure), the lead is left stuck — `launch_outbound_call` completed but no `call_events` row exists and no next job is scheduled.
+
+**Primary tool: Webhook Delivery — 24h panel on Queue Health (`/queue`)**
+
+The panel auto-detects all affected leads within the last 24 hours. Three inline action buttons appear per row — pick based on what Synthflow's Logs page shows for that call:
+
+| Button | When to use | What it does |
+|---|---|---|
+| **VM Left** | Synthflow shows a voicemail was left | Calls `POST /dashboard/actions/advance-stale-lead` with `outcome=voicemail`. Advances the lead's VM tier (or finalizes at tier 2) and schedules the next call. |
+| **No Answer** | Synthflow shows the call did not connect | Calls `POST /dashboard/actions/advance-stale-lead` with `outcome=no_answer`. Schedules a retry; closes the lead on a second consecutive no-answer. |
+| **Call Completed** | Synthflow shows a completed call with a transcript | Expands a call_id input. Enter the Synthflow call_id (from the Synthflow Logs page — not the internal job_id), then press Enter or "Fetch →". Calls `POST /dashboard/actions/recover-call-webhook`, which fetches the call from Synthflow and schedules a `process_call_event` job. The full pipeline runs: AI analysis, intent classification, GHL updates. |
+
+A row disappears from the panel after a successful action because the lead's status becomes terminal/closed or a new pending job is created — this is expected.
+
+**For incidents older than 24 hours:** use the detection SQL query and bulk recovery scripts documented in `directives/spec/dashboard/11_runbook.md` → "Leads stuck mid-voicemail sequence".
+
+**Dashboard token required:** all three actions require the Bearer token to be set in Settings (`/settings` → Dashboard Token card). Without it, the buttons return 403.
 
 ### Feature documentation
 

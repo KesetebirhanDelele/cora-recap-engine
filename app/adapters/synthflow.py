@@ -292,6 +292,180 @@ class SynthflowClient:
             f"Synthflow launch exhausted {self.settings.synthflow_retry_max} retries"
         )
 
+    # ── Read operation ────────────────────────────────────────────────────────
+
+    def get_call(self, call_id: str, *, _retry_delay: float = 1.0) -> dict:
+        """
+        Fetch a single Synthflow call record by call_id.
+
+        GET https://api.synthflow.ai/v2/calls/{call_id}
+
+        Returns the call record dict (unwrapped from any {"data": ...} envelope).
+        Raises SynthflowError on 4xx/5xx or after retries are exhausted.
+        """
+        self.settings.validate_for_synthflow_read()
+        base = str(self.settings.synthflow_base_url).rstrip("/")
+        # synthflow_base_url points to /v2/calls; strip the path and rebuild
+        from urllib.parse import urlparse
+        parsed = urlparse(base)
+        url = f"{parsed.scheme}://{parsed.netloc}/v2/calls/{call_id}"
+
+        for attempt in range(self.settings.synthflow_retry_max + 1):
+            try:
+                resp = self._http.get(url, headers=self._headers())
+
+                if resp.status_code in _RETRYABLE_STATUS:
+                    if attempt < self.settings.synthflow_retry_max:
+                        logger.warning(
+                            "Synthflow get_call transient error | status=%d attempt=%d/%d",
+                            resp.status_code, attempt + 1, self.settings.synthflow_retry_max,
+                        )
+                        time.sleep(_retry_delay * (2**attempt))
+                        continue
+                    raise SynthflowError(
+                        f"Synthflow get_call failed after {attempt + 1} attempts: "
+                        f"HTTP {resp.status_code}",
+                        status_code=resp.status_code,
+                    )
+
+                resp.raise_for_status()
+                raw = resp.json() if resp.content else {}
+                logger.info("Synthflow get_call raw response keys | call_id=%s keys=%s", call_id, list(raw.keys()))
+                logger.debug("Synthflow get_call raw response | call_id=%s body=%s", call_id, raw)
+                # Unwrap envelope — Synthflow may return {"data":{...}}, {"data":[...]},
+                # {"response":{"calls":[...]}}, or a flat response with status="ok"
+                data = raw
+                inner = data.get("data")
+                if isinstance(inner, dict):
+                    data = inner
+                    if isinstance(data.get("calls"), list) and data["calls"]:
+                        data = data["calls"][0]
+                elif isinstance(inner, list) and inner:
+                    data = inner[0]
+                elif isinstance(data.get("response"), dict):
+                    resp_inner = data["response"]
+                    if isinstance(resp_inner.get("calls"), list) and resp_inner["calls"]:
+                        data = resp_inner["calls"][0]
+                    else:
+                        data = resp_inner
+                logger.info("Synthflow get_call | call_id=%s resolved_keys=%s status=%s", call_id, list(data.keys()), data.get("call_status") or data.get("status"))
+                return data
+
+            except httpx.TimeoutException as exc:
+                if attempt < self.settings.synthflow_retry_max:
+                    logger.warning(
+                        "Synthflow get_call timeout | attempt=%d/%d",
+                        attempt + 1, self.settings.synthflow_retry_max,
+                    )
+                    time.sleep(_retry_delay * (2**attempt))
+                    continue
+                raise SynthflowError(
+                    f"Synthflow get_call timed out after {attempt + 1} attempts"
+                ) from exc
+
+            except httpx.HTTPStatusError as exc:
+                raise SynthflowError(
+                    f"Synthflow get_call HTTP error: {exc.response.status_code}",
+                    status_code=exc.response.status_code,
+                ) from exc
+
+        raise SynthflowError(
+            f"Synthflow get_call exhausted {self.settings.synthflow_retry_max} retries"
+        )
+
+    # ── Paginated call list ───────────────────────────────────────────────────
+
+    def list_calls(
+        self,
+        model_id: str,
+        lead_phone_number: str,
+        from_date_ms: int,
+        to_date_ms: int,
+        limit: int = 20,
+        offset: int = 0,
+        *,
+        _retry_delay: float = 1.0,
+    ) -> list[dict]:
+        """
+        GET /v2/calls — paginated call list filtered by agent and phone number.
+
+        lead_phone_number: E.164 format (e.g. +14155552671); httpx encodes
+            + as %2B automatically in query params.
+        from_date_ms / to_date_ms: milliseconds since epoch.
+
+        Returns unwrapped list of call records.
+        Raises SynthflowError on 4xx/5xx after retries.
+        """
+        self.settings.validate_for_synthflow_read()
+
+        from urllib.parse import urlparse
+        parsed = urlparse(str(self.settings.synthflow_base_url).rstrip("/"))
+        url = f"{parsed.scheme}://{parsed.netloc}/v2/calls"
+
+        params = {
+            "model_id":          model_id,
+            "lead_phone_number": lead_phone_number,
+            "from_date":         from_date_ms,
+            "to_date":           to_date_ms,
+            "limit":             limit,
+            "offset":            offset,
+        }
+
+        for attempt in range(self.settings.synthflow_retry_max + 1):
+            try:
+                resp = self._http.get(url, headers=self._headers(), params=params)
+
+                if resp.status_code in _RETRYABLE_STATUS:
+                    if attempt < self.settings.synthflow_retry_max:
+                        logger.warning(
+                            "Synthflow list_calls transient error | status=%d attempt=%d/%d",
+                            resp.status_code, attempt + 1, self.settings.synthflow_retry_max,
+                        )
+                        time.sleep(_retry_delay * (2 ** attempt))
+                        continue
+                    raise SynthflowError(
+                        f"Synthflow list_calls failed after {attempt + 1} attempts: "
+                        f"HTTP {resp.status_code}",
+                        status_code=resp.status_code,
+                    )
+
+                resp.raise_for_status()
+                raw = resp.json() if resp.content else {}
+
+                data = raw.get("data")
+                if isinstance(data, list):
+                    return data
+                if isinstance(data, dict):
+                    inner = data.get("calls")
+                    if isinstance(inner, list):
+                        return inner
+                calls = raw.get("calls")
+                if isinstance(calls, list):
+                    return calls
+                return []
+
+            except httpx.TimeoutException as exc:
+                if attempt < self.settings.synthflow_retry_max:
+                    logger.warning(
+                        "Synthflow list_calls timeout | attempt=%d/%d",
+                        attempt + 1, self.settings.synthflow_retry_max,
+                    )
+                    time.sleep(_retry_delay * (2 ** attempt))
+                    continue
+                raise SynthflowError(
+                    f"Synthflow list_calls timed out after {attempt + 1} attempts"
+                ) from exc
+
+            except httpx.HTTPStatusError as exc:
+                raise SynthflowError(
+                    f"Synthflow list_calls HTTP error: {exc.response.status_code}",
+                    status_code=exc.response.status_code,
+                ) from exc
+
+        raise SynthflowError(
+            f"Synthflow list_calls exhausted {self.settings.synthflow_retry_max} retries"
+        )
+
     # ── Context manager ───────────────────────────────────────────────────────
 
     def close(self) -> None:

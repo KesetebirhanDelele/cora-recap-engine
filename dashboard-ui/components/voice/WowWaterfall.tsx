@@ -63,7 +63,7 @@ function CustomTooltip({ active, payload }: TooltipProps<number, string>) {
           <span style={{ color, fontWeight: 700, fontSize: "0.95rem" }}>
             {isUp ? "▲" : "▼"} {Math.abs(val).toFixed(1)}%
           </span>
-          <span style={{ color: "#94a3b8", fontSize: "0.72rem" }}>WoW</span>
+          <span style={{ color: "#94a3b8", fontSize: "0.72rem" }}>vs last week</span>
         </div>
       )}
     </div>

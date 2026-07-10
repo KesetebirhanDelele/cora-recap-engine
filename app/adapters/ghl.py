@@ -139,8 +139,9 @@ class GHLClient:
 
             except httpx.HTTPStatusError as exc:
                 # Non-retryable 4xx errors raise immediately
+                body_snippet = exc.response.text[:300] if exc.response.content else ""
                 raise GHLError(
-                    f"GHL HTTP error: {exc.response.status_code} {path}",
+                    f"GHL HTTP error: {exc.response.status_code} {path} | {body_snippet}",
                     status_code=exc.response.status_code,
                 ) from exc
 

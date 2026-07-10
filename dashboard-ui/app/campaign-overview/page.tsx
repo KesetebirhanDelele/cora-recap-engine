@@ -6,7 +6,7 @@ export const revalidate = 0;
 export default function CampaignOverviewPage() {
   return (
     <PageShell
-      title="Campaign Overview"
+      title="Scheduled Actions"
       subtitle="Upcoming scheduled contact actions — calls, SMS, and email follow-ups within a date window."
       fullWidth
     >

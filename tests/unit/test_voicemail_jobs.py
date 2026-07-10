@@ -17,6 +17,8 @@ Covers:
   13. process_voicemail_tier: already claimed returns immediately
   14. process_voicemail_tier: missing lead_state is auto-created → job proceeds
   15. process_voicemail_tier: empty contact_id raises ValueError → fails job
+  16. _slot_aware_run_at: concurrent retries from same burst land in different slots
+  17. _slot_aware_run_at: run_at within delay_minutes ± 1 slot of expected time
 """
 from __future__ import annotations
 
@@ -450,3 +452,62 @@ def test_process_voicemail_tier_empty_contact_id_fails_job(session):
             process_voicemail_tier("job-nocontact")
 
     mock_fail.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16–17: _slot_aware_run_at
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_slot_aware_run_at_spreads_concurrent_retries(session):
+    """
+    Concurrent retries from the same burst must land in different 5-min slots,
+    not pile at the same second.
+
+    Simulates 5 concurrent retries with the same delay_minutes. The first 4
+    share slot 0; the 5th must overflow to slot 1.
+    """
+    from datetime import timedelta
+
+    from app.worker.jobs.voicemail_jobs import _slot_aware_run_at
+
+    delay = 120  # 2h — produces a deterministic raw_run_at
+
+    # First call — no pending jobs → slot 0
+    t0 = _slot_aware_run_at(session, delay)
+
+    # Inject 4 pending launch_outbound_call jobs at the slot t0 occupies
+    for _ in range(4):
+        job = ScheduledJob(
+            id=str(uuid.uuid4()),
+            job_type="launch_outbound_call",
+            entity_type="lead",
+            entity_id="burst-test",
+            status="pending",
+            run_at=t0,
+            payload_json={},
+            created_at=datetime.now(tz=timezone.utc),
+            version=0,
+        )
+        session.add(job)
+    session.flush()
+
+    # Fifth call — 4 pending at slot 0 → must advance to slot 1
+    t1 = _slot_aware_run_at(session, delay)
+    assert t1 > t0, "5th retry must land in a later slot than the first 4"
+    assert (t1 - t0).total_seconds() == 300, "slot gap must be exactly 5 minutes"
+
+
+def test_slot_aware_run_at_is_close_to_delay(session):
+    """run_at must be within ±1 slot (5 min) of now + delay_minutes."""
+    from datetime import timedelta
+
+    from app.worker.jobs.voicemail_jobs import _slot_aware_run_at
+
+    delay = 60
+    before = datetime.now(tz=timezone.utc)
+    run_at = _slot_aware_run_at(session, delay)
+    after = datetime.now(tz=timezone.utc)
+
+    expected_center = before + timedelta(minutes=delay)
+    delta = abs((run_at - expected_center).total_seconds())
+    assert delta <= 300, f"run_at {run_at} is more than 5 min from expected {expected_center}"

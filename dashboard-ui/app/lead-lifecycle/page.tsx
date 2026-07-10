@@ -10,10 +10,11 @@
  *   - Polling: every 60 minutes, with a manual Refresh Now button
  */
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
-import { fetchLeadLifecycle } from "@/lib/api";
+import { fetchLeadLifecycle, advanceStaleLeadAction } from "@/lib/api";
 import type { LeadLifecycleResponse, LeadLifecycleRow, LeadLifecycleSummary } from "@/types";
+import ContactLookupClient from "@/components/ContactLookupClient";
 
 // ── Polling interval ──────────────────────────────────────────────────────────
 const POLL_MS = 60 * 60 * 1000; // 1 hour
@@ -43,7 +44,9 @@ function vmLabel(tier: string | null): string {
 function statusBadge(row: LeadLifecycleRow): { label: string; color: string } {
   if (row.do_not_call) return { label: "DNC", color: "#ef4444" };
   if (row.status === "closed" || row.status === "terminal") return { label: "Finalized", color: "#6b7280" };
-  if (row.vm_tier !== null && row.vm_tier !== "3") return { label: "VM Sequence", color: "#f59e0b" };
+  if (row.vm_tier === "3") return { label: "Finalized", color: "#6b7280" };
+  if (!row.next_job_type) return { label: "Stale", color: "#f97316" };
+  if (row.vm_tier !== null) return { label: "VM Sequence", color: "#f59e0b" };
   return { label: "Active", color: "#16a34a" };
 }
 
@@ -89,9 +92,10 @@ const VALUE_STYLE: React.CSSProperties = {
 function SummaryStrip({ summary }: { summary: LeadLifecycleSummary }) {
   const stats = [
     { label: "Active",           value: summary.active,            color: "#16a34a" },
+    { label: "Stale",            value: summary.stale,             color: "#f97316" },
+    { label: "Finalized",        value: summary.finalized,         color: "#6b7280" },
     { label: "In VM Sequence",   value: summary.in_vm_sequence,    color: "#f59e0b" },
     { label: "Campaign Switched",value: summary.campaign_switched, color: "#8b5cf6" },
-    { label: "Finalized",        value: summary.finalized,         color: "#6b7280" },
     { label: "Avg Days to Close",
       value: summary.avg_days_to_close != null ? `${summary.avg_days_to_close}d` : "—",
       color: "#0ea5e9" },
@@ -131,7 +135,51 @@ const TD: React.CSSProperties = {
   whiteSpace: "nowrap",
 };
 
-function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
+function StaleActions({ contactId, onDone }: { contactId: string; onDone: () => void }) {
+  const [loading, setLoading] = React.useState<"voicemail" | "no_answer" | null>(null);
+  const [result, setResult] = React.useState<string | null>(null);
+
+  async function act(outcome: "voicemail" | "no_answer") {
+    setLoading(outcome);
+    setResult(null);
+    try {
+      const r = await advanceStaleLeadAction(contactId, outcome);
+      setResult(r.action === "finalized" ? "Finalized" :
+                r.action === "closed"    ? "Closed" :
+                r.action === "advanced"  ? `Advanced to tier ${r.tier_to}` :
+                "Retry scheduled");
+      setTimeout(onDone, 1500);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setResult(`Error: ${msg}`);
+    } finally {
+      setLoading(null);
+    }
+  }
+
+  if (result) return <span style={{ fontSize: "0.72rem", color: result.startsWith("Error") ? "#ef4444" : "#16a34a", fontWeight: 600 }}>{result}</span>;
+
+  return (
+    <div style={{ display: "flex", gap: "0.35rem" }}>
+      <button
+        disabled={loading !== null}
+        onClick={() => act("voicemail")}
+        style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: 4, border: "1px solid #16a34a", background: loading === "voicemail" ? "#f0fdf4" : "#fff", color: "#16a34a", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}
+      >
+        {loading === "voicemail" ? "…" : "VM Left"}
+      </button>
+      <button
+        disabled={loading !== null}
+        onClick={() => act("no_answer")}
+        style={{ fontSize: "0.7rem", padding: "2px 8px", borderRadius: 4, border: "1px solid #f97316", background: loading === "no_answer" ? "#fff7ed" : "#fff", color: "#f97316", cursor: loading ? "not-allowed" : "pointer", fontWeight: 600 }}
+      >
+        {loading === "no_answer" ? "…" : "No Answer"}
+      </button>
+    </div>
+  );
+}
+
+function LeadTable({ rows, onDrillDown, showActions, onActionDone }: { rows: LeadLifecycleRow[]; onDrillDown: (contactId: string, phone: string) => void; showActions?: boolean; onActionDone?: () => void }) {
   if (rows.length === 0) {
     return (
       <div style={{ color: "#94a3b8", padding: "2rem", textAlign: "center", fontSize: "0.875rem" }}>
@@ -151,18 +199,30 @@ function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
               "Calls", "SMS", "Email", "Last Intent", "Next Action",
               "Finalization",
             ].map(h => <th key={h} style={TH}>{h}</th>)}
+            {showActions && <th key="Actions" style={TH}>Action</th>}
           </tr>
         </thead>
         <tbody>
           {rows.map(row => {
             const badge = statusBadge(row);
+            const hasName = row.lead_name && row.lead_name !== "Unknown";
+            const displayName = hasName ? row.lead_name : (row.phone ?? row.contact_id.slice(0, 12));
             return (
               <tr key={row.contact_id} style={{ background: row.do_not_call ? "#fff7f7" : undefined }}>
                 <td style={TD}>
-                  <div style={{ fontWeight: 600 }}>{row.lead_name}</div>
+                  <div style={{ fontWeight: 600 }}>{displayName}</div>
                   <div style={{ fontSize: "0.72rem", color: "#94a3b8" }}>{row.contact_id.slice(0, 12)}…</div>
                 </td>
-                <td style={TD}>{row.phone ?? "—"}</td>
+                <td style={TD}>
+                  {row.phone ? (
+                    <span
+                      onClick={() => onDrillDown(row.phone!, row.phone!)}
+                      style={{ color: "#3b82f6", cursor: "pointer", textDecoration: "underline" }}
+                    >
+                      {row.phone}
+                    </span>
+                  ) : "—"}
+                </td>
                 <td style={TD}>
                   <span style={{
                     background: badge.color + "18",
@@ -215,6 +275,13 @@ function LeadTable({ rows }: { rows: LeadLifecycleRow[] }) {
                     </div>
                   ) : "—"}
                 </td>
+                {showActions && (
+                  <td style={TD}>
+                    {badge.label === "Stale" ? (
+                      <StaleActions contactId={row.contact_id} onDone={onActionDone ?? (() => {})} />
+                    ) : "—"}
+                  </td>
+                )}
               </tr>
             );
           })}
@@ -230,9 +297,10 @@ export default function LeadLifecyclePage() {
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [statusFilter, setStatusFilter]   = useState<"all" | "active" | "finalized" | "vm" | "dnc">("all");
+  const [statusFilter, setStatusFilter]   = useState<"all" | "active" | "stale" | "finalized" | "vm" | "dnc">("all");
   const [campaignFilter, setCampaignFilter] = useState("all");
   const [offset, setOffset]     = useState(0);
+  const [drillDown, setDrillDown] = useState<{ contactId: string; phone: string } | null>(null);
   const LIMIT = 100;
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -262,6 +330,42 @@ export default function LeadLifecyclePage() {
     load(statusFilter, campaignFilter, offset);
     timerRef.current = setInterval(() => load(statusFilter, campaignFilter, offset), POLL_MS);
   };
+
+  // ── Drill-down view ────────────────────────────────────────────────────────
+  if (drillDown) {
+    return (
+      <div style={{
+        minHeight: "100vh", display: "flex", flexDirection: "column",
+        background: "#f1f5f9", fontFamily: "system-ui, -apple-system, sans-serif", color: "#1e293b",
+        padding: "0.75rem", gap: "1rem",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: "0.75rem",
+          background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8,
+          padding: "0.75rem 1rem",
+        }}>
+          <button
+            onClick={() => setDrillDown(null)}
+            style={{
+              display: "flex", alignItems: "center", gap: "0.35rem",
+              padding: "0.35rem 0.875rem",
+              background: "#f1f5f9", border: "1px solid #e2e8f0",
+              borderRadius: 6, fontSize: "0.82rem", cursor: "pointer", fontWeight: 600,
+            }}
+          >
+            ← Back to Lead Lifecycle
+          </button>
+          <span style={{ fontSize: "0.85rem", color: "#64748b" }}>
+            Contact:{" "}
+            <strong style={{ color: "#1e293b", fontFamily: "monospace" }}>
+              {drillDown.phone}
+            </strong>
+          </span>
+        </div>
+        <ContactLookupClient contactId={drillDown.contactId} />
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -340,9 +444,10 @@ export default function LeadLifecyclePage() {
                 style={{ fontSize: "0.78rem", padding: "3px 6px", borderRadius: 4, border: "1px solid #e2e8f0" }}
               >
                 <option value="all">All</option>
-                <option value="active">Active</option>
-                <option value="vm">In VM Sequence</option>
+                <option value="active">Active (has pending job)</option>
+                <option value="stale">Stale (no pending job)</option>
                 <option value="finalized">Finalized</option>
+                <option value="vm">In VM Sequence</option>
                 <option value="dnc">Do Not Call</option>
               </select>
               <label style={{ fontSize: "0.78rem", color: "#64748b" }}>Campaign</label>
@@ -359,12 +464,54 @@ export default function LeadLifecyclePage() {
             </div>
           </div>
 
+          {/* Pagination — top */}
+          {data && data.total > LIMIT && (
+            <div style={{
+              padding: "0.4rem 0.875rem",
+              borderBottom: "1px solid #e2e8f0",
+              display: "flex",
+              alignItems: "center",
+              gap: "0.75rem",
+              fontSize: "0.78rem",
+              color: "#64748b",
+              background: "#fafafa",
+            }}>
+              <span>
+                {offset + 1}–{Math.min(offset + LIMIT, data.total)} of {data.total.toLocaleString()}
+              </span>
+              <button
+                disabled={offset === 0}
+                onClick={() => setOffset(Math.max(0, offset - LIMIT))}
+                style={{ padding: "3px 10px", fontSize: "0.78rem", borderRadius: 4,
+                         border: "1px solid #e2e8f0", cursor: offset === 0 ? "not-allowed" : "pointer",
+                         background: offset === 0 ? "#f8fafc" : "#ffffff" }}
+              >
+                ← Prev
+              </button>
+              <button
+                disabled={offset + LIMIT >= data.total}
+                onClick={() => setOffset(offset + LIMIT)}
+                style={{ padding: "3px 10px", fontSize: "0.78rem", borderRadius: 4,
+                         border: "1px solid #e2e8f0",
+                         cursor: offset + LIMIT >= data.total ? "not-allowed" : "pointer",
+                         background: offset + LIMIT >= data.total ? "#f8fafc" : "#ffffff" }}
+              >
+                Next →
+              </button>
+            </div>
+          )}
+
           {/* Table */}
           <div style={{ flex: 1, overflowY: "auto" }}>
-            <LeadTable rows={data?.rows ?? []} />
+            <LeadTable
+              rows={data?.rows ?? []}
+              onDrillDown={(contactId, phone) => setDrillDown({ contactId, phone })}
+              showActions={statusFilter === "stale"}
+              onActionDone={refresh}
+            />
           </div>
 
-          {/* Pagination */}
+          {/* Pagination — bottom */}
           {data && data.total > LIMIT && (
             <div style={{
               padding: "0.5rem 0.875rem",

@@ -160,16 +160,34 @@ def get_ai_timeseries(
     return _get_ats(session, from_date=from_date, to_date=to_date)
 
 
+@router.get("/voice-performance/earliest-date")
+def get_voice_performance_earliest_date(session: Session = Depends(get_db)) -> dict[str, str | None]:
+    """Return the Monday of the earliest calendar week that has call_events data."""
+    from sqlalchemy import text as _text
+    from datetime import timezone as _tz, timedelta as _td
+    row = session.execute(_text("SELECT MIN(COALESCE(call_started_at, created_at)) FROM call_events WHERE NOT report_excluded")).fetchone()
+    earliest = row[0] if (row and row[0]) else None
+    if earliest is None:
+        return {"monday": None}
+    if earliest.tzinfo is None:
+        earliest = earliest.replace(tzinfo=_tz.utc)
+    days_since_monday = earliest.weekday()  # Mon=0
+    monday = (earliest - _td(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return {"monday": monday.date().isoformat()}
+
+
 @router.get("/voice-performance")
 def get_voice_performance(
     from_date: datetime | None = Query(default=None),
     to_date: datetime | None = Query(default=None),
     all_time: bool = Query(default=False, description="Return cumulative all-time KPIs with no date floor"),
+    wow_mode: bool = Query(default=False, description="When True, WoW compares the calendar week of to_date vs the prior full calendar week"),
+    wow_shift: bool = Query(default=False, description="When True, WoW compares (from_date, to_date) vs the same window shifted back 7 days"),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Voice call performance analytics — KPIs, time series, WoW, scatter data."""
     from app.services.dashboard_metrics import get_voice_performance as _get_vp
-    return _get_vp(session, from_date=from_date, to_date=to_date, all_time=all_time)
+    return _get_vp(session, from_date=from_date, to_date=to_date, all_time=all_time, wow_mode=wow_mode, wow_shift=wow_shift)
 
 
 @router.get("/lead-lifecycle")
@@ -184,6 +202,33 @@ def get_lead_lifecycle(
     from app.services.lead_lifecycle import get_lead_lifecycle as _get_ll
     return _get_ll(session, status_filter=status, campaign_filter=campaign,
                    limit=limit, offset=offset)
+
+
+@router.get("/worker-activity")
+def get_worker_activity(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Per-worker job throughput and avg latency over the last 10 minutes."""
+    from app.services.dashboard_metrics import get_worker_activity as _get_wa
+    return _get_wa(session)
+
+
+@router.get("/worker-activity-trend")
+def get_worker_activity_trend(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """60-minute per-worker job count and avg duration trend (1-min buckets)."""
+    from app.services.dashboard_metrics import get_worker_activity_trend as _get_wat
+    return _get_wat(session)
+
+
+@router.get("/webhook-failures")
+def get_webhook_failures(
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Webhook delivery failures for launch_outbound_call jobs in the last 24 hours."""
+    from app.services.dashboard_metrics import get_webhook_failures as _get_wf
+    return _get_wf(session)
 
 
 @router.get("/card-metrics")
@@ -702,6 +747,114 @@ def action_bulk_ignore(
     session.commit()
 
     return {"status": "ok", "ignored_count": ignored_count, "audit_log_id": audit.id}
+
+
+class AdvanceStaleLeadRequest(BaseModel):
+    contact_id: str
+    outcome: str  # "voicemail" | "no_answer"
+
+
+@router.post("/actions/advance-stale-lead")
+def advance_stale_lead(
+    body: AdvanceStaleLeadRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Manually advance a stale lead whose Synthflow webhook was missed.
+
+    outcome=voicemail — VM confirmed in Synthflow; advance tier or finalize.
+    outcome=no_answer — no connection confirmed; retry or close on consecutive failure.
+    """
+    from app.config import get_settings
+    from app.services.stale_recovery import (
+        StaleLeadConflict, StaleLeadNotFound, advance_stale_lead as _advance,
+    )
+
+    operator_id = auth["operator_id"]
+    settings = get_settings()
+
+    try:
+        result = _advance(session, body.contact_id, body.outcome, operator_id, settings)
+        session.commit()
+        return {"status": "ok", **result}
+    except StaleLeadNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except StaleLeadConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+class RecoverCallWebhookRequest(BaseModel):
+    contact_id: str
+    call_id: str  # Synthflow call_id from the Logs page
+
+
+@router.post("/actions/recover-call-webhook")
+def recover_call_webhook(
+    body: RecoverCallWebhookRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Fetch a call from Synthflow by call_id and replay the full processing pipeline.
+
+    Use when a completed call's webhook was never delivered: operator looks up
+    the Synthflow call_id in the Logs page and submits it here.  The call data
+    is fetched from the Synthflow API and a process_call_event job is scheduled,
+    running AI analysis and GHL updates exactly as if the webhook had arrived.
+    """
+    from app.config import get_settings
+    from app.services.stale_recovery import (
+        StaleLeadConflict, WebhookRecoveryError, recover_missed_webhook,
+    )
+
+    operator_id = auth["operator_id"]
+    settings = get_settings()
+
+    try:
+        result = recover_missed_webhook(
+            session, body.contact_id, body.call_id, operator_id, settings
+        )
+        session.commit()
+        return {"status": "ok", **result}
+    except StaleLeadConflict as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    except WebhookRecoveryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+class IgnoreWebhookFailureRequest(BaseModel):
+    job_id: str      # scheduled_jobs.id of the launch_outbound_call job
+    contact_id: str
+
+
+@router.post("/actions/ignore-webhook-failure")
+def action_ignore_webhook_failure(
+    body: IgnoreWebhookFailureRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Dismiss a webhook failure row without processing it.
+
+    Writes an audit_log entry keyed on the job_id so the panel exclusion
+    query can filter it out on the next refresh.  Use for butt-dials,
+    duplicate calls, or any case where no recovery action is needed.
+    """
+    import uuid as _uuid
+    from app.models.audit import AuditLog
+
+    operator_id = auth["operator_id"]
+    audit_id = str(_uuid.uuid4())
+    session.add(AuditLog(
+        id=audit_id,
+        entity_type="scheduled_job",
+        entity_id=body.job_id,
+        action="manual_webhook_ignore",
+        operator_id=operator_id,
+        context_json={"contact_id": body.contact_id},
+    ))
+    session.commit()
+    return {"status": "ok", "audit_log_id": audit_id}
 
 
 class AcknowledgeAlertRequest(BaseModel):

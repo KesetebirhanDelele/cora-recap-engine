@@ -87,28 +87,19 @@ export default function VoicePerformancePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Date-sensitive fetches — re-run whenever the date picker changes
   const load = useCallback(async (from: string, to: string) => {
     setLoading(true);
     setError(null);
     try {
-      const now = new Date();
-      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-      const wowFrom = sevenDaysAgo.toISOString().slice(0, 10);
-      const wowTo   = now.toISOString().slice(0, 10);
-
-      const [filtered, all, wow] = await Promise.all([
+      const [filtered, wow] = await Promise.all([
         fetchVoicePerformance({
           from_date: from ? `${from}T00:00:00Z` : undefined,
           to_date:   to   ? `${to}T23:59:59Z`   : undefined,
         }),
-        fetchVoicePerformance({ all_time: true }), // no date filter — cumulative totals
-        fetchVoicePerformance({                    // fixed 7-day window — WoW only
-          from_date: `${wowFrom}T00:00:00Z`,
-          to_date:   `${wowTo}T23:59:59Z`,
-        }),
+        fetchVoicePerformance({ wow_mode: true }), // calendar-week WoW: Mon–now vs Mon–Sun last week
       ]);
       setData(filtered);
-      setAllData(all);
       setWowData(wow);
     } catch (e) {
       setError(String(e));
@@ -117,18 +108,23 @@ export default function VoicePerformancePage() {
     }
   }, []);
 
+  // All-time fetch — runs once on mount, never re-runs on date picker changes
+  useEffect(() => {
+    fetchVoicePerformance({ all_time: true })
+      .then(setAllData)
+      .catch(() => {/* allData stays null; bubble chart shows empty state */});
+  }, []);
+
   useEffect(() => { load(fromDate, toDate); }, [fromDate, toDate, load]);
 
   // KPI sidebar always uses cumulative (all-time) data
   const kpis              = allData?.kpis               ?? EMPTY_KPIS;
-  // Bubble chart uses the selected date range
-  const campaignBreakdown = data?.campaign_breakdown    ?? [];
+  // Bubble chart uses all-time data — no date filter
+  const campaignBreakdown = allData?.campaign_breakdown ?? [];
   // Trends use the date-filtered data
   const timeSeries        = data?.time_series           ?? [];
-  // WoW waterfall always uses the fixed last-7-days comparison
+  // Both WoW waterfall AND KPI sidebar use the same calendar-week WoW — single source of truth
   const wowChanges        = wowData?.wow_changes        ?? {};
-  // KPI sidebar uses the date-range wow_changes (not the 7-day window)
-  const kpiWowChanges     = data?.wow_changes           ?? {};
 
   return (
     /*
@@ -211,7 +207,7 @@ export default function VoicePerformancePage() {
           <div style={{ fontSize: "0.72rem", color: "#94a3b8", marginBottom: "0.35rem", fontStyle: "italic" }}>
             All-time · cumulative
           </div>
-          <KpiSidebar kpis={kpis} wowChanges={kpiWowChanges} />
+          <KpiSidebar kpis={kpis} wowChanges={wowChanges} />
         </div>
 
         {/*
@@ -317,7 +313,7 @@ export default function VoicePerformancePage() {
               <div style={SECTION_LABEL}>
                 <span>📊</span> WoW % Performance
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — last 7 days vs prior 7 days
+                  — this week vs last week (full)
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>
@@ -340,7 +336,7 @@ export default function VoicePerformancePage() {
               <div style={SECTION_LABEL}>
                 <span>🎯</span> Are we wasting calls?
                 <span style={{ color: "#cbd5e1", fontWeight: 400, fontSize: "0.78rem" }}>
-                  — pickup vs booking %, bubble = calls · selected range
+                  — pickup vs booking %, bubble = avg calls/day · all-time
                 </span>
               </div>
               <div style={{ flex: 1, minHeight: 0 }}>

@@ -10,7 +10,9 @@ Model name handling:
 
 Retry policy (mirrors GHLClient):
   Retries on RateLimitError (429), APIStatusError 5xx, APITimeoutError.
-  Bounded by settings.openai_retry_max. Delay doubles per attempt (2^n seconds).
+  Bounded by settings.openai_retry_max (default 1).
+  RateLimitError: minimum 60s wait (OpenAI windows are per-minute).
+  Other errors: exponential backoff from _retry_delay base.
   AuthenticationError is NOT retried — surfaces immediately as OpenAIError.
 
 Injectable _client for tests:
@@ -87,6 +89,7 @@ class OpenAIClient:
         messages: list[dict[str, str]],
         model: str,
         response_format: dict | None = None,
+        max_tokens: int | None = None,
         *,
         _retry_delay: float = 1.0,
     ) -> dict:
@@ -96,6 +99,8 @@ class OpenAIClient:
         messages: OpenAI chat messages list.
         model: model name (may include 'openai/' prefix — stripped automatically).
         response_format: e.g. {"type": "json_object"} to request JSON output.
+        max_tokens: hard cap on response length; use to bound output size for
+                    fields with character limits (e.g. GHL custom fields).
         _retry_delay: base delay seconds; pass 0.0 in tests to skip sleeps.
 
         Returns: parsed dict from the model's response content.
@@ -107,6 +112,8 @@ class OpenAIClient:
         kwargs: dict[str, Any] = {"model": clean_model, "messages": messages}
         if response_format:
             kwargs["response_format"] = response_format
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
 
         for attempt in range(self.settings.openai_retry_max + 1):
             try:
@@ -121,11 +128,14 @@ class OpenAIClient:
 
             except openai.RateLimitError as exc:
                 if attempt < self.settings.openai_retry_max:
+                    # Rate limit windows are ~60s — exponential backoff from 1s base
+                    # is too short. Floor at 60s so we outlast the window.
+                    wait = max(60.0, _retry_delay * (2 ** attempt))
                     logger.warning(
-                        "OpenAI rate limit | attempt=%d/%d model=%s",
-                        attempt + 1, self.settings.openai_retry_max, clean_model,
+                        "OpenAI rate limit | attempt=%d/%d model=%s | retry_in=%.0fs",
+                        attempt + 1, self.settings.openai_retry_max, clean_model, wait,
                     )
-                    time.sleep(_retry_delay * (2**attempt))
+                    time.sleep(wait)
                     continue
                 raise OpenAIError(
                     f"OpenAI rate limit exhausted after {attempt + 1} attempts"
