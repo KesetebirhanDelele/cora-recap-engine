@@ -437,6 +437,30 @@ shadow-gate flag is `false`.
    Criterion 12 / 9's non-automatable step — the API returning `201 success:true` alone is not
    sufficient per spec/20 §5's evaluation design.
 
+### 9.4 Post-sandbox-testing cleanup — do this every time
+
+`GHL_OAUTH_TARGET_LOCATION_ID` is a single, static `.env` value shared by every location's
+`write_conversation_log` job (`settings.ghl_oauth_effective_target_location_id`, §1) — it is **not**
+derived per-call from the real contact's location. If it's pointed at the sandbox location while
+`GHL_WRITE_CONVERSATION_LOG=true` in production, every *real* production call will resolve the
+sandbox's stored OAuth token and attempt a real write against it for a contact that doesn't exist
+under that sandbox authorization — producing a `401` `conversation_log_failed` exception for every
+completed call, instead of the intended clean skip (Acceptance Criterion 9) that happens when no
+token is stored for the real location.
+
+This happened in practice on 2026-07-11 (comment left in from the 2026-07-10 AC12 testing session)
+— production calls were failing with GHL 401s for about an hour before caught. **After any sandbox
+verification run (§9.1–9.3), immediately comment out `GHL_OAUTH_TARGET_LOCATION_ID` in the server's
+`.env`** (keep the line, prefixed `#`, for reference — don't delete it, the sandbox location ID is
+still useful next time) so it falls back to `GHL_LOCATION_ID` (the real production location, which
+has no stored token yet and will skip cleanly) — then restart `api` and `worker-callbacks`
+(`docker compose up -d --no-deps api worker-callbacks`, env-only, no rebuild needed). Verify with:
+```
+docker compose exec worker-callbacks python -c "from app.config import get_settings; print(get_settings().ghl_oauth_effective_target_location_id)"
+```
+should print `ttBtJmxoLwjf18lIvvVD` (or whatever the real production location ID is), not the
+sandbox's.
+
 ### 9.3 Known-good run (sandbox, for reference)
 
 - Location: `eWe9cRDf0UmSSIBxBMAO` ("Cora S" sandbox agency, company `k7UtA5ILPawzi0wIV2Ty`)
