@@ -8,6 +8,17 @@ Claude Code and other coding agents are used to **build and maintain** the syste
 
 ---
 
+## Session Continuity
+
+**Read `PROGRESS.md` at the start of every session, alongside this file.** It is the running
+log of what was done, what's currently live in production, what's explicitly NOT done yet, and
+the ordered next steps — across sessions, not just within one. Update it at the end of any
+substantial work session (append a new dated section; don't rewrite prior history). Do not
+assume production state from git history or memory alone when `PROGRESS.md` has a more current
+answer — it is written specifically to prevent re-deriving or contradicting recent work.
+
+---
+
 ## Core Principle
 
 LLMs are probabilistic.  
