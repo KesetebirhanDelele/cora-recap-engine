@@ -20,6 +20,16 @@ function daysToStr(selected: string[]): string {
     .join(",");
 }
 
+// Roster entries store days as numbers (0=Mon..6=Sun) in JSON; the UI works
+// with day labels (DayPicker convention) — these convert between the two.
+function rosterDaysToNums(days: string[]): number[] {
+  return DAY_LABELS.map((d, idx) => (days.includes(d) ? idx : -1)).filter((i) => i >= 0);
+}
+
+function rosterDaysFromNums(nums: number[] | undefined): string[] {
+  return (nums ?? []).filter((n) => n >= 0 && n < 7).map((n) => DAY_LABELS[n]);
+}
+
 function getInt(cfg: Record<string, string>, key: string, fallback: number): number {
   const v = cfg[key];
   if (v === undefined) return fallback;
@@ -153,6 +163,10 @@ export default function SettingsClient() {
   const [explainerVideoLink, setExplainerVideoLink] = useState("");
 
   const [admissionsAssistants, setAdmissionsAssistants] = useState<Array<{ name: string; ghl_id: string }>>([]);
+  const [supportStaffRoster, setSupportStaffRoster] = useState<Array<{
+    name: string; ghl_id: string; days: string[]; shift_start: string; shift_end: string;
+  }>>([]);
+  const [ipbcAssistants, setIpbcAssistants] = useState<Array<{ name: string; ghl_id: string }>>([]);
 
   const applyConfig = useCallback((c: Record<string, string>) => {
     setCfg(c);
@@ -185,6 +199,20 @@ export default function SettingsClient() {
     } catch {
       setAdmissionsAssistants([]);
     }
+    try {
+      const raw = c["support_staff_roster"];
+      const parsed: Array<{ name: string; ghl_id: string; days: number[]; shift_start: string; shift_end: string }>
+        = raw ? JSON.parse(raw) : [];
+      setSupportStaffRoster(parsed.map((s) => ({ ...s, days: rosterDaysFromNums(s.days) })));
+    } catch {
+      setSupportStaffRoster([]);
+    }
+    try {
+      const raw = c["ipbc_payment_assistants"];
+      setIpbcAssistants(raw ? JSON.parse(raw) : []);
+    } catch {
+      setIpbcAssistants([]);
+    }
   }, []);
 
   useEffect(() => {
@@ -204,6 +232,14 @@ export default function SettingsClient() {
   if (clStart >= clEnd) errors.push("Cold Lead: start hour must be less than end hour.");
   if (!brandName.trim()) errors.push("Brand name cannot be empty.");
   if (!senderName.trim()) errors.push("Sender name cannot be empty.");
+  supportStaffRoster.forEach((s, i) => {
+    if (s.ghl_id.trim() && s.days.length === 0) {
+      errors.push(`Support staff #${i + 1} (${s.name || "unnamed"}): select at least one shift day.`);
+    }
+    if (s.ghl_id.trim() && (!s.shift_start || !s.shift_end)) {
+      errors.push(`Support staff #${i + 1} (${s.name || "unnamed"}): shift start and end times are required.`);
+    }
+  });
 
   function handleSaveToken() {
     if (typeof window !== "undefined") {
@@ -248,6 +284,10 @@ export default function SettingsClient() {
           live_open_house_link: liveOpenHouseLink.trim(),
           explainer_open_house_video_link: explainerVideoLink.trim(),
           admissions_assistants: JSON.stringify(admissionsAssistants),
+          support_staff_roster: JSON.stringify(
+            supportStaffRoster.map((s) => ({ ...s, days: rosterDaysToNums(s.days) }))
+          ),
+          ipbc_payment_assistants: JSON.stringify(ipbcAssistants),
         },
       });
       setSaveMsg({ ok: true, text: "Settings saved. Changes are now live." });
@@ -598,6 +638,204 @@ export default function SettingsClient() {
         <button
           type="button"
           onClick={() => setAdmissionsAssistants([...admissionsAssistants, { name: "", ghl_id: "" }])}
+          style={{
+            alignSelf: "flex-start",
+            padding: "0.35rem 0.9rem", background: "#f0fdf4", color: "#15803d",
+            border: "1px solid #bbf7d0", borderRadius: 6, fontSize: "0.82rem",
+            fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          + Add assistant
+        </button>
+      </div>
+
+      {/* ── Customer Support Roster ── */}
+      <div style={SECTION_CARD}>
+        <div>
+          <p style={SECTION_TITLE}>Customer Support Roster</p>
+          <p style={SECTION_CAPTION}>
+            GHL tasks for support calls are assigned to whoever&apos;s shift covers the moment the call
+            is analyzed. If two shifts overlap, the incoming (later-starting) shift wins. If no shift
+            covers the current time, the nearest upcoming shift wins. All times are in
+            America/Chicago (CST/CDT). Overnight shifts (end time before start time) roll into the next day.
+          </p>
+        </div>
+
+        {supportStaffRoster.length === 0 && (
+          <p style={{ margin: 0, fontSize: "0.82rem", color: "#94a3b8" }}>
+            No support staff configured — fallback default will be used.
+          </p>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem" }}>
+          {supportStaffRoster.map((s, i) => (
+            <div key={i} style={{
+              display: "flex", flexDirection: "column", gap: "0.5rem",
+              padding: "0.6rem", border: "1px solid #f1f5f9", borderRadius: 6,
+            }}>
+              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                <input
+                  type="text"
+                  value={s.name}
+                  placeholder="Full name"
+                  onChange={(e) => {
+                    const updated = [...supportStaffRoster];
+                    updated[i] = { ...updated[i], name: e.target.value };
+                    setSupportStaffRoster(updated);
+                  }}
+                  style={{ ...INPUT, flex: 1 }}
+                />
+                <input
+                  type="text"
+                  value={s.ghl_id}
+                  placeholder="GHL User ID"
+                  onChange={(e) => {
+                    const updated = [...supportStaffRoster];
+                    updated[i] = { ...updated[i], ghl_id: e.target.value };
+                    setSupportStaffRoster(updated);
+                  }}
+                  style={{ ...INPUT, flex: 1, fontFamily: "monospace", fontSize: "0.8rem" }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setSupportStaffRoster(supportStaffRoster.filter((_, j) => j !== i))}
+                  style={{
+                    padding: "0.35rem 0.7rem", background: "#fef2f2", color: "#991b1b",
+                    border: "1px solid #fecaca", borderRadius: 6, fontSize: "0.8rem",
+                    fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const,
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+              <div style={{ display: "flex", gap: "1rem", alignItems: "flex-end", flexWrap: "wrap" as const }}>
+                <div>
+                  <label style={LABEL}>Shift days</label>
+                  <DayPicker
+                    value={s.days}
+                    onChange={(days) => {
+                      const updated = [...supportStaffRoster];
+                      updated[i] = { ...updated[i], days };
+                      setSupportStaffRoster(updated);
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={LABEL}>Shift start (CST/CDT)</label>
+                  <input
+                    type="time"
+                    value={s.shift_start}
+                    onChange={(e) => {
+                      const updated = [...supportStaffRoster];
+                      updated[i] = { ...updated[i], shift_start: e.target.value };
+                      setSupportStaffRoster(updated);
+                    }}
+                    style={{ ...NUM_INPUT, width: 130 }}
+                  />
+                </div>
+                <div>
+                  <label style={LABEL}>Shift end (CST/CDT)</label>
+                  <input
+                    type="time"
+                    value={s.shift_end}
+                    onChange={(e) => {
+                      const updated = [...supportStaffRoster];
+                      updated[i] = { ...updated[i], shift_end: e.target.value };
+                      setSupportStaffRoster(updated);
+                    }}
+                    style={{ ...NUM_INPUT, width: 130 }}
+                  />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setSupportStaffRoster([
+            ...supportStaffRoster,
+            { name: "", ghl_id: "", days: [], shift_start: "09:00", shift_end: "17:00" },
+          ])}
+          style={{
+            alignSelf: "flex-start",
+            padding: "0.35rem 0.9rem", background: "#f0fdf4", color: "#15803d",
+            border: "1px solid #bbf7d0", borderRadius: 6, fontSize: "0.82rem",
+            fontWeight: 600, cursor: "pointer",
+          }}
+        >
+          + Add support staff
+        </button>
+      </div>
+
+      {/* ── IPBC / Payment Assistants ── */}
+      <div style={SECTION_CARD}>
+        <div>
+          <p style={SECTION_TITLE}>IPBC / Payment Assistants</p>
+          <p style={SECTION_CAPTION}>
+            GHL tasks for IPBC, job readiness, and payment/billing calls are assigned to the first
+            person in this list. Name is display-only; GHL User ID is what gets written to GHL.
+          </p>
+        </div>
+
+        {ipbcAssistants.length === 0 && (
+          <p style={{ margin: 0, fontSize: "0.82rem", color: "#94a3b8" }}>
+            No assistants configured — fallback default will be used.
+          </p>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+          {ipbcAssistants.map((a, i) => (
+            <div key={i} style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              {i === 0 && (
+                <span style={{
+                  fontSize: "0.68rem", fontWeight: 700, color: "#1d4ed8",
+                  background: "#eff6ff", border: "1px solid #bfdbfe",
+                  borderRadius: 4, padding: "0.1rem 0.4rem", whiteSpace: "nowrap" as const,
+                }}>
+                  PRIMARY
+                </span>
+              )}
+              <input
+                type="text"
+                value={a.name}
+                placeholder="Full name"
+                onChange={(e) => {
+                  const updated = [...ipbcAssistants];
+                  updated[i] = { ...updated[i], name: e.target.value };
+                  setIpbcAssistants(updated);
+                }}
+                style={{ ...INPUT, flex: 1 }}
+              />
+              <input
+                type="text"
+                value={a.ghl_id}
+                placeholder="GHL User ID"
+                onChange={(e) => {
+                  const updated = [...ipbcAssistants];
+                  updated[i] = { ...updated[i], ghl_id: e.target.value };
+                  setIpbcAssistants(updated);
+                }}
+                style={{ ...INPUT, flex: 1, fontFamily: "monospace", fontSize: "0.8rem" }}
+              />
+              <button
+                type="button"
+                onClick={() => setIpbcAssistants(ipbcAssistants.filter((_, j) => j !== i))}
+                style={{
+                  padding: "0.35rem 0.7rem", background: "#fef2f2", color: "#991b1b",
+                  border: "1px solid #fecaca", borderRadius: 6, fontSize: "0.8rem",
+                  fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const,
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIpbcAssistants([...ipbcAssistants, { name: "", ghl_id: "" }])}
           style={{
             alignSelf: "flex-start",
             padding: "0.35rem 0.9rem", background: "#f0fdf4", color: "#15803d",

@@ -485,6 +485,21 @@ The Settings page has a **Dashboard Token** card at the top. This is where opera
 - Update the voicemail SMS message template or adjust an alert threshold during a live incident without restarting any service.
 - Store the operator auth token after a new deployment or `SECRET_KEY` rotation.
 
+### GHL call-summary assignee routing
+
+Three list editors control who gets assigned the GHL task/contact-field update for a completed call. The AI only classifies the call topic — these lists decide the specific person:
+
+- **Admissions Assistants** — name + GHL User ID rows; the first row is always the assignee (labeled PRIMARY).
+- **Customer Support Roster** — name + GHL User ID + shift days (day picker) + shift start/end time (CST) per row. The person whose shift covers the moment the call is analyzed gets the task. If two shifts overlap, the incoming (later-starting) shift wins; if no shift covers the current time, the nearest upcoming shift wins.
+- **IPBC / Payment Assistants** — same list pattern as Admissions Assistants, for IPBC / job readiness / payment / billing calls.
+
+Add or remove rows with the **+ Add** / **Remove** buttons per section; name is display-only, GHL User ID is what's written to GHL. Changes take effect on the next call — no restart required.
+
+**Use cases:**
+- Onboard a new customer support hire by adding their name, GHL ID, and shift hours — no engineering involved.
+- Change a support staffer's shift hours after a schedule change.
+- Swap out the IPBC/payment point of contact when that role changes hands.
+
 ---
 
 ## System Status Bar (home page component)

@@ -507,6 +507,22 @@ python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
 
 ---
 
+## GHL Call-Summary Assignee Routing
+
+Every completed call gets a GHL task/contact-field update assigning it to a person. The AI only classifies the call topic (`admissions`, `support_call`, `IPBC / job readiness / payment / billing`, etc.) — the actual GHL user ID is resolved deterministically in Python and substituted into the prompt before it reaches OpenAI. All three routing lists are edited on the dashboard at `/settings` — no code change or redeploy needed:
+
+| Bucket | Settings section | Behavior |
+|---|---|---|
+| Admissions | Admissions Assistants | First person in the list is always the assignee |
+| Support calls | Customer Support Roster | Whoever's shift (days + start/end time, in America/Chicago) covers the moment the call is analyzed is the assignee. Overlapping shifts: the incoming (later-starting) shift wins. Gaps in coverage: the nearest upcoming shift wins |
+| IPBC / job readiness / payment / billing | IPBC / Payment Assistants | First person in the list is always the assignee |
+
+If a list is empty or unreadable, each bucket falls back to a hardcoded default GHL ID (see `_ADMISSIONS_FALLBACK_GHL_ID`, `_SUPPORT_FALLBACK_GHL_ID`, `_IPBC_FALLBACK_GHL_ID` in `app/core/ai_message_generator.py`).
+
+Shift resolution logic lives in `app/core/staff_roster.py::resolve_shift_assignee()` — see `directives/spec/16_ghl_integration.md` for the full routing table and `tests/unit/test_staff_roster.py` for the overlap/gap test cases.
+
+---
+
 ## Unresolved External IDs
 
 The following are not yet configured and block those specific write paths:
@@ -781,7 +797,7 @@ Open http://localhost:3000 in your browser.
 | `/conversion-funnel` | Funnel visual (Total Calls → Picked Up → Engaged → Booked), step table, drop-off highlight, trend lines |
 | `/crm-health` | GHL task and VM update success rates, shadow write count |
 | `/lead/[id]` | Per-contact pipeline trace — full job history, shadow flags, failure reasons |
-| `/settings` | Runtime settings management — brand config, messaging config, thresholds |
+| `/settings` | Runtime settings management — brand config, messaging config, thresholds, admissions/support/IPBC GHL assignee routing |
 | `/db-explorer` | Embedded SQL query runner — browse all tables with row estimates, write and run queries, download results as CSV (opens in Excel) |
 
 ### Dashboard API endpoints (port 8001)
