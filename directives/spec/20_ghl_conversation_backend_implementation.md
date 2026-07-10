@@ -5,15 +5,16 @@
 | Area | Status |
 |---|---|
 | Marketplace app + Conversation Provider (dashboard config) | IMPLEMENTED — see `spec/19` |
-| OAuth callback route (`POST /oauth/callback` or similar) | NOT STARTED |
-| `ghl_oauth_tokens` table + migration | NOT STARTED |
-| Token refresh routine | NOT STARTED |
-| `app/adapters/ghl_conversations.py` — OAuth-based write client | NOT STARTED |
-| `write_call_conversation` job (recording URL + duration/status → GHL) | NOT STARTED |
-| `ghl_conversation_log_events` dedupe table | NOT STARTED |
+| OAuth callback route (`GET /oauth/callback`) | IMPLEMENTED — `app/api/routes/ghl_oauth.py` |
+| `ghl_oauth_tokens` + `ghl_conversation_log_events` tables + migration | IMPLEMENTED — migration 0019, applied to Hetzner prod Postgres 2026-07-10 |
+| Token refresh routine | IMPLEMENTED — `get_valid_access_token()`, `app/services/ghl_oauth.py` |
+| `app/adapters/ghl_conversations.py` — OAuth-based write client | IMPLEMENTED, including Company→Location conversion |
+| `write_outbound_call()` (call duration/status → GHL) | IMPLEMENTED, no attachment/transcript (see §7) |
+| `write_conversation_log` job, wired into call-completion pipeline | IMPLEMENTED — `app/worker/jobs/conversation_log_jobs.py` |
 | Transcript write — feasibility unconfirmed | NOT STARTED (spike required first) |
 | Conversation Provider webhook receiver (Delivery URL) | NOT STARTED — build only if verification shows GHL requires it |
-| Real install on production Colaberry GHL location | BLOCKED on all of the above |
+| Acceptance Criterion 12 (sandbox end-to-end, visual confirmation) | **PASSED 2026-07-10** — see §8 |
+| Real install on production Colaberry GHL location | UNBLOCKED — not yet done, pending explicit go-ahead |
 
 ---
 
@@ -187,6 +188,49 @@ Each chunk should be a separate commit; steps 1–3 and 6 can happen in parallel
 ## 6. Open questions carried over from spec/19
 
 - Is the Conversation Provider Delivery URL actually invoked for a `Call`-type, custom, outbound-only provider, or only for providers that also need to receive inbound messages? Affects whether Decomposition step 7 is needed at all.
+
+---
+
+## 8. Acceptance Criterion 12 — passed (2026-07-10)
+
+Two real bugs surfaced during live end-to-end testing against the Hetzner deployment, both now fixed
+(commits `21f73e5`, `ecad749`/`fc7eee9` on `feat/ghl-call-conversation-sync`):
+
+1. **`get_location_token()` was missing the required `Version: 2021-07-28` header** on
+   `POST /oauth/locationToken`, causing every real install to fail with `401 "version header was
+   not found"` right after the initial code exchange succeeded. The throwaway probe script that
+   originally confirmed this endpoint's shape included the header manually; it never made it into
+   the production adapter method. Fixed by adding a shared `_VERSION_HEADER` constant, used by both
+   `get_location_token()` and `write_outbound_call()`.
+
+2. **GHL Marketplace test installs do not necessarily reuse the same company/agency across
+   sessions.** A fresh, cookie-less incognito authorization can land on a *different* GHL company
+   each time (observed two different `companyId` values across attempts), and that company will not
+   own whatever `GHL_OAUTH_TARGET_LOCATION_ID` was configured for a previous session's sandbox — GHL
+   correctly rejects the locationToken exchange with `400 "Location does not belong to the
+   company"`. There is no code fix for this; it's an operational gotcha. When re-testing later:
+   confirm which company/agency is shown on the consent screen, verify (or create) a sub-account
+   under *that* company, and update `GHL_OAUTH_TARGET_LOCATION_ID` to match before retrying.
+
+Also discovered (unrelated to the above, tracked as a separate follow-up, not yet fixed): **`logger.info()` calls are silently dropped app-wide.**
+`settings.log_level` is only ever passed to `uvicorn.run(..., log_level=...)`, which configures
+uvicorn's own logger, not Python's root logger — `logging.basicConfig()` (or equivalent) is never
+called anywhere in the app. Python's default `lastResort` handler only surfaces WARNING and above,
+so every `logger.info(...)` in the codebase (adapters, services, jobs) currently produces no output
+at all in `docker compose logs`. Only `logger.error`/`logger.warning` are currently visible. Worth a
+dedicated fix — see the "Fix app-wide logging configuration gap" item — since it silently defeats a
+lot of existing observability, not just this feature's logging.
+
+Once the above were resolved, `write_outbound_call()` was verified using the **real production code
+path** (`get_valid_access_token()` + `GhlConversationsClient.write_outbound_call()`, not a probe
+script) against a fresh sandbox sub-account (location `eWe9cRDf0UmSSIBxBMAO`): a token was stored in
+`ghl_oauth_tokens`, a real `POST /conversations/messages/outbound` call returned `201 success:true`
+with a real `conversationId`/`messageId`, and Kes visually confirmed the resulting "Outbound Call"
+activity entry in that contact's Conversations tab in the GHL UI.
+
+**Remaining before this feature is fully done**: the app-wide logging gap (optional, not blocking),
+and the real install against the production Colaberry GHL location (Decomposition item, explicitly
+gated on Kes's go-ahead per this spec's Musts).
 
 ---
 
