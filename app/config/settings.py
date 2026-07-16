@@ -136,6 +136,22 @@ class Settings(BaseSettings):
     # unset — in practice this is a single-tenant deployment targeting the
     # same GHL location either way, but kept separate in case that changes.
     ghl_oauth_target_location_id: Optional[str] = None
+
+    # ── GHL InternalComment write path (transcript + recording link) ─────────
+    # A THIRD, separate GHL auth mechanism — distinct from both ghl_api_key
+    # (spec/16, no Conversations scope) and the OAuth Marketplace app above
+    # (spec/19/20, needed only for type="Call" via a registered Conversation
+    # Provider). This is a second Private Integration token, scoped with
+    # conversations.readonly / conversations/message.readonly /
+    # conversations/message.write, used to POST /conversations/messages with
+    # type="InternalComment" — confirmed working against both the sandbox and
+    # real production accounts on 2026-07-16 without needing a Conversation
+    # Provider at all. Delivers transcript + recording link as a staff-only
+    # note; does not attach a playable recording (link only, no attachment
+    # validation involved).
+    ghl_conversations_api_key: Optional[str] = None
+    ghl_write_internal_comment: bool = False
+
     # Independent shadow gate — not tied to ghl_write_mode/ghl_writes_enabled,
     # since this is a completely separate auth mechanism. Default off.
     ghl_write_conversation_log: bool = False
@@ -381,6 +397,18 @@ class Settings(BaseSettings):
         if missing:
             raise ConfigError(
                 f"GHL Marketplace OAuth integration requires: {', '.join(missing)}"
+            )
+
+    def validate_for_ghl_internal_comment(self) -> None:
+        """Raise ConfigError if the InternalComment write path is not configured.
+
+        Independent of both validate_for_ghl_writes() (ghl_api_key) and
+        validate_for_ghl_marketplace_oauth() (the Conversation Provider app) —
+        this is a third, separate Private Integration token.
+        """
+        if not self.ghl_conversations_api_key:
+            raise ConfigError(
+                "GHL InternalComment write path requires: GHL_CONVERSATIONS_API_KEY"
             )
 
     def validate_for_openai(self) -> None:

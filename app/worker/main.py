@@ -7,7 +7,8 @@ Canonical job state lives in Postgres; Redis/RQ is the execution rail only.
 Queue topology:
   default         — process_call_event, process_voicemail_tier
   ai              — run_call_analysis / classify_call_event
-  callbacks       — create_crm_task, send_student_summary, launch_outbound_call, write_conversation_log
+  callbacks       — create_crm_task, send_student_summary, launch_outbound_call,
+                    write_conversation_log, write_internal_comment_note
   retries         — retry_failed_job
   sheet_mirror    — sync_sheet_rows (Phase 9, out of scope)
 
@@ -68,6 +69,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "collect_metrics":            "rq_default_queue",
     "update_ghl_after_vm_message": "rq_callback_queue",
     "write_conversation_log":     "rq_callback_queue",
+    "write_internal_comment_note": "rq_callback_queue",
     "rebalance_call_slots":       "rq_default_queue",
     "auto_webhook_recovery":      "rq_default_queue",
 }
@@ -175,6 +177,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.call_processing import process_call_event
     from app.worker.jobs.channel_jobs import send_email_job, send_sms_job
     from app.worker.jobs.conversation_log_jobs import write_conversation_log
+    from app.worker.jobs.internal_comment_jobs import write_internal_comment_note
     from app.worker.jobs.crm_jobs import create_crm_task, send_student_summary, update_ghl_after_vm_message
     from app.worker.jobs.lifecycle_jobs import update_lead_state
     from app.worker.jobs.metrics_jobs import collect_metrics_job
@@ -206,6 +209,8 @@ def get_job_registry() -> dict[str, object]:
         "update_ghl_after_vm_message": update_ghl_after_vm_message,
         # GHL Marketplace OAuth: call-log write to Conversations (spec/19, spec/20)
         "write_conversation_log": write_conversation_log,
+        # GHL InternalComment: transcript + recording link into Conversations
+        "write_internal_comment_note": write_internal_comment_note,
         # Automatic slot rebalancer
         "rebalance_call_slots": rebalance_call_slots_job,
         # Auto webhook recovery

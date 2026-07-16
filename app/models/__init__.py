@@ -17,6 +17,7 @@ Tables:
   ShadowAction         — intercepted actions when shadow_mode_enabled=true
   GhlOAuthToken        — per-location OAuth token pair for GHL Marketplace app (spec/19, spec/20)
   GhlConversationLogEvent — GHL Conversations call-log write records (one success per call)
+  GhlInternalCommentLogEvent — GHL InternalComment write records (one success per call)
 
 Reporting views are defined in migrations/versions/0002_reporting_views.py
 and not represented as ORM models (read via raw SQL / reporting queries).
@@ -27,6 +28,7 @@ from app.models.call_event import CallEvent
 from app.models.classification import ClassificationResult
 from app.models.exception import ExceptionRecord
 from app.models.ghl_conversation_log_event import GhlConversationLogEvent
+from app.models.ghl_internal_comment_log_event import GhlInternalCommentLogEvent
 from app.models.ghl_oauth_token import GhlOAuthToken
 from app.models.lead_state import LeadState
 from app.models.scheduled_job import ScheduledJob
@@ -49,4 +51,5 @@ __all__ = [
     "ShadowAction",
     "GhlOAuthToken",
     "GhlConversationLogEvent",
+    "GhlInternalCommentLogEvent",
 ]

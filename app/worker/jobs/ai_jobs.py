@@ -303,6 +303,12 @@ def run_call_analysis(job_id: str) -> None:
                 callbacks_queue, settings,
             )
 
+            # GHL InternalComment: transcript + recording link write
+            _schedule_internal_comment_note(
+                session, call_id, call_event_id, contact_id,
+                callbacks_queue, settings,
+            )
+
             # Feature 3: Student summary delivery (consent gate inside the job)
             if settings.enable_student_summary_writeback:
                 _schedule_send_summary(
@@ -499,6 +505,36 @@ def _schedule_conversation_log(
         },
         rq_queue=callbacks_queue,
         rq_job_func=write_conversation_log if callbacks_queue is not None else None,
+    )
+
+
+def _schedule_internal_comment_note(
+    session, call_id, call_event_id, contact_id, callbacks_queue, settings
+) -> None:
+    """Schedule write_internal_comment_note on the callbacks queue.
+
+    Always scheduled unconditionally, same rationale as
+    _schedule_conversation_log — the job itself shadow-gates via
+    GHL_WRITE_INTERNAL_COMMENT and skips cleanly when there's no transcript
+    (e.g. voicemail/failed calls), so it's safe to enqueue for every call.
+    """
+    from app.worker.jobs.internal_comment_jobs import write_internal_comment_note
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session,
+        job_type="write_internal_comment_note",
+        entity_type="call",
+        entity_id=call_id or call_event_id,
+        run_at=datetime.now(tz=timezone.utc),
+        payload={
+            "call_id": call_id,
+            "call_event_id": call_event_id,
+            "contact_id": contact_id,
+            "parent_job_id": None,
+        },
+        rq_queue=callbacks_queue,
+        rq_job_func=write_internal_comment_note if callbacks_queue is not None else None,
     )
 
 
