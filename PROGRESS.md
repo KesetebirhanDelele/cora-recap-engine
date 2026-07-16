@@ -8,6 +8,90 @@ Read this alongside `CLAUDE.md` at session start.
 
 ---
 
+## Session: 2026-07-15 — Synthflow voice-agent routing swap, DNC gap analysis, new-lead trigger source identified
+
+**Branch**: `feat/ghl-call-conversation-sync`
+
+### What changed
+
+1. **New Lead campaign's Synthflow assistant repointed to Cold Lead's, live in production.**
+   The New Lead agent's own phone number was lost. Kes fixed it directly in Synthflow's
+   dashboard (not in this repo) by changing the New Lead "Make Call" workflow
+   (`p6ihFj7HmplXM2WiuVsaC`)'s Assistant field from its own agent to "Cora - Outbound
+   Admissions Agent - ColdL" (model_id `95fd0659-7446-423c-bc51-764c3060c90f`). Confirmed live
+   via a `call_events` cross-tab query: New Lead calls flipped from the old model_id
+   (`2608601d-...`, last seen 16:06 UTC) to the Cold Lead model_id (first seen 22:00 UTC) on
+   2026-07-15. Updated the stale mapping comment in `app/adapters/synthflow.py` to match.
+   Important: `CallEvent.voice_agent` labeling (`ColdLead`/`NewLead`/`Inbound`) comes from the
+   Synthflow workflow's own `Agent` text field, not the model_id — so New Lead calls still
+   correctly label as `NewLead` in the dashboard despite sharing an assistant with Cold Lead.
+   The old New Lead assistant now has no phone number and isn't wired to any workflow —
+   **not yet decided** whether to retire it or re-provision a number.
+
+### Findings — not yet acted on, need a decision
+
+2. **`launch_outbound_call_job` never checks `lead_state.do_not_call` before dialing.**
+   (`app/worker/jobs/outbound_jobs.py`) It checks `system_paused`, `outbound_campaigns_paused`,
+   the static `blocked_dial_numbers` list, and the campaign active window — but not the DNC
+   flag itself. In normal operation this is masked because `handle_intent` cancels pending jobs
+   when `do_not_call` fires, but there's no belt-and-suspenders check at the actual dial point,
+   so a stale/re-scheduled job could still call a DNC-flagged contact. Small, low-risk fix,
+   proposed but not built.
+
+3. **Cora never ingests GHL's own DNC-style tags.** `lead_state.do_not_call` is only ever set
+   from Cora's own live intent detection — there's no sync pulling in pre-existing GHL tags
+   like `do not contact` / `do not call again` / `spam likely`. Surfaced by a real inbound call
+   (`call_id c9620c5f...`, contact `+19729921028`) where GHL already had this contact tagged
+   do-not-contact from a stale 2025 interaction (an unrelated caller from "Pulte Mortgage"), but
+   Cora's Inbound agent still delivered a full personalized re-engagement pitch. Needs a spec
+   (which GHL tags count as DNC-equivalent, live check vs. periodic sync) before building.
+
+4. **Inbound agent doesn't act on GHL tags it already fetches.** The Synthflow Inbound workflow
+   calls a custom function (`get_the_user_preferences_from_gohighlevel`) that returns the GHL
+   contact including tags, but the assistant's prompt doesn't branch on do-not-contact tags —
+   this is a Synthflow-side prompt/workflow fix, outside this repo's control.
+
+5. **Likely test/QA artifact found in production call data**: an inbound call's
+   `phone_number_from` exactly matched a New Lead outbound call's target number placed 32
+   seconds earlier (`0d5f0ce1` → `0b453e92`, both 2026-07-15 ~22:41 UTC) — consistent with an
+   automated harness that answers Cora's outbound call and immediately rings back into Cora's
+   Inbound line. Not confirmed with whoever runs QA; flagged for awareness only.
+
+6. **Signed recording URLs in `call_events.recording_url` have ~100-year expiry**
+   (`Expires=4937753238`, i.e. year 2126) — effectively permanent, unauthenticated access to the
+   audio for anyone who obtains the URL. Noted as a hygiene concern, not yet addressed.
+
+### Architecture fact confirmed this session (previously undocumented)
+
+7. **The first call to a brand-new "New Lead" is not triggered by any code path in this repo.**
+   Checked thoroughly: the only inbound API route is `POST /v1/webhooks/calls` (Synthflow
+   *completed*-call intake, not a new-lead notification), there is no polling job that discovers
+   new leads, and `enter_campaign(session, lead, "new_lead", ...)` is never actually called
+   anywhere in the worker/job code (only `"cold_lead"` call sites exist, from
+   `intent_actions.py` and `nurture_scheduler.py`). The first dial for a new lead is therefore
+   almost certainly triggered externally — most likely a GHL workflow hitting Synthflow's
+   "Make Call" webhook directly — and Cora only takes over once that first call's completion
+   webhook arrives. Not confirmed against the actual GHL workflow config (inferred from absence
+   of any other trigger path in this codebase) — worth verifying with whoever owns that
+   automation. If it ever breaks, new leads would silently never enter Cora's pipeline.
+
+### Next steps, in order
+
+1. Decide whether to fix item 2 (outbound `do_not_call` dial-point guard) — small and low-risk,
+   ready to build on approval.
+2. Spec item 3 (GHL DNC-tag ingestion) before building — needs a decision on tag matching rules
+   and sync mechanism.
+3. Raise item 4 (Inbound agent prompt gap) with whoever owns the Synthflow Inbound workflow —
+   not fixable from this repo.
+4. Confirm item 7 (external New Lead trigger source) with whoever owns the GHL workflow that
+   presumably fires the first call — currently undocumented outside this session's inference.
+5. Decide fate of the old, numberless New Lead Synthflow assistant (retire vs. re-provision).
+6. Carried over from the previous session, still open: permanent domain + TLS reverse proxy
+   (blocked on Ali's DNS record), real production Colaberry GHL OAuth install, staff portal
+   build, app-wide logging gap, pre-existing test failure triage.
+
+---
+
 ## Session: 2026-07-09 to 2026-07-11 — GHL Conversations write-back, branch consolidation, staff portal planning
 
 **Branch**: `feat/ghl-call-conversation-sync`

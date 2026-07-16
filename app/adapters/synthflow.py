@@ -6,11 +6,17 @@ Auth: Bearer token (SYNTHFLOW_API_KEY).
 
 Voice agent / webhook routing (campaign → webhook → voice agent):
   New Lead  → SYNTHFLOW_LAUNCH_WORKFLOW_URL_New  (p6ihFj7HmplXM2WiuVsaC)
-              → model_id 2608601d-bce6-4bb8-bc0f-f7df9dbf5971
+              → model_id 95fd0659-7446-423c-bc51-764c3060c90f (Cold Lead assistant —
+                repointed 2026-07-15 in Synthflow after the New Lead agent's phone
+                number was lost; the workflow's own "Agent" label text still reads
+                NewLead, so CallEvent.voice_agent classification is unaffected)
   Cold Lead → SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold (33J546NiXxUUIRCbywNVH)
               → model_id 95fd0659-7446-423c-bc51-764c3060c90f
   Inbound   → no outbound Make Call (inbound only)
               → model_id f98454c1-2cd4-476c-b6f2-c5c425689e61
+
+  Old New Lead model_id 2608601d-bce6-4bb8-bc0f-f7df9dbf5971 — retired 2026-07-15,
+  no longer wired to any workflow. Appears in call_events history before that date.
 
   Do NOT use JylDXjF8QB0Skr5cQzGGm — test/Nexus workflow, silently drops calls.
 
