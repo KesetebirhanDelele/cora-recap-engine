@@ -158,6 +158,37 @@ Findings, in case this comes up again:
   opposed to its first call, which isn't ours to prioritize) should out-rank Cold Lead's in the
   shared pacer. Not decided.
 
+### Update — same session, pacer/callback collision fix built and shipped
+
+Kes decided to fix the collision gap above before touching the New Lead priority question (which
+remains undecided, unrelated, not blocking anything). Built exactly the design described above:
+`_compute_window_run_at` in `outbound_jobs.py` replaced with a real bucket-occupancy search
+(fixed shared `_EPOCH`, `_bucket_index()`/`_bucket_start()` helpers, walks forward to the next
+genuinely free 75s bucket instead of approximating via a count). `voicemail_jobs.py`'s
+`_slot_aware_run_at` now imports the shared `_EPOCH` instead of a local duplicate, so every
+scheduling path — first calls, voicemail retries, and lead-requested callbacks — lands on the
+same grid and can't silently collide.
+
+Caught one real bug along the way, independent of the design: SQLite returns naive datetimes for
+timezone-aware columns, which crashed the new bucket math on first contact with a stored
+`run_at`. Fixed by normalizing naive datetimes to UTC in `_bucket_index()` — this would have hit
+local/shadow-mode dev too, not just tests.
+
+Rewrote the `_compute_window_run_at` and `_slot_aware_run_at` burst tests for the new occupancy
+semantics (the old tests stacked jobs at one identical timestamp, which doesn't map to
+bucket-based logic) and added a test for the actual collision scenario: an off-grid timestamp
+(simulating an exact-time callback) reserves its bucket and a subsequent call routes around it.
+Full suite: 41 failed / 945 passed — failures **dropped** from the pre-existing 46 baseline (this
+fix incidentally repaired 5 tests that were already broken under the old algorithm's arithmetic,
+unrelated pre-existing issue). Zero new failures anywhere, confirmed via targeted runs of
+`test_intent_actions.py`, `test_real_world_callback_intents.py`, `test_channel_jobs.py`,
+`test_crm_jobs.py`, `test_campaigns.py`. Committed and pushed directly to
+`feat/ghl-call-conversation-sync` (`d4ef713`) — Kes approved via debrief, no separate branch/PR
+for this one.
+
+**Still true, restated so it isn't missed later:** this fix does not touch, and is not required
+for, resuming Cold Lead — that remains gated purely on the Synthflow workflow toggle.
+
 ### Update — same session, after Kes tested on Hetzner
 
 Kes deployed `feat/cold-lead-campaign-pause` to Hetzner (`git pull` + `docker compose up -d
@@ -200,9 +231,9 @@ confirmed working. `cold_lead_campaign_paused=true` stays on until the webhook i
 1. **Kes to turn the Cold Lead "Make Call" workflow back on in Synthflow's dashboard** — found
    this session to be simply toggled off, explaining every 404. Do one controlled test call to
    confirm it actually completes before un-pausing `cold_lead_campaign_paused` for real traffic.
-2. Decide on the two open design questions above (callback/pacer collision fix, New Lead retry
-   priority) — logged as findings only, nothing built yet, no urgency tied to unblocking Cold
-   Lead specifically.
+2. Pacer/callback collision fix is **done** (see update further below, commit `d4ef713`). Still
+   open: whether New Lead's automatic voicemail-tier retries should out-rank Cold Lead's in the
+   shared pacer — findings only, nothing built, no urgency tied to unblocking Cold Lead.
 3. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
    `feat/ghl-call-conversation-sync` (same commit, just a label mismatch).
 4. Consider whether `operator_id` should be required (not defaulting to `'dashboard'`) for
