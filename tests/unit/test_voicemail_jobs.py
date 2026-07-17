@@ -460,30 +460,34 @@ def test_process_voicemail_tier_empty_contact_id_fails_job(session):
 
 def test_slot_aware_run_at_spreads_concurrent_retries(session):
     """
-    Concurrent retries from the same burst must land in different 5-min slots,
-    not pile at the same second.
+    Concurrent retries from the same burst must land in different 75s buckets,
+    not pile at the same second — and once all 4 buckets in a 5-minute window
+    are occupied, the next retry overflows to the next window.
 
-    Simulates 5 concurrent retries with the same delay_minutes. The first 4
-    share slot 0; the 5th must overflow to slot 1.
+    Simulates 4 buckets in t0's window already occupied (as a real burst of
+    4 prior _slot_aware_run_at calls would have filled them, one bucket
+    each) and verifies the 5th correctly spills into the next window.
     """
     from datetime import timedelta
 
+    from app.worker.jobs.outbound_jobs import _CALL_WITHIN_SLOT_SPACING
     from app.worker.jobs.voicemail_jobs import _slot_aware_run_at
 
     delay = 120  # 2h — produces a deterministic raw_run_at
 
-    # First call — no pending jobs → slot 0
+    # First call — no pending jobs → its window's first bucket
     t0 = _slot_aware_run_at(session, delay)
 
-    # Inject 4 pending launch_outbound_call jobs at the slot t0 occupies
-    for _ in range(4):
+    # Occupy all 4 buckets in t0's 5-minute window (0, 75, 150, 225s), as a
+    # real burst of 4 concurrent retries would have landed one-per-bucket.
+    for i in range(4):
         job = ScheduledJob(
             id=str(uuid.uuid4()),
             job_type="launch_outbound_call",
             entity_type="lead",
             entity_id="burst-test",
             status="pending",
-            run_at=t0,
+            run_at=t0 + timedelta(seconds=i * _CALL_WITHIN_SLOT_SPACING),
             payload_json={},
             created_at=datetime.now(tz=timezone.utc),
             version=0,
@@ -491,10 +495,10 @@ def test_slot_aware_run_at_spreads_concurrent_retries(session):
         session.add(job)
     session.flush()
 
-    # Fifth call — 4 pending at slot 0 → must advance to slot 1
+    # Fifth call — all 4 buckets in t0's window occupied → must advance to the next window
     t1 = _slot_aware_run_at(session, delay)
-    assert t1 > t0, "5th retry must land in a later slot than the first 4"
-    assert (t1 - t0).total_seconds() == 300, "slot gap must be exactly 5 minutes"
+    assert t1 > t0, "5th retry must land in a later window than the first 4"
+    assert (t1 - t0).total_seconds() == 300, "must overflow to the next 5-minute window"
 
 
 def test_slot_aware_run_at_is_close_to_delay(session):

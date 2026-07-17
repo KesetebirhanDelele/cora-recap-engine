@@ -353,15 +353,16 @@ def _slot_aware_run_at(session, delay_minutes: int) -> datetime:
     Compute a slot-aware run_at for a voicemail retry.
 
     Rounds raw_run_at down to the nearest slot boundary so that concurrent
-    retries from the same burst share the same slot counter in
-    _compute_window_run_at and are spread across _CALL_BATCH_SIZE slots
-    instead of piling at the same second.
+    retries from the same burst land on the same shared bucket grid that
+    _compute_window_run_at uses for collision detection, instead of piling
+    at the same second. Uses outbound_jobs.py's _EPOCH (not a local copy) so
+    this stays on the exact same grid as every other launch_outbound_call
+    scheduling path, including lead-requested exact-time callbacks.
     """
     from datetime import timedelta
 
-    from app.worker.jobs.outbound_jobs import _CALL_SLOT_SECONDS, _compute_window_run_at
+    from app.worker.jobs.outbound_jobs import _CALL_SLOT_SECONDS, _EPOCH, _compute_window_run_at
 
-    _EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc)
     raw = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
     slot_idx = int((raw - _EPOCH).total_seconds() / _CALL_SLOT_SECONDS)
     window_start = _EPOCH + timedelta(seconds=slot_idx * _CALL_SLOT_SECONDS)

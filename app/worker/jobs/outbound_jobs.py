@@ -35,32 +35,90 @@ _CALL_SLOT_SECONDS = 300  # 5-minute slot window
 # Calls in the same batch fire at +0s, +75s, +150s, +225s — never simultaneously.
 _CALL_WITHIN_SLOT_SPACING = _CALL_SLOT_SECONDS // _CALL_BATCH_SIZE  # 75 s
 
+# Fixed global anchor for bucket alignment — shared with voicemail_jobs.py's
+# retry scheduling so every launch_outbound_call job (fresh calls, deferred
+# calls, voicemail-tier retries, and lead-requested exact-time callbacks)
+# lands on the same grid and can be checked for collisions against each
+# other, regardless of which code path scheduled it.
+_EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc)
+# Bound the free-bucket search to the same 4-hour horizon the old count-based
+# version used, so behavior doesn't silently search forever.
+_MAX_BUCKET_SEARCH = int(timedelta(hours=4).total_seconds() // _CALL_WITHIN_SLOT_SPACING)  # 192
+
+
+def _bucket_index(dt: datetime) -> int:
+    """
+    Epoch-relative 75s bucket index for dt.
+
+    SQLite (used in unit tests) returns naive datetimes for DateTime(timezone=True)
+    columns even though they were stored as UTC-aware — normalize before
+    subtracting so this doesn't crash. Every datetime in this system is UTC by
+    convention, so a naive value is always assumed to already be UTC.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int((dt - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)
+
+
+def _bucket_start(index: int) -> datetime:
+    """Wall-clock start time of the given epoch-relative bucket."""
+    return _EPOCH + timedelta(seconds=index * _CALL_WITHIN_SLOT_SPACING)
+
 
 def _compute_window_run_at(session, window_start: datetime) -> datetime:
     """
-    Assign a slot-based run_at that spreads calls within the slot window.
+    Find the next free 75-second bucket at or after window_start.
 
-    Each pending job increments the position counter. The slot index
-    (pending // batch_size) selects the 5-minute window; the within-slot
-    offset (pending % batch_size) * 75s staggers individual calls so they
-    never fire simultaneously. Maximum 4 calls per 5-minute slot, separated
-    by 75 seconds each.
+    Buckets are aligned to a fixed global epoch (_EPOCH) rather than to
+    window_start itself, so every call — however it was scheduled — competes
+    for the same grid. A bucket counts as occupied if any pending/claimed
+    launch_outbound_call job's actual run_at falls inside it. This includes
+    lead-requested exact-time callbacks (app/core/intent_actions.py), whose
+    run_at is set directly to the lead's requested time and is never itself
+    moved by this function — it simply reserves whichever bucket it happens
+    to land in, and calls computed here route around it. At most one call is
+    placed per bucket, preserving the "4 calls per 5-minute window, 75s
+    apart" pacing while actually preventing collisions instead of just
+    approximating spacing via a count (the previous implementation counted
+    pending jobs and did arithmetic assuming they were all placed on this
+    same grid, which broke silently the moment an arbitrary-timestamp
+    callback entered the same pool).
+
+    Searches up to 4 hours ahead (_MAX_BUCKET_SEARCH buckets). If that
+    entire range is already fully occupied — implausible under any
+    realistic load, it would require ~192 simultaneous pending calls — falls
+    back to the bucket immediately after the search range and logs a
+    warning rather than looping indefinitely.
     """
-    from sqlalchemy import func, select
+    from sqlalchemy import select
 
     from app.models.scheduled_job import ScheduledJob
 
-    pending = session.scalar(
-        select(func.count()).select_from(ScheduledJob).where(
+    # Ceiling: never return a time before window_start.
+    start_bucket = -(-(window_start - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)
+    start_bucket = int(start_bucket)
+    end_bucket = start_bucket + _MAX_BUCKET_SEARCH
+
+    existing_run_ats = session.scalars(
+        select(ScheduledJob.run_at).where(
             ScheduledJob.job_type == "launch_outbound_call",
             ScheduledJob.status.in_(["pending", "claimed"]),
-            ScheduledJob.run_at >= window_start,
-            ScheduledJob.run_at < window_start + timedelta(hours=4),
+            ScheduledJob.run_at >= _bucket_start(start_bucket),
+            ScheduledJob.run_at < _bucket_start(end_bucket),
         )
-    ) or 0
-    slot = pending // _CALL_BATCH_SIZE
-    within_slot = (pending % _CALL_BATCH_SIZE) * _CALL_WITHIN_SLOT_SPACING
-    return window_start + timedelta(seconds=slot * _CALL_SLOT_SECONDS + within_slot)
+    ).all()
+    occupied = {_bucket_index(r) for r in existing_run_ats}
+
+    for bucket in range(start_bucket, end_bucket):
+        if bucket not in occupied:
+            return _bucket_start(bucket)
+
+    logger.warning(
+        "_compute_window_run_at: no free bucket in %d-bucket search window starting %s "
+        "— falling back to first bucket past the search range",
+        _MAX_BUCKET_SEARCH, window_start.isoformat(),
+    )
+    return _bucket_start(end_bucket)
 
 
 def launch_outbound_call_job(job_id: str) -> None:

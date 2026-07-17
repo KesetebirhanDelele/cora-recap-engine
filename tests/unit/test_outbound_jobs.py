@@ -1,18 +1,22 @@
 """
 Unit tests for outbound_jobs.
 
-_compute_window_run_at:
-  1. No pending jobs → slot 0 → returns window_start exactly
-  2. 9 pending jobs → slot 0 → still returns window_start
-  3. 10 pending jobs → slot 1 → returns window_start + 120s
-  4. 19 pending jobs → slot 1 → returns window_start + 120s
-  5. 20 pending jobs → slot 2 → returns window_start + 240s
-  6. Jobs outside the 4-hour window are not counted
-  7. Completed/failed/cancelled jobs are not counted
+_compute_window_run_at (bucket-occupancy search, not count-based):
+  1. No pending jobs → returns window_start exactly (its own bucket is free)
+  2. A job occupying window_start's bucket → next call advances to the next 75s bucket
+  3. All 4 buckets in a 5-minute window occupied → advances to the next window (+300s)
+  4. Jobs outside the 4-hour search range are not counted
+  5. Completed/failed/cancelled jobs don't occupy a bucket
+  6. Claimed jobs do occupy a bucket
+  7. An arbitrary, off-grid timestamp (simulating a lead-requested exact-time
+     callback) still reserves whichever bucket it falls into — collision
+     avoidance, not just spacing approximation
+  8. Search range fully occupied → falls back to the bucket past the range
+     instead of looping forever
 
 launch_outbound_call_job blocked-number guard:
-  8. Phone on BLOCKED_DIAL_NUMBERS → job cancelled + exception created, no Synthflow call
-  9. Phone not on blocklist → guard passes, normal flow continues
+  9. Phone on BLOCKED_DIAL_NUMBERS → job cancelled + exception created, no Synthflow call
+  10. Phone not on blocklist → guard passes, normal flow continues
 """
 from __future__ import annotations
 
@@ -26,9 +30,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.models import Base, ScheduledJob
-from app.worker.jobs.outbound_jobs import _CALL_BATCH_SIZE, _CALL_SLOT_SECONDS, _compute_window_run_at
+from app.worker.jobs.outbound_jobs import (
+    _CALL_BATCH_SIZE,
+    _CALL_WITHIN_SLOT_SPACING,
+    _MAX_BUCKET_SEARCH,
+    _bucket_start,
+    _compute_window_run_at,
+)
 
-_WINDOW_START = datetime(2026, 4, 28, 14, 0, 0, tzinfo=timezone.utc)  # 9 AM CDT
+# Bucket-aligned by construction (an exact multiple of 75s past _EPOCH), so
+# tests don't depend on incidental alignment of an arbitrary wall-clock date.
+_WINDOW_START = _bucket_start(1_000_000)
 
 
 @pytest.fixture(scope="module")
@@ -61,13 +73,6 @@ def _pending_job(run_at: datetime, status: str = "pending") -> ScheduledJob:
     )
 
 
-def _add_pending_jobs(session, count: int, run_at: datetime | None = None) -> None:
-    at = run_at or _WINDOW_START
-    for _ in range(count):
-        session.add(_pending_job(at))
-    session.flush()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -76,39 +81,30 @@ def test_no_pending_jobs_returns_window_start(session):
     assert result == _WINDOW_START
 
 
-def test_nine_pending_jobs_still_slot_zero(session):
-    _add_pending_jobs(session, 9)
+def test_occupied_bucket_advances_to_next_bucket(session):
+    session.add(_pending_job(_WINDOW_START))
+    session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
-    assert result == _WINDOW_START
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
 
 
-def test_ten_pending_jobs_advances_to_slot_one(session):
-    _add_pending_jobs(session, 10)
+def test_all_four_buckets_in_window_full_advances_to_next_window(session):
+    for i in range(_CALL_BATCH_SIZE):
+        session.add(_pending_job(_WINDOW_START + timedelta(seconds=i * _CALL_WITHIN_SLOT_SPACING)))
+    session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
-    assert result == _WINDOW_START + timedelta(seconds=_CALL_SLOT_SECONDS)
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_BATCH_SIZE * _CALL_WITHIN_SLOT_SPACING)
 
 
-def test_nineteen_pending_jobs_stays_slot_one(session):
-    _add_pending_jobs(session, 19)
-    result = _compute_window_run_at(session, _WINDOW_START)
-    assert result == _WINDOW_START + timedelta(seconds=_CALL_SLOT_SECONDS)
-
-
-def test_twenty_pending_jobs_advances_to_slot_two(session):
-    _add_pending_jobs(session, 20)
-    result = _compute_window_run_at(session, _WINDOW_START)
-    assert result == _WINDOW_START + timedelta(seconds=2 * _CALL_SLOT_SECONDS)
-
-
-def test_jobs_outside_four_hour_window_not_counted(session):
+def test_jobs_outside_four_hour_search_range_not_counted(session):
     outside = _WINDOW_START + timedelta(hours=4, seconds=1)
-    _add_pending_jobs(session, _CALL_BATCH_SIZE, run_at=outside)
-    # Only inside-window jobs count — the 10 outside jobs must not bump the slot
+    session.add(_pending_job(outside))
+    session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
     assert result == _WINDOW_START
 
 
-def test_non_pending_statuses_not_counted(session):
+def test_non_pending_statuses_dont_occupy_bucket(session):
     for status in ("completed", "failed", "cancelled"):
         session.add(_pending_job(_WINDOW_START, status=status))
     session.flush()
@@ -116,12 +112,33 @@ def test_non_pending_statuses_not_counted(session):
     assert result == _WINDOW_START
 
 
-def test_claimed_jobs_are_counted(session):
-    _add_pending_jobs(session, _CALL_BATCH_SIZE, run_at=_WINDOW_START)
+def test_claimed_job_occupies_bucket(session):
     session.add(_pending_job(_WINDOW_START, status="claimed"))
     session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
-    assert result == _WINDOW_START + timedelta(seconds=_CALL_SLOT_SECONDS)
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+
+
+def test_off_grid_timestamp_reserves_its_bucket(session):
+    """
+    Simulates a lead-requested exact-time callback: its run_at is an
+    arbitrary offset, not aligned to a 0/75/150/225s boundary. It must still
+    be detected as occupying its bucket, so a call computed afterward routes
+    around it instead of colliding.
+    """
+    off_grid = _WINDOW_START + timedelta(seconds=40)  # same bucket as window_start (< 75s)
+    session.add(_pending_job(off_grid))
+    session.flush()
+    result = _compute_window_run_at(session, _WINDOW_START)
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+
+
+def test_fully_occupied_search_range_falls_back_past_it(session):
+    for i in range(_MAX_BUCKET_SEARCH):
+        session.add(_pending_job(_WINDOW_START + timedelta(seconds=i * _CALL_WITHIN_SLOT_SPACING)))
+    session.flush()
+    result = _compute_window_run_at(session, _WINDOW_START)
+    assert result == _WINDOW_START + timedelta(seconds=_MAX_BUCKET_SEARCH * _CALL_WITHIN_SLOT_SPACING)
 
 
 # ── Blocked dial-number guard ─────────────────────────────────────────────────
