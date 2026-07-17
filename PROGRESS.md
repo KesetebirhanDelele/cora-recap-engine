@@ -8,6 +8,114 @@ Read this alongside `CLAUDE.md` at session start.
 
 ---
 
+## Standing rule: `feat/ghl-call-conversation-sync` is the production-tracking branch, not `main`
+
+**This is a durable operating rule, not a session note — follow it every session until this
+section says otherwise.**
+
+`main` on GitHub is stale by design in this repo. The 2026-07-09/07-11 session (see below)
+discovered production was running a mix of Docker images built from different divergent
+branches, root-caused it, and fully merged `feat/production-deployment-hardening` (111 commits)
+and `feat/support-staff-shift-routing` (3 commits) into `feat/ghl-call-conversation-sync`. At
+that point all three known branches — `main` and both of the above — had **zero commits missing**
+from `feat/ghl-call-conversation-sync`, and production was rebuilt from that branch's tip.
+`feat/ghl-call-conversation-sync` is therefore a strict superset of `main`, not a fork that needs
+reconciling with it.
+
+**How to apply:**
+- Cut new feature branches from `feat/ghl-call-conversation-sync`, never from `main`:
+  `git checkout feat/ghl-call-conversation-sync && git pull && git checkout -b <new-branch>`.
+- Do not merge feature work into `main`, and do not attempt to "sync" `main` up to date as a
+  side effect of unrelated work — that is a deliberate, separate decision requiring Kes's
+  explicit approval, not a default action.
+- `main` being the GitHub-default / PR-target branch label is a repo-settings artifact, not a
+  signal about where production code lives. Don't infer branch choice from that label alone.
+
+**How to verify this is still true (run before trusting the above, especially if it's been a
+while since the last session):**
+```
+git fetch origin
+git log feat/ghl-call-conversation-sync..main --oneline
+git log feat/ghl-call-conversation-sync..feat/production-deployment-hardening --oneline
+git log feat/ghl-call-conversation-sync..feat/support-staff-shift-routing --oneline
+```
+All three must return **empty**. A non-empty result means one of those branches has commits
+`feat/ghl-call-conversation-sync` doesn't have — the invariant has broken (someone committed
+directly to `main` or another branch, bypassing this one) and needs investigating before
+building anything new. If it breaks, update this section with what happened and the new state —
+don't just silently re-fix it and move on.
+
+Confirm production actually matches this branch's tip before relying on any of the above as
+current fact: `docker compose images` on the Hetzner box should show all services built from the
+same recent timestamp/commit. Git branch topology alone doesn't prove the running containers
+match — Docker images can lag behind the branch.
+
+---
+
+## Session: 2026-07-17 — Cold Lead 404 alert triage, Cold-Lead-only pause control, branch-drift check
+
+**Branch**: `feat/cold-lead-campaign-pause` (cut from `feat/ghl-call-conversation-sync`)
+
+### What happened
+
+Kes brought five `Synthflow launch HTTP error: 404` alerts (contacts +19592022210 ×2,
++15714782790, +16127301379, +18084292459; 2026-07-15 22:00 UTC through 2026-07-17 15:46 UTC).
+Queried `scheduled_jobs` for the five `job_id`s — all five are **Cold Lead** campaign, all
+`status='failed'`.
+
+1. **Built a `cold_lead_campaign_paused` mode flag**, scoped narrower than the existing
+   `outbound_campaigns_paused` (which holds New Lead + Cold Lead together). Mirrors the existing
+   flag's pattern at every check site: `app/core/mode_flags.py`, `app/core/campaigns.py`
+   (`enter_campaign`), `app/worker/jobs/{outbound,voicemail,crm,ai,channel}_jobs.py`,
+   `app/worker/jobs/nurture_scheduler.py`, new dashboard endpoints
+   (`/mode/pause-cold-lead-campaign`, `/mode/resume-cold-lead-campaign`), and a new "Cold Lead
+   Campaign Pause" section in `SystemControlsClient.tsx`. New tests in `test_campaigns.py` and
+   `test_outbound_jobs.py` cover Cold-Lead-skipped / New-Lead-unaffected in both the entry point
+   and the job-execution guard. Full unit suite run (`--ignore=test_e2e_scenarios.py`): no new
+   failures, confirmed via `git stash` diff against the pre-change baseline (all 46 pre-existing
+   failures are environment gaps — missing `openai` package, no local Redis/tables — unrelated to
+   this branch). **As of this entry: implemented and tested locally, not yet committed.**
+
+2. **Mid-session branch-drift scare, resolved**: initially cut this branch from `main`, then
+   discovered `main` was missing `outbound_campaigns_paused` and the whole pause mechanism
+   entirely — 138 commits behind. Re-cut from `feat/ghl-call-conversation-sync` instead. Root
+   cause and the durable fix (cut from the sync branch, always) is now written up as the standing
+   rule above so this doesn't recur.
+
+3. **Found via this file, not new work — a real inconsistency worth flagging:** the 2026-07-11
+   session recorded production as `shadow_mode_enabled=true` and `outbound_campaigns_paused=true`
+   at that time (see below), and explicitly listed "the Synthflow Cold Lead webhook is
+   stale/broken and needs checking before live calling resumes" as a known, unresolved blocker.
+   Today's five alerts are all `status='failed'` (not `pending`/deferred), which only happens when
+   the job actually executes — i.e. **not paused**. That means between 2026-07-11 and 2026-07-15,
+   someone took outbound calling live again (flipped `outbound_campaigns_paused` and/or
+   `shadow_mode_enabled` back off) without the Cold Lead webhook fix happening first, and without
+   updating this file. **This session did not confirm the current live `app_config` values on
+   Hetzner** — do not assume shadow/pause state from the 07-11 entry below; it is stale as of at
+   least 2026-07-15.
+
+### Root cause vs. the fix built this session — do not conflate these
+
+- **Actual root cause of the 404s** (per the 07-11 session, still unresolved): the Cold Lead
+  Synthflow "Make Call" webhook is stale/broken in **Synthflow's own dashboard** — not a bug in
+  this repo. Fixing it requires action in Synthflow's UI, outside this codebase.
+- **What this session built**: a Cold-Lead-only pause toggle. This is an operational safety net
+  (hold Cold Lead without also holding New Lead) — it does **not** fix the webhook. Calls will
+  404 again the moment Cold Lead is unpaused until the Synthflow-side fix happens.
+
+### Next steps, in order
+
+1. Check current live `app_config` values on Hetzner (`shadow_mode_enabled`,
+   `outbound_campaigns_paused`) before assuming any pause state — see item 3 above.
+2. Kes to check/fix the Cold Lead "Make Call" workflow webhook in Synthflow's dashboard —
+   carried over from the 07-11 session, still not done.
+3. Commit and, after Kes's local verification, PR the `cold_lead_campaign_paused` feature —
+   target `feat/ghl-call-conversation-sync`, not `main` (see standing rule above).
+4. Everything carried over from the 2026-07-15 session below is still open and untouched by this
+   session.
+
+---
+
 ## Session: 2026-07-15 — Synthflow voice-agent routing swap, DNC gap analysis, new-lead trigger source identified
 
 **Branch**: `feat/ghl-call-conversation-sync`
