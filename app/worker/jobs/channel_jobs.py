@@ -113,6 +113,18 @@ def send_sms_job(job_id: str) -> None:
                 session.commit()
                 return
 
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "send_sms_job: cold lead campaign paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status.
         payload = job.payload_json or {}
@@ -252,6 +264,18 @@ def send_email_job(job_id: str) -> None:
             if _campaign in ("new lead", "cold lead"):
                 logger.info(
                     "send_email_job: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "send_email_job: cold lead campaign paused — releasing | "
                     "campaign=%r job_id=%s", _campaign, job_id,
                 )
                 release_job_to_pending(session, job, defer_seconds=60)

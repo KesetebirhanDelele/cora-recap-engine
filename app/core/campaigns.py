@@ -102,6 +102,12 @@ def enter_campaign(
                 "contact_id=%s campaign=%s", lead.contact_id, campaign_name,
             )
             return
+        if campaign_type == "cold_lead" and flags.cold_lead_campaign_paused:
+            logger.info(
+                "enter_campaign: cold lead campaign paused — skipping entry | "
+                "contact_id=%s campaign=%s", lead.contact_id, campaign_name,
+            )
+            return
 
     # 1. Cancel existing pending jobs (clean slate for the new campaign)
     cancelled = _cancel_pending_jobs(session, lead.contact_id)

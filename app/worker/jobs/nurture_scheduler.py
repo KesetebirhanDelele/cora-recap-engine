@@ -84,6 +84,17 @@ def run_nurture_scheduler(job_id: str) -> None:
                 _schedule_next_run(session, settings)
                 return
 
+            # Graduation exclusively creates Cold Lead outbound calls, so the
+            # Cold-Lead-only pause skips this entire job too (not just a subset).
+            if flags.cold_lead_campaign_paused:
+                logger.info(
+                    "run_nurture_scheduler: cold lead campaign paused — skipping graduation | "
+                    "job_id=%s", job_id,
+                )
+                complete_job(session, job)
+                _schedule_next_run(session, settings)
+                return
+
             processed, errors = _process_due_nurture_leads(session, settings)
             logger.info(
                 "run_nurture_scheduler: complete | processed=%d errors=%d job_id=%s",

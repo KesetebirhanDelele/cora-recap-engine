@@ -249,6 +249,7 @@ export interface ModeFlags {
   ghl_write_finalization: boolean;
   system_paused: boolean;
   outbound_campaigns_paused: boolean;
+  cold_lead_campaign_paused: boolean;
   ghl_writes_enabled: boolean;
 }
 
@@ -304,6 +305,14 @@ export async function pauseOutboundCampaigns(): Promise<{ status: string; outbou
 
 export async function resumeOutboundCampaigns(): Promise<{ status: string; outbound_campaigns_paused: boolean }> {
   return post("/dashboard/mode/resume-outbound-campaigns", {});
+}
+
+export async function pauseColdLeadCampaign(): Promise<{ status: string; cold_lead_campaign_paused: boolean }> {
+  return post("/dashboard/mode/pause-cold-lead-campaign", {});
+}
+
+export async function resumeColdLeadCampaign(): Promise<{ status: string; cold_lead_campaign_paused: boolean }> {
+  return post("/dashboard/mode/resume-cold-lead-campaign", {});
 }
 
 // ── Operator actions ──────────────────────────────────────────────────────────

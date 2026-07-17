@@ -8,6 +8,8 @@ import {
   resumeSystem,
   pauseOutboundCampaigns,
   resumeOutboundCampaigns,
+  pauseColdLeadCampaign,
+  resumeColdLeadCampaign,
   type ModeFlags,
   type ModeResponse,
   type PreflightCheck,
@@ -130,7 +132,7 @@ export default function SystemControlsClient() {
   // ── System-level status ────────────────────────────────────────────────────
   const systemStatus: "paused" | "campaign_paused" | "shadow" | "live" = flags.system_paused
     ? "paused"
-    : flags.outbound_campaigns_paused
+    : (flags.outbound_campaigns_paused || flags.cold_lead_campaign_paused)
       ? "campaign_paused"
       : (flags.shadow_mode_enabled || !flags.ghl_writes_enabled)
         ? "shadow"
@@ -282,6 +284,88 @@ export default function SystemControlsClient() {
           {last_changed["outbound_campaigns_paused"] && (
             <p style={{ margin: 0, fontSize: "0.775rem", color: "#94a3b8" }}>
               Last changed: {fmtTime(last_changed["outbound_campaigns_paused"].at)} by {last_changed["outbound_campaigns_paused"].operator_id}
+            </p>
+          )}
+        </div>
+      </Section>
+
+      {/* ── Cold Lead campaign pause ──────────────────────────────────────── */}
+      <Section title="Cold Lead Campaign Pause" icon="🥶">
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+          <p style={{ margin: 0, fontSize: "0.875rem", color: "#475569", lineHeight: 1.55 }}>
+            Pause <strong>Cold Lead</strong> campaign activities only — outbound calls, voicemail tier progression, AI analysis, SMS/email follow-ups, nurture graduation into Cold Lead, and CRM writes for that campaign.{" "}
+            <strong>New Lead</strong> and <strong>Inbound</strong> continue normally. All paused jobs resume automatically when you un-pause.
+          </p>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              disabled={flags.cold_lead_campaign_paused || flags.outbound_campaigns_paused || flags.system_paused || phase === "saving"}
+              onClick={() => openDialog({
+                title: "Pause Cold Lead Campaign",
+                body: "All Cold Lead campaign jobs will be held: outbound calls, voicemail tier advancement, AI analysis, SMS/email follow-ups, nurture graduation, and CRM writes. New Lead and Inbound continue unaffected. Jobs resume automatically when you un-pause.",
+                danger: true,
+                action: async () => {
+                  setPhase("saving");
+                  try {
+                    await pauseColdLeadCampaign();
+                    await load();
+                    showToast("Cold Lead campaign paused — New Lead & Inbound still live", true);
+                  } catch (e) {
+                    showToast(`Failed: ${e instanceof ApiError ? e.message : String(e)}`, false);
+                  } finally { setPhase("idle"); setDialog(null); }
+                },
+              })}
+              style={{
+                padding: "0.5rem 1.25rem", borderRadius: 7, border: "none",
+                background: flags.cold_lead_campaign_paused || flags.outbound_campaigns_paused || flags.system_paused ? "#e2e8f0" : "#ea580c",
+                color: flags.cold_lead_campaign_paused || flags.outbound_campaigns_paused || flags.system_paused ? "#94a3b8" : "#fff",
+                fontWeight: 700, fontSize: "0.875rem",
+                cursor: flags.cold_lead_campaign_paused || flags.outbound_campaigns_paused || flags.system_paused || phase === "saving" ? "not-allowed" : "pointer",
+                transition: "background 0.2s",
+              }}
+            >
+              {flags.cold_lead_campaign_paused ? "Cold Lead Campaign Paused" : "Pause Cold Lead Campaign"}
+            </button>
+
+            {flags.cold_lead_campaign_paused && !flags.system_paused && (
+              <button
+                disabled={phase === "saving"}
+                onClick={async () => {
+                  setPhase("saving");
+                  try {
+                    await resumeColdLeadCampaign();
+                    await load();
+                    showToast("Cold Lead campaign resumed", true);
+                  } catch (e) {
+                    showToast(`Failed: ${e instanceof ApiError ? e.message : String(e)}`, false);
+                  } finally { setPhase("idle"); }
+                }}
+                style={{
+                  padding: "0.5rem 1.25rem", borderRadius: 7, border: "none",
+                  background: "#15803d", color: "#fff",
+                  fontWeight: 700, fontSize: "0.875rem",
+                  cursor: phase === "saving" ? "not-allowed" : "pointer",
+                }}
+              >
+                Resume Cold Lead Campaign
+              </button>
+            )}
+
+            {flags.outbound_campaigns_paused && !flags.cold_lead_campaign_paused && (
+              <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                (all outbound campaigns already paused above — this toggle is redundant until you resume them)
+              </span>
+            )}
+
+            {flags.system_paused && (
+              <span style={{ fontSize: "0.8rem", color: "#94a3b8" }}>
+                (system fully paused — use Resume System above to restore all activity)
+              </span>
+            )}
+          </div>
+
+          {last_changed["cold_lead_campaign_paused"] && (
+            <p style={{ margin: 0, fontSize: "0.775rem", color: "#94a3b8" }}>
+              Last changed: {fmtTime(last_changed["cold_lead_campaign_paused"].at)} by {last_changed["cold_lead_campaign_paused"].operator_id}
             </p>
           )}
         </div>
@@ -453,13 +537,15 @@ function StatusBanner({ status, flags }: { status: "paused" | "campaign_paused" 
   const cfg = C[colorKey as keyof typeof C] as typeof C.paused;
   const labels: Record<typeof status, string> = {
     paused:          "CORA IS PAUSED",
-    campaign_paused: "OUTBOUND CAMPAIGNS PAUSED",
+    campaign_paused: flags.outbound_campaigns_paused ? "OUTBOUND CAMPAIGNS PAUSED" : "COLD LEAD CAMPAIGN PAUSED",
     shadow:          "CORA IS IN SHADOW MODE",
     live:            "CORA IS LIVE",
   };
   const descs: Record<typeof status, string> = {
     paused:          "Workers are holding jobs. No calls, SMS, email, or GHL writes are executing.",
-    campaign_paused: "New Lead and Cold Lead campaign jobs are held. Inbound calls and their full processing pipeline are still live.",
+    campaign_paused: flags.outbound_campaigns_paused
+      ? "New Lead and Cold Lead campaign jobs are held. Inbound calls and their full processing pipeline are still live."
+      : "Cold Lead campaign jobs are held. New Lead and Inbound processing are still live.",
     shadow: [
       flags.shadow_mode_enabled ? "Outbound calls/SMS/email are intercepted." : null,
       !flags.ghl_writes_enabled ? "GHL writes are shadow-logged." : null,
@@ -700,6 +786,7 @@ function ChangeLog({ lastChanged }: { lastChanged: Record<string, { at: string |
     ghl_write_finalization:      "Finalization Writes",
     system_paused:               "System Pause",
     outbound_campaigns_paused:   "Outbound Campaign Pause",
+    cold_lead_campaign_paused:   "Cold Lead Campaign Pause",
   };
 
   return (

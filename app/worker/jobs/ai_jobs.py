@@ -115,6 +115,18 @@ def run_call_analysis(job_id: str) -> None:
                 session.commit()
                 return
 
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "run_call_analysis: cold lead campaign paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
         mark_running(session, job)
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")

@@ -104,6 +104,19 @@ def launch_outbound_call_job(job_id: str) -> None:
                 session.commit()
                 return
 
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        # Holds only Cold Lead jobs while New Lead and Inbound continue normally.
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "launch_outbound_call_job: cold lead campaign paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status (cancel_job requires
         # pending or claimed).

@@ -145,11 +145,13 @@ def _make_flags(
     system_paused: bool = False,
     shadow_mode: bool = False,
     outbound_campaigns_paused: bool = False,
+    cold_lead_campaign_paused: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         system_paused=system_paused,
         shadow_mode_enabled=shadow_mode,
         outbound_campaigns_paused=outbound_campaigns_paused,
+        cold_lead_campaign_paused=cold_lead_campaign_paused,
     )
 
 
@@ -219,4 +221,70 @@ def test_non_blocked_phone_passes_guard(
     # Guard did not fire
     mock_create_exc.assert_not_called()
     # mark_running was reached (guard passed)
+    mock_mark_running.assert_called_once()
+
+
+# ── Cold Lead-only campaign pause guard ────────────────────────────────────────
+
+@patch("app.worker.jobs.outbound_jobs.release_job_to_pending")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_cold_lead_campaign_paused_releases_cold_lead_job(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_release,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")  # campaign_name="Cold Lead"
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags(cold_lead_campaign_paused=True)):
+        launch_outbound_call_job(mock_job.id)
+
+    # Held, not executed — mark_running never reached
+    mock_mark_running.assert_not_called()
+    mock_release.assert_called_once_with(mock_session, mock_job, defer_seconds=60)
+    mock_session.commit.assert_called_once()
+
+
+@patch("app.worker.jobs.outbound_jobs.release_job_to_pending")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+@patch("app.worker.jobs.outbound_jobs.complete_job")
+def test_cold_lead_campaign_paused_does_not_affect_new_lead_job(
+    mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_release,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_job.payload_json["campaign_name"] = "New Lead"
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    # Shadow mode so the flow exits cleanly right after the pause guards pass
+    with patch(
+        "app.core.mode_flags.get_mode_flags",
+        return_value=_make_flags(cold_lead_campaign_paused=True, shadow_mode=True),
+    ):
+        with patch("app.worker.shadow.log_shadow_action"):
+            launch_outbound_call_job(mock_job.id)
+
+    # Cold-Lead-only pause must not hold a New Lead job
+    mock_release.assert_not_called()
     mock_mark_running.assert_called_once()
