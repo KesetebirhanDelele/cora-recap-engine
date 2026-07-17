@@ -104,12 +104,59 @@ Queried `scheduled_jobs` for the five `job_id`s — all five are **Cold Lead** c
 
 ### Root cause vs. the fix built this session — do not conflate these
 
-- **Actual root cause of the 404s** (per the 07-11 session, still unresolved): the Cold Lead
-  Synthflow "Make Call" webhook is stale/broken in **Synthflow's own dashboard** — not a bug in
-  this repo. Fixing it requires action in Synthflow's UI, outside this codebase.
+- **Actual root cause of the 404s — found, not yet fixed:** the Cold Lead "Make Call" workflow was
+  turned **off** in Synthflow's dashboard. A disabled workflow returning 404 on its webhook is
+  expected behavior — simpler than the 07-11 session's "stale/broken" framing suggested, not a
+  misconfiguration, just a toggle left off (likely during the New Lead repoint work or earlier
+  testing, never turned back on). Explains why only Cold Lead 404s and New Lead doesn't — New
+  Lead's workflow is still active. **Fix is in Synthflow's UI, not this repo**: turn the workflow
+  back on, then do one controlled test call before un-pausing real traffic — don't repeat the
+  07-15 pattern of flipping live and assuming it's fine.
 - **What this session built**: a Cold-Lead-only pause toggle. This is an operational safety net
   (hold Cold Lead without also holding New Lead) — it does **not** fix the webhook. Calls will
   404 again the moment Cold Lead is unpaused until the Synthflow-side fix happens.
+
+### Design investigation — New Lead call priority in the shared pacer (not built, findings only)
+
+Explored whether New Lead calls should be prioritized over Cold Lead in the shared call-pacer
+(`_compute_window_run_at` in `outbound_jobs.py`, 4 calls/5-min window, shared by both campaigns).
+Findings, in case this comes up again:
+
+- **A brand-new lead's first call is not scheduled by this repo at all.** `enter_campaign(...,
+  "new_lead", ...)` is never called anywhere in the codebase — confirmed by grep, matches the
+  07-15 session's finding. The first call is triggered externally, almost certainly a GHL
+  workflow hitting Synthflow directly; Cora only takes over once the completion webhook arrives.
+  So "prioritize New Lead's first call" targets something that never touches our scheduler —
+  there's nothing to prioritize there. Cold Lead entry, by contrast, does go through
+  `enter_campaign(..., "cold_lead", ...)` and does hit our job queue.
+- **Two different things both get called "callback" in this codebase** — don't conflate them:
+  (1) automatic voicemail-tier retries (`voicemail_jobs.py`, routine system re-dial after
+  no-answer, goes through the pacer every time), and (2) lead-requested explicit callbacks
+  (`intent_actions.py`'s `_handle_callback_request`/`_handle_callback_with_time`/
+  `_handle_call_later_no_time` — lead said "call me back" / "call me at 3pm" mid-conversation).
+- **Explicit callback requests bypass the pacer's protection entirely, not just its delay.**
+  `_schedule_outbound_call` sets `run_at` directly to the requested time, with no coordination
+  against the pacer's slot math. Within the same lead this is safe (`handle_intent` cancels all
+  other pending jobs for that contact first). **Across different leads it is not** — nothing
+  reschedules other leads' paced calls around a fixed-time callback, and nothing stops a fixed
+  callback from landing in the same ~75s window as calls the pacer already placed there. The
+  pacer's count-based math implicitly assumes every job in the pool was placed by the same
+  evenly-spaced grid logic; an arbitrary-timestamp callback breaks that assumption without being
+  detected. The "+2h fallback" path (used whenever a time can't be extracted — likely the common
+  case) makes this a real collision risk, not just theoretical, since many unrelated leads'
+  callbacks could land near the same timestamp with zero coordination.
+- **This is a pre-existing gap, independent of Cold Lead's pause/webhook issue.** Fixing it does
+  **not** unblock Cold Lead — that's gated purely on the Synthflow workflow toggle above. If
+  tackled, the right fix is not a tweak to the counting formula but a different algorithm:
+  bucket every 75s off a fixed epoch (the pattern `_slot_aware_run_at` already uses), track actual
+  occupancy (including exact-time callbacks) rather than just a count, and have reschedulable
+  jobs (voicemail retries, deferred first-calls) walk forward to the next genuinely free bucket
+  instead of assuming a clean grid. Bigger than it first looks — it replaces core placement logic
+  for every reschedulable call in the system, both campaigns, so it needs real test coverage
+  before landing. **Not started. No code changed for this.**
+- Still open, unrelated to the above: whether New Lead's automatic voicemail-tier retries (as
+  opposed to its first call, which isn't ours to prioritize) should out-rank Cold Lead's in the
+  shared pacer. Not decided.
 
 ### Update — same session, after Kes tested on Hetzner
 
@@ -150,14 +197,17 @@ confirmed working. `cold_lead_campaign_paused=true` stays on until the webhook i
 
 ### Next steps, in order
 
-1. Kes to check/fix the Cold Lead "Make Call" workflow webhook in Synthflow's dashboard —
-   carried over from the 07-11 session, still not done. The pause toggle is a stopgap, not the
-   fix. Required before Cold Lead can be safely un-paused.
-2. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
+1. **Kes to turn the Cold Lead "Make Call" workflow back on in Synthflow's dashboard** — found
+   this session to be simply toggled off, explaining every 404. Do one controlled test call to
+   confirm it actually completes before un-pausing `cold_lead_campaign_paused` for real traffic.
+2. Decide on the two open design questions above (callback/pacer collision fix, New Lead retry
+   priority) — logged as findings only, nothing built yet, no urgency tied to unblocking Cold
+   Lead specifically.
+3. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
    `feat/ghl-call-conversation-sync` (same commit, just a label mismatch).
-3. Consider whether `operator_id` should be required (not defaulting to `'dashboard'`) for
+4. Consider whether `operator_id` should be required (not defaulting to `'dashboard'`) for
    mode-flag changes, given the audit-trail gap surfaced this session.
-4. Everything carried over from the 2026-07-15 session below is still open and untouched by this
+5. Everything carried over from the 2026-07-15 session below is still open and untouched by this
    session.
 
 ---
