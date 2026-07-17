@@ -103,14 +103,32 @@ Queried `scheduled_jobs` for the five `job_id`s — all five are **Cold Lead** c
   (hold Cold Lead without also holding New Lead) — it does **not** fix the webhook. Calls will
   404 again the moment Cold Lead is unpaused until the Synthflow-side fix happens.
 
+### Update — same session, after Kes tested on Hetzner
+
+Kes deployed `feat/cold-lead-campaign-pause` to Hetzner (`git pull` + `docker compose up -d
+--build`), toggled "Pause Cold Lead Campaign" in the dashboard, and confirmed it works — shown as
+"Cold Lead Campaign Paused" with a working "Resume" button. Merged into
+`feat/ghl-call-conversation-sync` (fast-forward, `d9d94aa..f09ce52`, no PR needed — see the new
+Branching Model section in `CLAUDE.md`) and pushed. **Hetzner is still running the
+`feat/cold-lead-campaign-pause` checkout, not the merged `feat/ghl-call-conversation-sync` tip —
+functionally identical (fast-forward, same commit), but the next session should `git checkout
+feat/ghl-call-conversation-sync` there to keep the branch label consistent with what's documented
+as the production-tracking branch.**
+
+Also added a permanent "Branching Model" section to `CLAUDE.md` (cutting/merging procedure,
+verification commands) so this doesn't need re-explaining every session — the standing rule below
+now has a companion procedure doc.
+
 ### Next steps, in order
 
-1. Check current live `app_config` values on Hetzner (`shadow_mode_enabled`,
-   `outbound_campaigns_paused`) before assuming any pause state — see item 3 above.
+1. **Still not done**: confirm current live `app_config` values for `shadow_mode_enabled` on
+   Hetzner (we confirmed `cold_lead_campaign_paused` is now `true`, but the broader
+   `shadow_mode_enabled` drift flagged in item 3 above was never independently checked).
 2. Kes to check/fix the Cold Lead "Make Call" workflow webhook in Synthflow's dashboard —
-   carried over from the 07-11 session, still not done.
-3. Commit and, after Kes's local verification, PR the `cold_lead_campaign_paused` feature —
-   target `feat/ghl-call-conversation-sync`, not `main` (see standing rule above).
+   carried over from the 07-11 session, still not done. The pause toggle is a stopgap, not the
+   fix.
+3. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
+   `feat/ghl-call-conversation-sync` (same commit, just a label mismatch).
 4. Everything carried over from the 2026-07-15 session below is still open and untouched by this
    session.
 

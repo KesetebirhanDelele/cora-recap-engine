@@ -19,6 +19,52 @@ answer — it is written specifically to prevent re-deriving or contradicting re
 
 ---
 
+## Branching Model
+
+**`feat/ghl-call-conversation-sync` is the production-tracking branch. `main` is not.** This is a
+deliberate, standing fact about this repo, not a stale artifact — see `PROGRESS.md`'s "Standing
+rule" section for the full history and the exact verification commands. Do not rediscover this
+each session; follow the procedure below.
+
+**Cutting new work:**
+```
+git checkout feat/ghl-call-conversation-sync && git pull
+git checkout -b <new-branch-name>
+```
+Never cut a new branch from `main`. `main` being GitHub's default/PR-target label is a
+repo-settings artifact, not a signal about where production code lives.
+
+**Closing out finished, tested work:**
+1. Confirm the feature branch was cut from (and hasn't diverged unexpectedly from)
+   `feat/ghl-call-conversation-sync` — `git log <feature-branch>..origin/feat/ghl-call-conversation-sync --oneline`
+   should be empty; if not, merge/rebase onto the latest tip first.
+2. Get explicit confirmation from Kes that the feature has been tested (per the Pre-Ship Debrief
+   Rule) before merging.
+3. Merge directly into the branch — a GitHub PR is not required for merges into
+   `feat/ghl-call-conversation-sync` the way it is for `main`, since this branch itself *is* the
+   integration branch here:
+   ```
+   git checkout feat/ghl-call-conversation-sync && git pull
+   git merge <feature-branch> --no-edit
+   git push origin feat/ghl-call-conversation-sync
+   ```
+4. Redeploy Hetzner from the new tip (code is baked into Docker images — see Deployment section
+   below): `git pull && docker compose up -d --build`.
+5. Append a short PROGRESS.md note that the merge happened and Hetzner was redeployed.
+
+**Periodically verify the invariant still holds** (branches can drift if someone commits directly
+to `main` or another branch outside this flow):
+```
+git fetch origin
+git log feat/ghl-call-conversation-sync..main --oneline
+git log feat/ghl-call-conversation-sync..feat/production-deployment-hardening --oneline
+git log feat/ghl-call-conversation-sync..feat/support-staff-shift-routing --oneline
+```
+All three must be empty. If any is not, stop and investigate before building anything new — see
+`PROGRESS.md`'s standing-rule section for what to do next.
+
+---
+
 ## Core Principle
 
 LLMs are probabilistic.  
