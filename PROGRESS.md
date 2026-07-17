@@ -82,17 +82,25 @@ Queried `scheduled_jobs` for the five `job_id`s — all five are **Cold Lead** c
    cause and the durable fix (cut from the sync branch, always) is now written up as the standing
    rule above so this doesn't recur.
 
-3. **Found via this file, not new work — a real inconsistency worth flagging:** the 2026-07-11
+3. **Confirmed root cause of the timing, via `app_config`/`audit_log` on Hetzner:** the 2026-07-11
    session recorded production as `shadow_mode_enabled=true` and `outbound_campaigns_paused=true`
-   at that time (see below), and explicitly listed "the Synthflow Cold Lead webhook is
-   stale/broken and needs checking before live calling resumes" as a known, unresolved blocker.
-   Today's five alerts are all `status='failed'` (not `pending`/deferred), which only happens when
-   the job actually executes — i.e. **not paused**. That means between 2026-07-11 and 2026-07-15,
-   someone took outbound calling live again (flipped `outbound_campaigns_paused` and/or
-   `shadow_mode_enabled` back off) without the Cold Lead webhook fix happening first, and without
-   updating this file. **This session did not confirm the current live `app_config` values on
-   Hetzner** — do not assume shadow/pause state from the 07-11 entry below; it is stale as of at
-   least 2026-07-15.
+   at that time, and explicitly listed "the Synthflow Cold Lead webhook is stale/broken and needs
+   checking before live calling resumes" as a known, unresolved blocker. Confirmed:
+   `shadow_mode_enabled` flipped `true → false` at **2026-07-15 21:44:41 UTC**
+   (`app_config.updated_by = 'dashboard'` — generic fallback operator ID, see note below). The
+   first two Cold Lead 404s in today's alert set fired at **22:00:50 UTC the same day — 16 minutes
+   later**. So: someone took the system live without the webhook fix happening first, and it broke
+   almost immediately. It ran live and broken for Cold Lead for **2 days** before these alerts were
+   brought to this session. `outbound_campaigns_paused` itself was never re-enabled after 07-11
+   (confirmed unrelated to this flip); `shadow_mode_enabled` was the only lever that changed.
+   **Audit trail gap**: `updated_by='dashboard'` is `SystemControlsClient.tsx`'s generic fallback
+   when no operator has set an `operator_id` in their browser's `localStorage` — there is currently
+   no way to tell *who* flipped this from the DB alone. Not fixed this session; flagging as a real
+   gap if attribution ever matters (e.g. after an incident like this one).
+   **As of this entry, `shadow_mode_enabled` remains `false` (live)** — New Lead and any SMS/email
+   campaigns have been making real contact with real leads for 2 days with no reported issues.
+   This has not been independently reviewed as an intended state versus an unannounced side effect
+   of whatever prompted the 07-15 flip — worth a deliberate decision, not just inertia.
 
 ### Root cause vs. the fix built this session — do not conflate these
 
@@ -121,14 +129,17 @@ now has a companion procedure doc.
 
 ### Next steps, in order
 
-1. **Still not done**: confirm current live `app_config` values for `shadow_mode_enabled` on
-   Hetzner (we confirmed `cold_lead_campaign_paused` is now `true`, but the broader
-   `shadow_mode_enabled` drift flagged in item 3 above was never independently checked).
+1. **Kes to decide, deliberately, whether `shadow_mode_enabled=false` (live) should stay that
+   way.** Confirmed via `app_config` — see item 3 above. It's been live for 2 days as an
+   apparent side effect of whatever prompted the 07-15 21:44 UTC flip, not a documented decision.
+   Not inherently wrong (New Lead/SMS/email appear fine), just never explicitly signed off.
 2. Kes to check/fix the Cold Lead "Make Call" workflow webhook in Synthflow's dashboard —
    carried over from the 07-11 session, still not done. The pause toggle is a stopgap, not the
-   fix.
+   fix. Required before Cold Lead can be safely un-paused.
 3. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
    `feat/ghl-call-conversation-sync` (same commit, just a label mismatch).
+4. Consider whether `operator_id` should be required (not defaulting to `'dashboard'`) for
+   mode-flag changes, given item 3's audit-trail gap surfaced this session.
 4. Everything carried over from the 2026-07-15 session below is still open and untouched by this
    session.
 
