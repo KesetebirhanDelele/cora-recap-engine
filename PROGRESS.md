@@ -127,19 +127,36 @@ Also added a permanent "Branching Model" section to `CLAUDE.md` (cutting/merging
 verification commands) so this doesn't need re-explaining every session — the standing rule below
 now has a companion procedure doc.
 
+### Update — same session, shadow-mode flip explained + New Lead verified healthy
+
+Kes confirmed the 07-15 21:44 UTC `shadow_mode_enabled` flip was **intentional** — done so New
+Lead campaigns could start working live. At the time, no granular per-campaign control existed
+(`cold_lead_campaign_paused` didn't exist until this session), and `outbound_campaigns_paused`
+holds New Lead + Cold Lead together — so there was no way to bring New Lead live without also
+exposing Cold Lead's already-known-broken webhook as an unavoidable side effect. The real gap
+was that the 07-11 session's explicit note — "webhook needs checking before live calling
+resumes" — wasn't checked first. Not a tooling failure at the time; today's `cold_lead_campaign_paused`
+flag exists specifically so this choice doesn't have to be all-or-nothing again.
+
+Verified New Lead is genuinely healthy, not just quiet: `call_events` for the last 2 days shows 6
+completed, 4 hangup_on_voicemail, 1 no-answer, 1 failed (12 total) — a normal outbound-calling
+outcome mix. Unlike Cold Lead's 404s (which fail *before* Synthflow ever creates a call, so no
+`call_events` row exists for those attempts), New Lead calls are reaching Synthflow and being
+answered/not-answered normally. The single "failed" row is a call-level outcome, not a launch
+failure — not concerning at this volume.
+
+**Decision:** leave `shadow_mode_enabled=false` (live) as-is — it was intentional and New Lead is
+confirmed working. `cold_lead_campaign_paused=true` stays on until the webhook is fixed.
+
 ### Next steps, in order
 
-1. **Kes to decide, deliberately, whether `shadow_mode_enabled=false` (live) should stay that
-   way.** Confirmed via `app_config` — see item 3 above. It's been live for 2 days as an
-   apparent side effect of whatever prompted the 07-15 21:44 UTC flip, not a documented decision.
-   Not inherently wrong (New Lead/SMS/email appear fine), just never explicitly signed off.
-2. Kes to check/fix the Cold Lead "Make Call" workflow webhook in Synthflow's dashboard —
+1. Kes to check/fix the Cold Lead "Make Call" workflow webhook in Synthflow's dashboard —
    carried over from the 07-11 session, still not done. The pause toggle is a stopgap, not the
    fix. Required before Cold Lead can be safely un-paused.
-3. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
+2. Optional cleanup: switch Hetzner's git checkout from `feat/cold-lead-campaign-pause` to
    `feat/ghl-call-conversation-sync` (same commit, just a label mismatch).
-4. Consider whether `operator_id` should be required (not defaulting to `'dashboard'`) for
-   mode-flag changes, given item 3's audit-trail gap surfaced this session.
+3. Consider whether `operator_id` should be required (not defaulting to `'dashboard'`) for
+   mode-flag changes, given the audit-trail gap surfaced this session.
 4. Everything carried over from the 2026-07-15 session below is still open and untouched by this
    session.
 
