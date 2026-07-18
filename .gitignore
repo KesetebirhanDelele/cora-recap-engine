@@ -259,5 +259,8 @@ coverage.xml
 # Local VS Code workspace settings
 .vscode/
 
+# Claude Code local permission overrides (machine-specific, not shared)
+.claude/settings.local.json
+
 # macOS metadata
 .DS_Store
