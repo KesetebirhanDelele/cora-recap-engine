@@ -75,6 +75,30 @@ def _load_open_exception(session: Session, exception_id: str) -> ExceptionRecord
     return exc
 
 
+def _resolve_retry_job_type(session: Session, ctx: dict) -> str:
+    """
+    Determine which job_type a retry should re-enqueue.
+
+    Exception context never sets "job_type" explicitly (checked across every
+    create_exception() call site) — always fall back to looking up the
+    originating job's real job_type via the "job_id" every job-failure
+    exception carries. Falls back to "process_call_event" only when no
+    job_id is present or the original job row is gone (e.g. system-level
+    exceptions like metrics_collection_failed).
+    """
+    job_type = ctx.get("job_type")
+    if job_type:
+        return job_type
+
+    job_id = ctx.get("job_id") or ctx.get("original_job_id")
+    if job_id:
+        original_job = session.get(ScheduledJob, job_id)
+        if original_job is not None:
+            return original_job.job_type
+
+    return "process_call_event"
+
+
 # ── Operator actions ──────────────────────────────────────────────────────────
 
 def retry_now(
@@ -98,7 +122,7 @@ def retry_now(
     entity_type = exc.entity_type or "call"
     entity_id = exc.entity_id or ""
     ctx = exc.context_json or {}
-    job_type = ctx.get("job_type", "process_call_event")
+    job_type = _resolve_retry_job_type(session, ctx)
 
     from app.worker.scheduler import schedule_job
 
@@ -144,7 +168,7 @@ def retry_with_delay(
     entity_type = exc.entity_type or "call"
     entity_id = exc.entity_id or ""
     ctx = exc.context_json or {}
-    job_type = ctx.get("job_type", "process_call_event")
+    job_type = _resolve_retry_job_type(session, ctx)
     run_at = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
 
     from app.worker.scheduler import schedule_job

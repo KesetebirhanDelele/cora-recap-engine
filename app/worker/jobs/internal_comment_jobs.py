@@ -123,12 +123,14 @@ def write_internal_comment_note(job_id: str) -> None:
 
             ghl = GHLClient(settings=settings)
             resolved_contact: dict = {}
+            resolution_error: str | None = None
 
             if effective_contact_id and not _looks_like_phone(effective_contact_id):
                 try:
                     fetched = ghl.get_contact(effective_contact_id)
                     resolved_contact = fetched.get("contact", fetched)
                 except Exception as read_exc:
+                    resolution_error = f"contact fetch failed: {read_exc}"
                     logger.warning(
                         "write_internal_comment_note: GHL contact fetch failed | contact_id=%s: %s",
                         effective_contact_id, read_exc,
@@ -145,6 +147,7 @@ def write_internal_comment_note(job_id: str) -> None:
                         if found:
                             resolved_contact = found
                     except Exception as read_exc:
+                        resolution_error = f"phone search failed: {read_exc}"
                         logger.warning(
                             "write_internal_comment_note: GHL phone search failed | phone=<redacted>: %s",
                             read_exc,
@@ -155,9 +158,10 @@ def write_internal_comment_note(job_id: str) -> None:
             )
 
             if not resolved_contact_id:
+                detail = f" | resolution_error={resolution_error}" if resolution_error else ""
                 raise ValueError(
                     f"Could not resolve a GHL contact | "
-                    f"call_event_id={call_event_id} effective_contact_id={effective_contact_id}"
+                    f"call_event_id={call_event_id} effective_contact_id={effective_contact_id}{detail}"
                 )
 
             # ── Write ────────────────────────────────────────────────────────

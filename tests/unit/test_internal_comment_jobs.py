@@ -301,6 +301,40 @@ def test_contact_resolution_failure_fails_job(session):
     assert job_row.status == "failed"
 
 
+def test_contact_resolution_transient_error_surfaces_in_failure_reason(session):
+    """When search_contact_by_phone raises (transient GHL blip) rather than
+    cleanly returning no match, the real error must reach the exception
+    record — previously it was swallowed to a warning log only, so on-call
+    had no way to tell "GHL API errored" from "contact genuinely missing"
+    without re-running the lookup by hand."""
+    call_event = _make_call_event(session, call_id="call-transient", contact_id="15559990001")
+    job = _make_job(session, "write_internal_comment_note", {
+        "call_id": call_event.call_id, "call_event_id": call_event.id, "contact_id": "15559990001",
+    })
+
+    with (
+        _patched(session) as mock_sess,
+        patch(
+            "app.adapters.ghl.GHLClient.search_contact_by_phone",
+            side_effect=RuntimeError("timeout"),
+        ),
+        pytest.raises(ValueError, match="resolution_error=phone search failed: timeout"),
+    ):
+        _bind_session(mock_sess, session)
+        from app.worker.jobs.internal_comment_jobs import write_internal_comment_note
+        write_internal_comment_note(job.id)
+
+    job_row = session.get(ScheduledJob, job.id)
+    assert job_row.status == "failed"
+
+    from app.models.exception import ExceptionRecord
+    exc_row = session.scalars(
+        select(ExceptionRecord).where(ExceptionRecord.entity_id == call_event.call_id)
+    ).first()
+    assert exc_row is not None
+    assert "resolution_error=phone search failed: timeout" in exc_row.context_json["error"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Phone-derived contact_id (inbound-style resolution)
 # ─────────────────────────────────────────────────────────────────────────────
