@@ -381,3 +381,79 @@ Hetzner VM
 ```
 
 All services communicate over a Docker Compose internal network. Only explicitly mapped ports are reachable from the host.
+
+## Instructions to create new SSH key and instructions to create and use dedicated keypair per repo and implement it for git repo access
+
+# Part A — Creating a new SSH key
+Same command whether it's for your own machine (server login) or on the server itself (repo deploy key) — just pick a distinct filename so you don't overwrite an existing key.
+
+On Windows (PowerShell) — for logging into a new Hetzner server:
+
+
+ssh-keygen -t ed25519 -C "kes-hetzner-<project-name>" -f "$env:USERPROFILE\.ssh\hetzner_<project-name>"
+-t ed25519 — modern, fast, smaller than RSA; use -t rsa -b 4096 only if a target system doesn't support ed25519 (rare)
+-C — a comment/label, not a secret; makes it identifiable later in authorized_keys or GitHub's key list
+-f — explicit filename so it doesn't prompt to overwrite id_ed25519
+Leave the passphrase empty only if this key will be used non-interactively (e.g., a deploy key on a server); use a passphrase for your personal daily-driver key
+This produces two files: hetzner_<project-name> (private — never leave your machine) and hetzner_<project-name>.pub (public — safe to paste anywhere).
+
+On the Ubuntu server (Bash) — same idea, used in Part B for a deploy key:
+
+
+ssh-keygen -t ed25519 -C "deploy-<repo-name>" -f ~/.ssh/deploy_<repo-name> -N ""
+-N "" sets an empty passphrase — required here since nothing will be typing it in interactively during git pull.
+
+Add the private key to your local agent if you generated it on Windows for server login:
+
+
+ssh-add "$env:USERPROFILE\.ssh\hetzner_<project-name>"
+
+# Part B — Dedicated deploy keypair per repo, wired into git access
+This runs on the Hetzner server, since that's the machine doing the git clone/git pull.
+
+1. Generate the keypair (as above):
+
+
+ssh-keygen -t ed25519 -C "deploy-<repo-name>" -f ~/.ssh/deploy_<repo-name> -N ""
+2. Print the public key and copy it:
+
+
+cat ~/.ssh/deploy_<repo-name>.pub
+3. Add it to GitHub as a Deploy Key (repo-scoped, not account-wide):
+
+GitHub repo → Settings → Deploy keys → Add deploy key
+Paste the public key
+Leave "Allow write access" unchecked unless the server needs to push (it shouldn't, for a deploy target)
+Save
+4. Tell SSH which key to use for this repo, since GitHub only sees git@github.com and can't otherwise tell your deploy keys apart. Edit ~/.ssh/config on the server:
+
+
+Host github.com-<repo-name>
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/deploy_<repo-name>
+    IdentitiesOnly yes
+IdentitiesOnly yes is important — without it, SSH may try your other keys first and GitHub will reject them before reaching the right one if you have several deploy keys on the box.
+
+5. Clone using the alias host, not github.com directly:
+
+
+git clone git@github.com-<repo-name>:<org>/<repo-name>.git /opt/<repo-name>
+Existing repo already cloned with a plain URL? Repoint its remote instead of re-cloning:
+
+
+cd /opt/<repo-name>
+git remote set-url origin git@github.com-<repo-name>:<org>/<repo-name>.git
+6. Verify:
+
+
+ssh -T git@github.com-<repo-name>
+Expect: Hi <org>/<repo-name>! You've successfully authenticated, but GitHub does not provide shell access. — confirming it authenticated as the deploy key, scoped to that one repo.
+
+7. Lock down permissions (SSH silently ignores keys with overly-open perms):
+
+
+chmod 600 ~/.ssh/deploy_<repo-name>
+chmod 644 ~/.ssh/deploy_<repo-name>.pub
+chmod 600 ~/.ssh/config
+From here, git pull on that server only ever touches this one repo, read-only — if the box is compromised, the blast radius stops at this repo instead of every repo your personal account can reach.
