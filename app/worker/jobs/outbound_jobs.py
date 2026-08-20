@@ -20,7 +20,7 @@ The Synthflow call completion arrives separately via:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
@@ -28,6 +28,97 @@ from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, m
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
+
+_CALL_BATCH_SIZE = 4     # calls per slot
+_CALL_SLOT_SECONDS = 300  # 5-minute slot window
+# Spacing between individual calls within a slot: 300 / 4 = 75 s.
+# Calls in the same batch fire at +0s, +75s, +150s, +225s — never simultaneously.
+_CALL_WITHIN_SLOT_SPACING = _CALL_SLOT_SECONDS // _CALL_BATCH_SIZE  # 75 s
+
+# Fixed global anchor for bucket alignment — shared with voicemail_jobs.py's
+# retry scheduling so every launch_outbound_call job (fresh calls, deferred
+# calls, voicemail-tier retries, and lead-requested exact-time callbacks)
+# lands on the same grid and can be checked for collisions against each
+# other, regardless of which code path scheduled it.
+_EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc)
+# Bound the free-bucket search to the same 4-hour horizon the old count-based
+# version used, so behavior doesn't silently search forever.
+_MAX_BUCKET_SEARCH = int(timedelta(hours=4).total_seconds() // _CALL_WITHIN_SLOT_SPACING)  # 192
+
+
+def _bucket_index(dt: datetime) -> int:
+    """
+    Epoch-relative 75s bucket index for dt.
+
+    SQLite (used in unit tests) returns naive datetimes for DateTime(timezone=True)
+    columns even though they were stored as UTC-aware — normalize before
+    subtracting so this doesn't crash. Every datetime in this system is UTC by
+    convention, so a naive value is always assumed to already be UTC.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int((dt - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)
+
+
+def _bucket_start(index: int) -> datetime:
+    """Wall-clock start time of the given epoch-relative bucket."""
+    return _EPOCH + timedelta(seconds=index * _CALL_WITHIN_SLOT_SPACING)
+
+
+def _compute_window_run_at(session, window_start: datetime) -> datetime:
+    """
+    Find the next free 75-second bucket at or after window_start.
+
+    Buckets are aligned to a fixed global epoch (_EPOCH) rather than to
+    window_start itself, so every call — however it was scheduled — competes
+    for the same grid. A bucket counts as occupied if any pending/claimed
+    launch_outbound_call job's actual run_at falls inside it. This includes
+    lead-requested exact-time callbacks (app/core/intent_actions.py), whose
+    run_at is set directly to the lead's requested time and is never itself
+    moved by this function — it simply reserves whichever bucket it happens
+    to land in, and calls computed here route around it. At most one call is
+    placed per bucket, preserving the "4 calls per 5-minute window, 75s
+    apart" pacing while actually preventing collisions instead of just
+    approximating spacing via a count (the previous implementation counted
+    pending jobs and did arithmetic assuming they were all placed on this
+    same grid, which broke silently the moment an arbitrary-timestamp
+    callback entered the same pool).
+
+    Searches up to 4 hours ahead (_MAX_BUCKET_SEARCH buckets). If that
+    entire range is already fully occupied — implausible under any
+    realistic load, it would require ~192 simultaneous pending calls — falls
+    back to the bucket immediately after the search range and logs a
+    warning rather than looping indefinitely.
+    """
+    from sqlalchemy import select
+
+    from app.models.scheduled_job import ScheduledJob
+
+    # Ceiling: never return a time before window_start.
+    start_bucket = -(-(window_start - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)
+    start_bucket = int(start_bucket)
+    end_bucket = start_bucket + _MAX_BUCKET_SEARCH
+
+    existing_run_ats = session.scalars(
+        select(ScheduledJob.run_at).where(
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.status.in_(["pending", "claimed"]),
+            ScheduledJob.run_at >= _bucket_start(start_bucket),
+            ScheduledJob.run_at < _bucket_start(end_bucket),
+        )
+    ).all()
+    occupied = {_bucket_index(r) for r in existing_run_ats}
+
+    for bucket in range(start_bucket, end_bucket):
+        if bucket not in occupied:
+            return _bucket_start(bucket)
+
+    logger.warning(
+        "_compute_window_run_at: no free bucket in %d-bucket search window starting %s "
+        "— falling back to first bucket past the search range",
+        _MAX_BUCKET_SEARCH, window_start.isoformat(),
+    )
+    return _bucket_start(end_bucket)
 
 
 def launch_outbound_call_job(job_id: str) -> None:
@@ -58,6 +149,32 @@ def launch_outbound_call_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        # Holds New Lead and Cold Lead jobs while Inbound continues normally.
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "launch_outbound_call_job: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        # Holds only Cold Lead jobs while New Lead and Inbound continue normally.
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "launch_outbound_call_job: cold lead campaign paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
         # Load payload before mark_running so the window check can cancel
         # the job while it is still in 'claimed' status (cancel_job requires
         # pending or claimed).
@@ -67,6 +184,33 @@ def launch_outbound_call_job(job_id: str) -> None:
         campaign_name = payload.get("campaign_name", "New_Lead")
         correlation_id = payload.get("correlation_id", job_id)
         contact_id = payload.get("contact_id") or phone
+
+        # ── Blocked dial-number guard ─────────────────────────────────────────
+        # Prevents dialing Synthflow agent numbers or other system phones that
+        # were accidentally enrolled as leads (e.g. test contacts in GHL).
+        _blocked = {
+            n.strip()
+            for n in (settings.blocked_dial_numbers or "").split(",")
+            if n.strip()
+        }
+        if phone in _blocked:
+            logger.error(
+                "launch_outbound_call_job: phone is on blocked list — cancelling | "
+                "phone=%s contact_id=%s job_id=%s",
+                phone, contact_id, job_id,
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            create_exception(
+                session,
+                type="blocked_dial_number",
+                severity="critical",
+                context={"phone": phone, "contact_id": contact_id, "job_id": job_id},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            session.commit()
+            return
 
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
@@ -84,10 +228,12 @@ def launch_outbound_call_job(job_id: str) -> None:
             contact_tz = get_contact_timezone(session, contact_id, settings)
             if not is_campaign_active(campaign_name, now, settings, contact_tz, session):
                 next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
+                run_at = _compute_window_run_at(session, next_open)
                 logger.info(
                     "launch_outbound_call_job: outside active window — deferring | "
-                    "campaign=%s contact_tz=%s job_id=%s rescheduled_for=%s",
-                    campaign_name, contact_tz, job_id, next_open.isoformat(),
+                    "campaign=%s contact_tz=%s job_id=%s rescheduled_for=%s slot_offset_s=%d",
+                    campaign_name, contact_tz, job_id, run_at.isoformat(),
+                    int((run_at - next_open).total_seconds()),
                 )
                 cancel_job(session, job.id)
                 schedule_job(
@@ -95,7 +241,7 @@ def launch_outbound_call_job(job_id: str) -> None:
                     job_type="launch_outbound_call",
                     entity_type=job.entity_type,
                     entity_id=job.entity_id,
-                    run_at=next_open,
+                    run_at=run_at,
                     payload=payload,
                 )
                 return

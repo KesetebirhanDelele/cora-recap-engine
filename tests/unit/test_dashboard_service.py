@@ -134,6 +134,79 @@ def test_retry_now_conflict_for_nonexistent(session):
     assert result.get("conflict") is True
 
 
+def test_retry_now_resolves_job_type_from_original_job_id(session):
+    """Real-world exception context never carries "job_type" explicitly
+    (see every create_exception() call site in app/worker/jobs/) — retry
+    must look up the type of the job that actually failed via "job_id",
+    not silently default to process_call_event for every job kind."""
+    original = _make_job(session, entity_id="call-1")
+    original.job_type = "write_internal_comment_note"
+    session.flush()
+
+    exc = _make_exception(
+        session,
+        context={"call_id": "call-1", "job_id": original.id, "error": "boom"},
+    )
+    session.flush()
+
+    result = retry_now(session, exc.id, operator_id="ops-1")
+    new_job = session.get(ScheduledJob, result["new_job_id"])
+    assert new_job.job_type == "write_internal_comment_note"
+
+
+def test_retry_now_resolves_job_type_from_original_job_id_alias(session):
+    """metrics_jobs.py's call_not_placed exception uses "original_job_id"
+    instead of "job_id" — must be honored too."""
+    original = _make_job(session, entity_id="call-2")
+    original.job_type = "launch_outbound_call"
+    session.flush()
+
+    exc = _make_exception(
+        session,
+        context={"original_job_id": original.id},
+    )
+    session.flush()
+
+    result = retry_now(session, exc.id, operator_id="ops-1")
+    new_job = session.get(ScheduledJob, result["new_job_id"])
+    assert new_job.job_type == "launch_outbound_call"
+
+
+def test_retry_now_falls_back_to_process_call_event_without_job_id(session):
+    """System-level exceptions (e.g. metrics_collection_failed) have no
+    originating retryable job — default must still be process_call_event."""
+    exc = _make_exception(session, context={"error": "boom"})
+    session.flush()
+
+    result = retry_now(session, exc.id, operator_id="ops-1")
+    new_job = session.get(ScheduledJob, result["new_job_id"])
+    assert new_job.job_type == "process_call_event"
+
+
+def test_retry_now_falls_back_when_original_job_id_stale(session):
+    """job_id in context points at a row that no longer exists (e.g. purged) —
+    must not crash, falls back to the default."""
+    exc = _make_exception(session, context={"job_id": str(uuid.uuid4())})
+    session.flush()
+
+    result = retry_now(session, exc.id, operator_id="ops-1")
+    new_job = session.get(ScheduledJob, result["new_job_id"])
+    assert new_job.job_type == "process_call_event"
+
+
+def test_retry_with_delay_resolves_job_type_from_original_job_id(session):
+    original = _make_job(session, entity_id="call-3")
+    original.job_type = "write_conversation_log"
+    session.flush()
+
+    exc = _make_exception(session, context={"job_id": original.id})
+    session.flush()
+
+    result = retry_with_delay(session, exc.id, operator_id="ops", delay_minutes=15)
+    new_job = session.get(ScheduledJob, result["new_job_id"])
+    assert new_job.job_type == "write_conversation_log"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 4-5. retry_with_delay
 # ─────────────────────────────────────────────────────────────────────────────

@@ -29,6 +29,7 @@ Output schema:
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -40,9 +41,14 @@ logger = logging.getLogger(__name__)
 # Executed-actions parser (used to reinforce intent detection)
 # ---------------------------------------------------------------------------
 
-def _extract_executed_actions(executed_actions: list | None) -> dict:
+def _extract_executed_actions(executed_actions: list | dict | None) -> dict:
     """
-    Parse Synthflow executed_actions list into structured signal flags.
+    Parse Synthflow executed_actions into structured signal flags.
+
+    Synthflow sends executed_actions as a dict keyed by action name
+    (e.g. {"action_ghl_create_booking": {...}, "rag_action": {...}}).
+    Each action dict uses "action_type" (not "type"/"action") and stores
+    outcome in a JSON string under "return_value" (not a top-level "status").
 
     Returns:
       {
@@ -61,11 +67,35 @@ def _extract_executed_actions(executed_actions: list | None) -> dict:
     if not executed_actions:
         return flags
 
-    for action in executed_actions:
+    # Normalize: Synthflow sends a dict of {name: action_dict}; accept lists too.
+    if isinstance(executed_actions, dict):
+        action_items: list = list(executed_actions.values())
+    elif isinstance(executed_actions, list):
+        action_items = executed_actions
+    else:
+        return flags
+
+    for action in action_items:
         if not isinstance(action, dict):
             continue
-        action_type = (action.get("type") or action.get("action") or "").lower()
-        status      = (action.get("status") or action.get("result") or "").lower()
+
+        action_type = (
+            action.get("action_type") or action.get("type") or action.get("action") or ""
+        ).lower()
+
+        # Status may be a top-level field or embedded in a JSON return_value string.
+        status = ""
+        raw_return = action.get("return_value")
+        if isinstance(raw_return, str):
+            try:
+                rv = json.loads(raw_return)
+                status = (rv.get("status") or "").lower()
+            except (json.JSONDecodeError, AttributeError, ValueError):
+                pass
+        elif isinstance(raw_return, dict):
+            status = (raw_return.get("status") or "").lower()
+        if not status:
+            status = (action.get("status") or action.get("result") or "").lower()
 
         if any(kw in action_type for kw in ("transfer", "handoff", "live_agent")):
             flags["transfer_attempted"] = True
@@ -402,6 +432,10 @@ def detect_intent(
     if ea_flags["transfer_attempted"]:
         logger.info("live_call_detected: transfer_attempted via executed_actions")
         return {"intent": "human_transfer_request", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "transfer_attempted": True}}
+
+    if ea_flags["booking_success"]:
+        logger.info("booking_success_detected: callback_with_time via executed_actions")
+        return {"intent": "callback_with_time", "confidence": 0.95, "entities": {"datetime": None, "channel": None}}
 
     if ea_flags["booking_failed"] and not ea_flags["booking_success"]:
         logger.info("failed_booking_detected: booking_failed via executed_actions")

@@ -92,6 +92,7 @@ _FAILED_STATUSES = frozenset({
     "no-answer",
     "busy",
     "cancelled",
+    "user-canceled",
     "error",
 })
 

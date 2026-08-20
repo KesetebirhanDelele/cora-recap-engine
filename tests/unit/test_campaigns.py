@@ -249,3 +249,76 @@ def test_enter_campaign_new_lead_schedules_outbound(session):
     ).all()
     assert len(jobs) == 1
     assert jobs[0].payload_json["campaign_name"] == "New Lead"
+
+
+# ---------------------------------------------------------------------------
+# Outbound campaign pause — centralized check (regression guard for the
+# intent_actions.py bypass: enter_campaign() must protect every caller
+# uniformly, not just nurture_scheduler.py's own duplicate check).
+# ---------------------------------------------------------------------------
+
+def _mock_settings_paused():
+    s = _mock_settings()
+    s.outbound_campaigns_paused = True
+    return s
+
+
+def test_enter_campaign_skips_when_outbound_campaigns_paused(session):
+    lead = _make_lead(session, campaign_name=None)
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings_paused())
+    session.refresh(lead)
+
+    # No state change and no job scheduled — entry was skipped entirely.
+    assert lead.campaign_name is None
+    jobs = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_enter_campaign_new_lead_also_skipped_when_paused(session):
+    lead = _make_lead(session, campaign_name=None)
+    enter_campaign(session, lead, "new_lead", settings=_mock_settings_paused())
+    session.refresh(lead)
+    assert lead.campaign_name is None
+
+
+def test_enter_campaign_proceeds_when_not_paused(session):
+    """Sanity check: explicit outbound_campaigns_paused=False behaves like the default."""
+    s = _mock_settings()
+    s.outbound_campaigns_paused = False
+    lead = _make_lead(session, campaign_name=None)
+    enter_campaign(session, lead, "cold_lead", settings=s)
+    session.refresh(lead)
+    assert lead.campaign_name == "Cold Lead"
+
+
+# ---------------------------------------------------------------------------
+# Cold Lead-only campaign pause — narrower than outbound_campaigns_paused:
+# holds Cold Lead entry only, New Lead must still proceed.
+# ---------------------------------------------------------------------------
+
+def _mock_settings_cold_lead_paused():
+    s = _mock_settings()
+    s.cold_lead_campaign_paused = True
+    return s
+
+
+def test_enter_campaign_skips_cold_lead_when_cold_lead_campaign_paused(session):
+    lead = _make_lead(session, campaign_name=None)
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings_cold_lead_paused())
+    session.refresh(lead)
+
+    assert lead.campaign_name is None
+    jobs = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_enter_campaign_new_lead_unaffected_by_cold_lead_campaign_pause(session):
+    """New Lead entry must proceed normally while only Cold Lead is paused."""
+    lead = _make_lead(session, campaign_name=None)
+    enter_campaign(session, lead, "new_lead", settings=_mock_settings_cold_lead_paused())
+    session.refresh(lead)
+    assert lead.campaign_name == "New Lead"

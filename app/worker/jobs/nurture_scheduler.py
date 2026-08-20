@@ -69,6 +69,32 @@ def run_nurture_scheduler(job_id: str) -> None:
         errors = 0
 
         try:
+            # ── Outbound campaign pause check ─────────────────────────────────
+            # Nurture graduation creates Cold Lead outbound calls, so we skip
+            # it entirely while outbound campaigns are paused. The scheduler
+            # still self-reschedules so the cadence is never silently lost.
+            from app.core.mode_flags import get_mode_flags
+            flags = get_mode_flags(session, settings)
+            if flags.outbound_campaigns_paused:
+                logger.info(
+                    "run_nurture_scheduler: outbound campaigns paused — skipping graduation | "
+                    "job_id=%s", job_id,
+                )
+                complete_job(session, job)
+                _schedule_next_run(session, settings)
+                return
+
+            # Graduation exclusively creates Cold Lead outbound calls, so the
+            # Cold-Lead-only pause skips this entire job too (not just a subset).
+            if flags.cold_lead_campaign_paused:
+                logger.info(
+                    "run_nurture_scheduler: cold lead campaign paused — skipping graduation | "
+                    "job_id=%s", job_id,
+                )
+                complete_job(session, job)
+                _schedule_next_run(session, settings)
+                return
+
             processed, errors = _process_due_nurture_leads(session, settings)
             logger.info(
                 "run_nurture_scheduler: complete | processed=%d errors=%d job_id=%s",

@@ -71,6 +71,30 @@ def process_voicemail_tier(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "process_voicemail_tier: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "process_voicemail_tier: cold lead campaign paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
         mark_running(session, job)
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")
@@ -324,6 +348,27 @@ def _make_default_queue(settings):
         return None
 
 
+def _slot_aware_run_at(session, delay_minutes: int) -> datetime:
+    """
+    Compute a slot-aware run_at for a voicemail retry.
+
+    Rounds raw_run_at down to the nearest slot boundary so that concurrent
+    retries from the same burst land on the same shared bucket grid that
+    _compute_window_run_at uses for collision detection, instead of piling
+    at the same second. Uses outbound_jobs.py's _EPOCH (not a local copy) so
+    this stays on the exact same grid as every other launch_outbound_call
+    scheduling path, including lead-requested exact-time callbacks.
+    """
+    from datetime import timedelta
+
+    from app.worker.jobs.outbound_jobs import _CALL_SLOT_SECONDS, _EPOCH, _compute_window_run_at
+
+    raw = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
+    slot_idx = int((raw - _EPOCH).total_seconds() / _CALL_SLOT_SECONDS)
+    window_start = _EPOCH + timedelta(seconds=slot_idx * _CALL_SLOT_SECONDS)
+    return _compute_window_run_at(session, window_start)
+
+
 def _schedule_retry_outbound_call(
     session, contact_id: str, phone: str, call_id: str, current_tier: str | None,
     campaign_name: str, settings, *, lead_name: str = "",
@@ -389,7 +434,7 @@ def _schedule_retry_outbound_call(
 
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
-    run_at = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
+    run_at = _slot_aware_run_at(session, delay_minutes)
     default_queue = _make_default_queue(settings)
 
     schedule_job(

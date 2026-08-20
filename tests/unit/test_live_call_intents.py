@@ -104,6 +104,38 @@ def test_extract_ea_booking_success():
     assert flags["booking_failed"] is False
 
 
+def test_extract_ea_synthflow_dict_format():
+    """Synthflow sends executed_actions as a dict-of-dicts with action_type and JSON return_value."""
+    ea = {
+        "action_ghl_create_booking": {
+            "name": "action_ghl_create_booking",
+            "action_type": "ghl_booking_action_type",
+            "return_value": '{"booking_id": "XGmpXnfw5DdIlkLuXX7K", "error_message": null, "status": "success"}',
+        },
+        "rag_action": {
+            "name": "rag_action",
+            "action_type": "rag_action_type",
+            "return_value": '{"status": "success", "results": []}',
+        },
+    }
+    flags = _extract_executed_actions(ea)
+    assert flags["booking_success"] is True
+    assert flags["booking_failed"] is False
+
+
+def test_extract_ea_synthflow_dict_booking_failed():
+    ea = {
+        "action_ghl_create_booking": {
+            "name": "action_ghl_create_booking",
+            "action_type": "ghl_booking_action_type",
+            "return_value": '{"booking_id": null, "error_message": "no slots", "status": "failed"}',
+        },
+    }
+    flags = _extract_executed_actions(ea)
+    assert flags["booking_failed"] is True
+    assert flags["booking_success"] is False
+
+
 def test_extract_ea_empty():
     assert _extract_executed_actions(None) == {
         "transfer_attempted": False, "transfer_failed": False,
@@ -143,6 +175,41 @@ def test_failed_booking_via_executed_actions():
     )
     assert result is not None
     assert result["intent"] == "failed_booking"
+
+
+def test_booking_success_via_executed_actions_returns_callback_with_time():
+    """Confirmed GHL booking must produce callback_with_time regardless of transcript."""
+    result = detect_intent(
+        "You're all set! Your Admissions call is booked for Tuesday, May fifth at eleven AM central time.",
+        executed_actions={
+            "action_ghl_create_booking": {
+                "action_type": "ghl_booking_action_type",
+                "return_value": '{"booking_id": "XGmpXnfw5DdIlkLuXX7K", "status": "success"}',
+            },
+        },
+    )
+    assert result is not None
+    assert result["intent"] == "callback_with_time"
+    assert result["confidence"] == 0.95
+
+
+def test_booking_success_beats_do_not_call_in_transcript():
+    """booking_success is checked after do_not_call/wrong_number/not_interested patterns
+    but before the transcript patterns — so a noisy transcript doesn't override a confirmed booking.
+    Actually booking_success fires at executed-actions priority (step 1) before transcript patterns."""
+    result = detect_intent(
+        "don't call me",  # would normally be do_not_call
+        executed_actions={
+            "action_ghl_create_booking": {
+                "action_type": "ghl_booking_action_type",
+                "return_value": '{"booking_id": "abc123", "status": "success"}',
+            },
+        },
+    )
+    # booking_success is checked AFTER transfer_attempted but BEFORE transcript patterns
+    # The current priority: transfer_attempted → booking_success → booking_failed → transcript patterns
+    assert result is not None
+    assert result["intent"] == "callback_with_time"
 
 
 def test_low_confidence_short_transcript():

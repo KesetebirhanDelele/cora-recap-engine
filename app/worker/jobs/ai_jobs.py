@@ -103,6 +103,30 @@ def run_call_analysis(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Outbound campaign pause check ─────────────────────────────────────
+        if flags.outbound_campaigns_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign in ("new lead", "cold lead"):
+                logger.info(
+                    "run_call_analysis: outbound campaigns paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
+        # ── Cold Lead-only campaign pause check ───────────────────────────────
+        if flags.cold_lead_campaign_paused:
+            _campaign = ((job.payload_json or {}).get("campaign_name") or "").strip().lower()
+            if _campaign == "cold lead":
+                logger.info(
+                    "run_call_analysis: cold lead campaign paused — releasing | "
+                    "campaign=%r job_id=%s", _campaign, job_id,
+                )
+                release_job_to_pending(session, job, defer_seconds=60)
+                session.commit()
+                return
+
         mark_running(session, job)
         payload = job.payload_json or {}
         call_id = payload.get("call_id", "")
@@ -285,6 +309,18 @@ def run_call_analysis(job_id: str) -> None:
                     callbacks_queue, settings,
                 )
 
+            # GHL Marketplace OAuth: Conversations call-log write (spec/19, spec/20)
+            _schedule_conversation_log(
+                session, call_id, call_event_id, contact_id,
+                callbacks_queue, settings,
+            )
+
+            # GHL InternalComment: transcript + recording link write
+            _schedule_internal_comment_note(
+                session, call_id, call_event_id, contact_id,
+                callbacks_queue, settings,
+            )
+
             # Feature 3: Student summary delivery (consent gate inside the job)
             if settings.enable_student_summary_writeback:
                 _schedule_send_summary(
@@ -451,6 +487,66 @@ def _schedule_crm_task(
         },
         rq_queue=callbacks_queue,
         rq_job_func=create_crm_task if callbacks_queue is not None else None,
+    )
+
+
+def _schedule_conversation_log(
+    session, call_id, call_event_id, contact_id, callbacks_queue, settings
+) -> None:
+    """Schedule write_conversation_log on the callbacks queue (spec/19, spec/20).
+
+    Always scheduled (not gated by a settings flag the way task_create_on_completed_call
+    gates CRM tasks) — the job itself shadow-gates via GHL_WRITE_CONVERSATION_LOG and
+    skips cleanly if the OAuth app isn't installed for this location yet, so it's safe
+    to enqueue unconditionally.
+    """
+    from app.worker.jobs.conversation_log_jobs import write_conversation_log
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session,
+        job_type="write_conversation_log",
+        entity_type="call",
+        entity_id=call_id or call_event_id,
+        run_at=datetime.now(tz=timezone.utc),
+        payload={
+            "call_id": call_id,
+            "call_event_id": call_event_id,
+            "contact_id": contact_id,
+            "parent_job_id": None,
+        },
+        rq_queue=callbacks_queue,
+        rq_job_func=write_conversation_log if callbacks_queue is not None else None,
+    )
+
+
+def _schedule_internal_comment_note(
+    session, call_id, call_event_id, contact_id, callbacks_queue, settings
+) -> None:
+    """Schedule write_internal_comment_note on the callbacks queue.
+
+    Always scheduled unconditionally, same rationale as
+    _schedule_conversation_log — the job itself shadow-gates via
+    GHL_WRITE_INTERNAL_COMMENT and skips cleanly when there's no transcript
+    (e.g. voicemail/failed calls), so it's safe to enqueue for every call.
+    """
+    from app.worker.jobs.internal_comment_jobs import write_internal_comment_note
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session,
+        job_type="write_internal_comment_note",
+        entity_type="call",
+        entity_id=call_id or call_event_id,
+        run_at=datetime.now(tz=timezone.utc),
+        payload={
+            "call_id": call_id,
+            "call_event_id": call_event_id,
+            "contact_id": contact_id,
+            "parent_job_id": None,
+        },
+        rq_queue=callbacks_queue,
+        rq_job_func=write_internal_comment_note if callbacks_queue is not None else None,
     )
 
 

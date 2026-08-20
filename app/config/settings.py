@@ -122,6 +122,40 @@ class Settings(BaseSettings):
     ghl_write_campaign_state: bool = False
     ghl_write_finalization: bool = False
 
+    # ── GHL Marketplace OAuth app / Conversation Provider (spec/19, spec/20) ──
+    # Separate mechanism from ghl_api_key above — a Private Integration token
+    # cannot write to GHL Conversations. Used only for call-log writes
+    # (recording URL + transcript into a contact's Conversations activity).
+    ghl_marketplace_client_id: Optional[str] = None
+    ghl_marketplace_client_secret: Optional[str] = None
+    ghl_marketplace_shared_secret: Optional[str] = None
+    ghl_oauth_redirect_uri: Optional[str] = None
+    ghl_conversation_provider_id: Optional[str] = None
+    # Target location for the Company->Location token exchange (spec/20 §7).
+    # Falls back to ghl_location_id (the Private Integration's location) if
+    # unset — in practice this is a single-tenant deployment targeting the
+    # same GHL location either way, but kept separate in case that changes.
+    ghl_oauth_target_location_id: Optional[str] = None
+
+    # ── GHL InternalComment write path (transcript + recording link) ─────────
+    # A THIRD, separate GHL auth mechanism — distinct from both ghl_api_key
+    # (spec/16, no Conversations scope) and the OAuth Marketplace app above
+    # (spec/19/20, needed only for type="Call" via a registered Conversation
+    # Provider). This is a second Private Integration token, scoped with
+    # conversations.readonly / conversations/message.readonly /
+    # conversations/message.write, used to POST /conversations/messages with
+    # type="InternalComment" — confirmed working against both the sandbox and
+    # real production accounts on 2026-07-16 without needing a Conversation
+    # Provider at all. Delivers transcript + recording link as a staff-only
+    # note; does not attach a playable recording (link only, no attachment
+    # validation involved).
+    ghl_conversations_api_key: Optional[str] = None
+    ghl_write_internal_comment: bool = False
+
+    # Independent shadow gate — not tied to ghl_write_mode/ghl_writes_enabled,
+    # since this is a completely separate auth mechanism. Default off.
+    ghl_write_conversation_log: bool = False
+
     # ── Synthflow ─────────────────────────────────────────────────────────────
     synthflow_base_url: str = "https://api.synthflow.ai/v2/calls"
     synthflow_api_key: Optional[str] = None
@@ -131,6 +165,9 @@ class Settings(BaseSettings):
     # Per-campaign "Make Call" Catch Webhook URLs — selected based on lead campaign
     synthflow_launch_workflow_url_new: Optional[str] = None   # New Lead campaign
     synthflow_launch_workflow_url_cold: Optional[str] = None  # Cold Lead campaign
+    # Comma-separated phone numbers that must never be dialed as leads.
+    # Add Synthflow agent numbers and any other system/test phones here.
+    blocked_dial_numbers: Optional[str] = None
 
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None
@@ -153,7 +190,7 @@ class Settings(BaseSettings):
     openai_model_consent_detector: str = "gpt-4o-mini"
     openai_model_vm_content: str = "gpt-4o-mini"
     openai_timeout_seconds: int = 60
-    openai_retry_max: int = 3
+    openai_retry_max: int = 1
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"
@@ -304,6 +341,11 @@ class Settings(BaseSettings):
         """True only when write mode is 'live' and shadow_log_only is off."""
         return self.ghl_write_mode == "live" and not self.ghl_write_shadow_log_only
 
+    @property
+    def ghl_oauth_effective_target_location_id(self) -> Optional[str]:
+        """ghl_oauth_target_location_id, falling back to ghl_location_id."""
+        return self.ghl_oauth_target_location_id or self.ghl_location_id
+
     # ─────────────────────────────────────────────────────────────────────────
     # Context-aware pre-flight validators
     # Call these immediately before using an integration, not at boot.
@@ -338,6 +380,37 @@ class Settings(BaseSettings):
                 "to enable real writes. This change requires explicit approval."
             )
 
+    def validate_for_ghl_marketplace_oauth(self) -> None:
+        """Raise ConfigError if the GHL Marketplace OAuth app is not configured.
+
+        Required before exchanging an authorization code, refreshing a token,
+        or writing a call-log message to GHL Conversations. Independent of
+        validate_for_ghl_writes() — this is a separate auth mechanism.
+        """
+        missing = []
+        if not self.ghl_marketplace_client_id:
+            missing.append("GHL_MARKETPLACE_CLIENT_ID")
+        if not self.ghl_marketplace_client_secret:
+            missing.append("GHL_MARKETPLACE_CLIENT_SECRET")
+        if not self.ghl_conversation_provider_id:
+            missing.append("GHL_CONVERSATION_PROVIDER_ID")
+        if missing:
+            raise ConfigError(
+                f"GHL Marketplace OAuth integration requires: {', '.join(missing)}"
+            )
+
+    def validate_for_ghl_internal_comment(self) -> None:
+        """Raise ConfigError if the InternalComment write path is not configured.
+
+        Independent of both validate_for_ghl_writes() (ghl_api_key) and
+        validate_for_ghl_marketplace_oauth() (the Conversation Provider app) —
+        this is a third, separate Private Integration token.
+        """
+        if not self.ghl_conversations_api_key:
+            raise ConfigError(
+                "GHL InternalComment write path requires: GHL_CONVERSATIONS_API_KEY"
+            )
+
     def validate_for_openai(self) -> None:
         """Raise ConfigError if OpenAI credentials are missing or misconfigured."""
         if not self.openai_api_key:
@@ -349,8 +422,13 @@ class Settings(BaseSettings):
                 f"OPENAI_BASE_URL must start with 'https://' — got: {self.openai_base_url!r}"
             )
 
+    def validate_for_synthflow_read(self) -> None:
+        """Raise ConfigError if Synthflow API key is missing (read-only operations)."""
+        if not self.synthflow_api_key:
+            raise ConfigError("Synthflow integration requires: SYNTHFLOW_API_KEY")
+
     def validate_for_synthflow(self) -> None:
-        """Raise ConfigError if Synthflow credentials are missing."""
+        """Raise ConfigError if Synthflow credentials are missing (write/launch operations)."""
         missing = []
         if not self.synthflow_api_key:
             missing.append("SYNTHFLOW_API_KEY")

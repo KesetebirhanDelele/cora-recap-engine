@@ -56,27 +56,29 @@ The claim/lease pattern in `app/worker/claim.py` is already concurrency-safe:
 **Ceiling before external API rate limits become the real constraint:** ~5–8 workers for current GHL/Synthflow/OpenAI quotas.
 
 ### Stage 3 — PgBouncer connection pooler
+**Status: IMPLEMENTED 2026-04-29**
+
 **Signal:** Postgres `max_connections` near limit; API or worker logs show connection wait time.
 
-**Action:** Add PgBouncer in transaction mode in front of Postgres. No application code changes — only `DATABASE_URL` environment variable is updated to point to PgBouncer.
+**Implemented config** (`docker-compose.yml`):
+- Image: `bitnami/pgbouncer:latest`
+- Pool mode: `transaction` — Postgres connections recycled after each commit
+- Max client connections: 500
+- Default pool size: 20 actual Postgres connections
+- Listen port: 5432 (internal Docker network)
+- Auth type: `md5`
+- `PGBOUNCER_IGNORE_STARTUP_PARAMETERS: extra_float_digits` — prevents SQLAlchemy startup param warnings
 
-```yaml
-# docker-compose.yml addition
-pgbouncer:
-  image: pgbouncer/pgbouncer:latest
-  environment:
-    DATABASES_HOST: postgres
-    DATABASES_PORT: 5432
-    DATABASES_DBNAME: cora
-    PGBOUNCER_POOL_MODE: transaction
-    PGBOUNCER_MAX_CLIENT_CONN: 500
-    PGBOUNCER_DEFAULT_POOL_SIZE: 20
-```
+**Routing:**
+- All app services (api, dashboard-api, worker-*): `DATABASE_URL` → `pgbouncer:5432`
+- `migrate` and `adminer`: connect directly to `postgres:5432` (bypass PgBouncer — DDL safety + direct admin access)
 
-Update `DATABASE_URL` in `.env`:
-```
-DATABASE_URL=postgresql+psycopg2://postgres:<password>@pgbouncer:5432/cora
-```
+**Effective ceiling after this change:** Postgres sees max 20 connections regardless of how many app services, worker replicas, or admin tools are running simultaneously. Connection exhaustion is no longer a concern at current or projected scale.
+
+**If PgBouncer fails to start** (auth errors at startup):
+- Check `docker compose logs pgbouncer` for `auth_query failed` or `password mismatch`
+- Confirm `POSTGRES_PASSWORD` in `.env` matches what Postgres was initialized with
+- Fallback: revert app services to `postgres:5432` in DATABASE_URL, remove pgbouncer depends_on
 
 ### Stage 4 — API horizontal scale + load balancer
 **Signal:** API CPU > 70 % sustained; vertical upgrade not cost-effective; need zero-downtime deploys.
@@ -138,8 +140,8 @@ constraint before adding workers.
 | API | Known limit | Mitigation |
 |---|---|---|
 | GHL (GoHighLevel) | ~100 req/s per location | Backoff + retry in `app/adapters/ghl.py`; queue GHL writes behind a rate-limited dispatcher |
-| Synthflow | Per-account call concurrency cap | Check Synthflow account plan; cap worker concurrency for Synthflow-bound job types |
-| OpenAI | Token/minute and request/minute limits | Exponential backoff already in `app/adapters/openai_client.py`; add per-minute token budget tracking for high volume |
+| Synthflow | HTTP step concurrency limit (undocumented) — simultaneous webhook POSTs are dropped silently. Limit applies per-second, not per-slot. Confirmed: even 2–4 calls completing at the same second can trigger drops. | Never assign the same `run_at` to multiple calls. Use `_compute_window_run_at()` for all rescheduled calls — max 4 calls per 5-min slot, staggered 75 s apart within the slot (+0s, +75s, +150s, +225s). See `spec/14_synthflow_integration_addendum.md` for full details and recovery scripts. |
+| OpenAI | Token/minute and request/minute limits (Tier 1: 200K TPM for gpt-4o-mini) | Rate-limit retries use a 60s minimum floor (`max(60, 2^n)`) in `app/adapters/openai_client.py`; `OPENAI_RETRY_MAX=1` caps at one retry to stay within the 180s RQ job timeout. Upgrade to Tier 2+ to raise limits. |
 
 **Rule:** Before scaling workers beyond 3, confirm external API throughput can absorb the increased call rate.
 
@@ -204,3 +206,9 @@ Record each scaling action here so future engineers have a paper trail.
 | Date | Action | Reason | Result |
 |---|---|---|---|
 | — | Initial single-host deploy | Baseline | — |
+| 2026-04-27 | Added `_compute_window_run_at()` slot-based call spacing | 366 simultaneous calls at 9 AM CDT overwhelmed Synthflow HTTP step concurrency limit; webhooks dropped | Fixed — 10 calls/slot, 2-min slots. Manually recovered 134 finalized leads + 450 rescheduled leads. |
+| 2026-04-29 | Tightened burst cap: `_CALL_BATCH_SIZE` 10→4, `_CALL_SLOT_SECONDS` 120→300 | April 28 confirmed 10/2-min still exceeded Synthflow HTTP step capacity; 38 contacts had dropped webhooks | 4 calls per 5-min slot. Manually ran redistribution SQL to spread 725 pending jobs. |
+| 2026-04-29 | Added `_slot_aware_run_at()` to voicemail retry scheduling | VM retry callbacks used `now + delay_minutes` directly, recreating bursts at +24h/+48h | Fixed — retries now round to nearest slot boundary and compete for the same slot counter via `_compute_window_run_at()` |
+| 2026-04-29 | Added `rebalance_call_slots` self-rescheduling job (every 5 min) | Concurrent scheduling races could still produce 5–7 calls/slot; manual redistribution was the only fix | Auto-corrects overages within 5 min; no manual intervention needed |
+| 2026-04-29 | Added within-slot 75-second stagger to `_compute_window_run_at()` and rebalancer SQL | 4 calls/slot cap was correct but all 4 shared the same `run_at` second; confirmed drops at `04:00:21–04:00:23` (4 contacts, same second). Synthflow HTTP step concurrency limit applies per-second, not per-slot. | Calls in a slot now fire at +0s, +75s, +150s, +225s. Ran manual redistribution SQL on 722 pending jobs. Rebalancer SQL updated to apply same stagger automatically. |
+| 2026-04-29 | Deployed PgBouncer connection pooler | 6 app services × up to 15 connections = ~90 potential connections against max_connections=100; exhaustion observed | Postgres sees max 20 connections regardless of replica count. Effective ceiling: unlimited scale at current volume. |

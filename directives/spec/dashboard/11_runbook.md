@@ -69,9 +69,36 @@ docker compose up -d --build dashboard-api frontend
 docker compose up -d --build dashboard-api
 ```
 
+> **Important — code is baked into the image, not volume-mounted.**
+> `docker compose restart <service>` only restarts the running container — it does NOT pick up new code. You must always run `docker compose up -d --build <service>` (or `--no-cache` if Docker is serving a stale layer) after `git pull` for code changes to take effect.
+>
+> If a rebuild still serves old code (visible via stale UI text or behaviour), use `--no-cache` to force a full rebuild:
+> ```bash
+> docker compose build --no-cache frontend && docker compose up -d --no-deps frontend
+> docker compose build --no-cache dashboard-api && docker compose up -d --no-deps dashboard-api
+> ```
+
+---
+
+## DB Explorer (browser-based SQL tool)
+
+The dashboard includes a built-in SQL query interface at `/db-explorer` (Operations section on the home page). It does not require an SSH tunnel and works directly in the browser.
+
+Features:
+- Left sidebar: all Postgres tables with row estimates (click any table to auto-fill `SELECT * FROM <table> LIMIT 100`)
+- SQL editor: multi-line textarea, `Ctrl+Enter` to run
+- Results table: scrollable, sticky column headers, striped rows, `NULL` displayed clearly, cell tooltip on hover
+- **Download Excel** button: appears after any successful SELECT — downloads a `.csv` file that Excel opens natively
+- Max 500 rows per query; `truncated` warning shown if result is larger
+- DML (INSERT/UPDATE/DELETE) is supported — result shows rows affected
+
+Auth: the query endpoint (`POST /dashboard/db/query`) requires a valid Bearer token (same token used for other write actions in the dashboard).
+
 ---
 
 ## Querying Postgres directly on the server
+
+> **Tip:** The `/db-explorer` dashboard page provides an embedded SQL runner accessible directly from the browser — no SSH tunnel required for most queries. Use the CLI approach below for bulk exports, scripting, or when the dashboard is unavailable.
 
 All `docker compose` commands must be run from the project directory:
 
@@ -175,6 +202,77 @@ streamlit run execution/dashboard.py --server.headless true
 
 ---
 
+## Lead Lifecycle Monitor — known issues and fixes
+
+### Tier-3 leads showing as "Active" (fixed 2026-04-28)
+`_finalize_campaign()` writes to GHL but does not update `lead_state.status` to `'closed'`. Leads that complete the voicemail sequence remain with `status = NULL` and `ai_campaign_value = '3'`. Before the fix, the status badge and summary counts treated these as Active.
+
+**Fix applied to**:
+- `dashboard-ui/app/lead-lifecycle/page.tsx` — `statusBadge()` now checks `vm_tier === "3"` before the Active fallback
+- `app/services/lead_lifecycle.py` — summary counts and row filters include `ai_campaign_value = '3'` in the finalized definition
+- `app/services/dashboard_metrics.py` — `finalized_today` and `finalized_yesterday` include `ai_campaign_value = '3'`
+
+**If this regression reappears**: verify all three files include the `ai_campaign_value = '3'` condition and rebuild `dashboard-api` + `frontend`.
+
+### Lead Lifecycle nav card showing stale "in VM" count
+The nav card previously used `in_vm_sequence` as its primary metric. Changed to `active_leads` (2026-04-28) for a more meaningful at-a-glance count.
+
+**Location**: `dashboard-ui/lib/indicators.ts` — `CARD_METRIC_MAP["/lead-lifecycle"]`
+
+If the card label reverts to "in VM" after a deploy, check that `indicators.ts` has `key: "active_leads"` and rebuild the frontend.
+
+### Leads stuck mid-voicemail sequence (no pending job, no call_event)
+Caused by Synthflow HTTP step webhook drops — either from burst concurrency (all calls firing at exact window-open second) or transient Synthflow reliability failures. See `spec/14_synthflow_integration_addendum.md` for the full diagnosis procedure.
+
+**Automatic recovery (2026-05-01+)**: The `auto_webhook_recovery` job runs every 5 minutes and resolves failures automatically. For each webhook failure it:
+1. Searches Synthflow `GET /v2/calls` by phone number + campaign model ID within a 3-hour window of the call's execution time.
+2. Terminal call found → runs the full AI + GHL pipeline via `recover_missed_webhook()`.
+3. No call found → re-schedules the call via `advance_stale_lead("no_answer")`.
+
+Recovered leads disappear from the Webhook Delivery panel on the next page refresh (both `recover_missed_webhook` and `advance_stale_lead` write audit entries that the panel excludes).
+
+The `auto_webhook_recovery` job is visible in `scheduled_jobs` with `job_type='auto_webhook_recovery'` and `entity_id='webhook_recovery'`. If it is missing after a restart, restarting `worker-default` re-creates it.
+
+**Manual recovery (operator-initiated)**: Use the **Webhook Delivery — 24h** panel in Queue Health (`/queue`) when you want to override the auto-recovery decision or act immediately. Three inline action buttons appear per row:
+
+| Button | When to use | Effect |
+|---|---|---|
+| **VM Left** | Synthflow logs show a voicemail was left | Advances tier (or finalizes at tier 2); schedules next call |
+| **No Answer** | Synthflow logs show call did not connect | Schedules retry; or closes lead on second consecutive no-answer |
+| **Call Completed** | Synthflow logs show call completed with transcript | Expands a call_id input; fetches call from Synthflow API and replays full pipeline (AI analysis, GHL updates) |
+
+For **Call Completed**: get the Synthflow call_id from the Logs page in the Synthflow dashboard (not the internal job_id). Paste it in the inline input and press Enter or "Fetch →".
+
+**Detection query** (for incidents older than 24h or for bulk review):
+```sql
+SELECT DATE_TRUNC('minute', sj.run_at) AT TIME ZONE 'America/Chicago' AS minute_cst,
+       ls.ai_campaign_value AS vm_tier, COUNT(*) AS leads
+FROM lead_state ls
+JOIN LATERAL (
+    SELECT run_at FROM scheduled_jobs
+    WHERE entity_id = ls.contact_id AND job_type = 'launch_outbound_call' AND status = 'completed'
+    ORDER BY run_at DESC LIMIT 1
+) sj ON TRUE
+WHERE ls.ai_campaign_value IN ('0','1','2')
+  AND (ls.status IS NULL OR ls.status NOT IN ('closed','terminal'))
+  AND ls.do_not_call IS NOT TRUE
+  AND NOT EXISTS (SELECT 1 FROM scheduled_jobs WHERE entity_id = ls.contact_id
+                    AND job_type = 'launch_outbound_call' AND status IN ('pending','claimed'))
+  AND NOT EXISTS (SELECT 1 FROM call_events ce WHERE ce.contact_id = ls.contact_id
+                    AND ce.created_at >= sj.run_at)
+GROUP BY 1, 2 ORDER BY 1 DESC, 2;
+```
+
+**Bulk recovery (incidents > 24h old)**:
+- Tier-2 stuck leads (would have finalized): `execution/finalize_stuck_tier2.py --live`
+- Tier-0/1 stuck leads (need next call): `execution/reschedule_burst_tier1.py --live`
+
+Always dry-run first. Copy scripts into the container with `docker compose cp` since images are baked.
+
+**Panel exclusion logic**: The Webhook Delivery panel automatically hides resolved leads — those with `lead_state.status IN ('terminal', 'closed')` or with an active `pending`/`claimed`/`running` job. If a lead disappears from the panel after an action, that is expected behaviour.
+
+---
+
 ## Alert response procedures
 
 ### CRITICAL: queue_lag_exceeded
@@ -185,7 +283,8 @@ streamlit run execution/dashboard.py --server.headless true
 2. Check Redis connectivity: `redis-cli -u $REDIS_URL ping`. If down: restart Redis; worker will reconnect.
 3. Check `stuck_job_count`. If high: review job types. Common cause: a job is repeatedly failing and consuming retry slots.
 4. Check Exceptions section for `call_processing_failed` or `send_sms_failed` spikes that may be blocking the queue.
-5. If workers are running and Redis is healthy but lag persists: scale workers horizontally or investigate a specific job type that is slow.
+5. **Check whether outbound campaigns are paused** — if `outbound_campaigns_paused = true`, held `launch_outbound_call` jobs re-defer themselves every 60 s. Their `run_at` is always within 60 s of `now()`, so `queue_lag_seconds` should be < 60. If you see lag > 300 s alongside an outbound-campaign pause, first confirm the code version has the `defer_seconds=60` fix (`git log --oneline | grep defer`). If the fix is not deployed, held jobs keep their original `run_at` (past) and appear permanently overdue — deploy the fix to clear the alert.
+6. If workers are running and Redis is healthy but lag persists: scale workers horizontally or investigate a specific job type that is slow.
 
 **Resolution**: lag drops below threshold → resolve email sent automatically.
 
@@ -365,6 +464,26 @@ Use when a lead must be removed from all automated follow-up immediately (e.g., 
 4. No new outbound calls, SMS, or emails will be scheduled.
 5. Confirm in Queue section: all jobs for that contact_id show `cancelled`.
 
+### Pause outbound campaigns (New Lead / Cold Lead only)
+Use when you need to temporarily halt all New Lead and Cold Lead outbound activity — calls, voicemails, AI analysis, SMS, email, CRM writes, and nurture graduation — while keeping Inbound processing fully live.
+
+1. Navigate to `http://<host>:3000/system-controls`.
+2. Locate the **Outbound Campaign Pause** section.
+3. Click the orange **Pause** button. The status banner turns orange and shows "Outbound campaigns paused — New Lead & Cold Lead calls/SMS/email held. Inbound unaffected."
+4. Workers will detect the flag on the next job pickup (within one scheduler tick, ≤ 30 s). New Lead and Cold Lead jobs are released back to `pending` with `run_at = now() + 60s`; they are not lost.
+5. Inbound call processing, AI analysis, and GHL writes continue without interruption.
+
+**To resume**: Click the green **Resume** button in the same section. Held jobs have `run_at` at most 60 s in the future and drain automatically — no manual re-queue needed.
+
+**While paused**:
+- `queue_lag_seconds` remains 0 — held jobs are re-deferred every 60 s so they are never permanently overdue.
+- The status banner shows `◉ Campaign Paused` (orange) on every dashboard page.
+- The `auto_webhook_recovery` job is unaffected — it checks Synthflow for missed calls and recovers them regardless of this flag.
+
+**Note**: If `system_paused = true`, the Resume button is hidden (resuming outbound campaigns while the whole system is paused has no visible effect). Clear the system pause first.
+
+---
+
 ### Acknowledge an alert
 Use when an alert is active but the underlying issue is already known and being worked. Acknowledging moves the alert off the Active tab so it does not distract from new signals, without suppressing the audit record.
 
@@ -464,6 +583,58 @@ No database migrations are required for frontend-only changes.
 **Fix applied**: Use plain `'...'` string literals (not `E'...'`). Write `{{7,}}` in Python f-strings so the SQL receives `{7,}`.
 
 **Prevention**: See `spec/dashboard/03_constraints.md` — SQL authoring rules section.
+
+---
+
+### "Internal Server Error" on VM Left / No Answer buttons
+**Symptom**: Clicking "VM Left" or "No Answer" in the Webhook Delivery panel returns `Error: Internal Server Error`.
+
+**Root cause (1)**: `_finalize_lead` and `_close_lead` in `stale_recovery.py` called `ghl.update_contact_fields(contact_id, resolved, flags)` — passing `flags` as a positional arg. `mode_flags` is keyword-only in `GHLClient.update_contact_fields` (declared after `*`), raising `TypeError`.
+
+**Fix applied (2026-04-30)**: Changed to `ghl.update_contact_fields(contact_id, resolved, mode_flags=flags)` in both functions.
+
+**Root cause (2)**: `contact_id` in `lead_state` is a phone number (e.g. `+18014002089`). GHL's `PUT /contacts/:id` requires the real UUID. Passing the phone number directly causes GHL 400 `"Contact with id +18014002089 not found"`.
+
+**Fix applied (2026-04-30)**: Added `_resolve_ghl_contact_id(ghl, contact_id)` in `stale_recovery.py` — detects digit-only strings and calls `ghl.search_contact_by_phone()` to get the real UUID before any GHL write. Mirrors the pattern already used in `crm_jobs.py`.
+
+**Prevention**: Any code that writes to GHL using a `contact_id` from `lead_state` must resolve it via `search_contact_by_phone()` first — the DB stores phone numbers, not GHL UUIDs.
+
+---
+
+### Resolved leads reappearing in Webhook Delivery panel after operator action
+**Symptom**: After clicking VM Left, No Answer, or Call Completed, the row disappears momentarily then reappears on the next 30-second refresh.
+
+**Root cause**: The webhook failure query (`get_webhook_failures`) returned all unmatched `launch_outbound_call` jobs in the last 24 hours without checking whether the operator had already resolved them. After a manual advance, the lead is `terminal`/`closed` or has a new pending job — but the old completed job row still exists with no `call_events`, so it kept appearing.
+
+**Fix applied (2026-04-30)**: Both the `failures` list and `summary` row in `get_webhook_failures()` now exclude leads whose `lead_state.status IN ('terminal','closed')` and leads with an active `pending`/`claimed`/`running` `launch_outbound_call` job.
+
+---
+
+### "Call Completed" recovery returning `unknown_call_status` exception
+**Symptom**: Using the Call Completed button (or `POST /dashboard/actions/recover-call-webhook`) schedules the job successfully but an `unknown_call_status` exception appears in the Exceptions panel with `"status": "ok"`.
+
+**Root cause**: Synthflow's `GET /v2/calls/{call_id}` returns `{"status": "ok", "data": [{...call record...}]}` — the `data` field is an **array**, not a dict. The original envelope-unwrap code only handled the dict case, so the outer envelope leaked through. `normalize_synthflow_outcome()` found `status: "ok"` (the HTTP-level API success flag, not a call outcome) and created an `unknown_call_status` exception.
+
+**Fix applied (2026-04-30)**:
+- `app/adapters/synthflow.py` `get_call()` — envelope unwrap now handles `data` as dict, list, `response.calls[]`, and `data.calls[]` patterns.
+- `app/services/stale_recovery.py` `recover_missed_webhook()` — maps `"ok"` → `"completed"` (Synthflow API-level flag is not a call outcome), and sets `call_status` explicitly in the normalized payload so `process_call_event` finds it via the highest-priority alias and never reads `"ok"`.
+
+**Prevention**: When consuming Synthflow GET responses, always use `normalize_synthflow_outcome()` to extract call status — it tries all known field aliases in priority order. Never use raw `.get("status")` against an unwrapped Synthflow response.
+
+---
+
+### `webhook_drop_detected` alert re-fires immediately after operator resolves it
+**Symptom**: The `webhook_drop_detected` warning is resolved/acknowledged, then reappears within 60 seconds pointing to the same historical bucket.
+
+**Root cause (re-fire)**: The dedup query in `_evaluate_webhook_drop()` only checked `status = 'active'` alerts. After the operator resolved the alert, `existing` returned `None` on the next metrics cycle, and the same failing bucket triggered a new alert.
+
+**Root cause (false positive)**: Leads handled via VM Left / No Answer buttons (manual_advance audit entries) were still counted as "missing webhooks" because the query only joined against `call_events` rows. No `call_events` row is created by those recovery paths, so the delivery rate stayed below 80%.
+
+**Fix applied (2026-04-30)**:
+1. The dedup query now includes recently-resolved alerts within the 2-hour lookback window — any prior fire (active or resolved) suppresses a re-fire for the same period. The suppression clears automatically when the bucket falls outside the 2-hour lookback.
+2. The delivery rate query now counts leads with a `manual_advance` or `manual_webhook_recovery` audit entry as "got webhook", so operator-resolved leads no longer count as missing.
+
+**If the alert keeps firing after resolving**: wait ~30 minutes for the failing bucket to fall outside the 2-hour lookback window. Alternatively, verify `audit_log` has `action IN ('manual_advance', 'manual_webhook_recovery')` entries for the affected contacts.
 
 ---
 

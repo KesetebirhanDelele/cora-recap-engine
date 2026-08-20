@@ -29,6 +29,7 @@ Covers:
   25. process_call_event: voicemail_detected routes to voicemail path
   26. process_call_event: machine_detected routes to voicemail path
   27. VOICEMAIL_STATUSES: all five variants present in the public constant
+  28. _FAILED_STATUSES: user-canceled is treated as a terminal failure, not unknown
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ from app.models.call_event import CallEvent
 from app.worker.jobs.call_processing import (
     VOICEMAIL_STATUSES,
     _create_call_event,
+    _FAILED_STATUSES,
     _log_executed_actions,
     _parse_datetime,
     normalize_synthflow_outcome,
@@ -436,3 +438,12 @@ def test_voicemail_statuses_constant_has_all_five_variants():
     expected = {"voicemail", "hangup_on_voicemail", "left_voicemail",
                 "voicemail_detected", "machine_detected"}
     assert expected == VOICEMAIL_STATUSES
+
+
+def test_user_canceled_is_a_failed_status():
+    """
+    Synthflow sends 'user-canceled' (not 'cancelled') when the lead hangs up
+    before the call connects. Must be treated as a terminal failure (no AI
+    processing, no operator exception) — not fall through to unknown_call_status.
+    """
+    assert "user-canceled" in _FAILED_STATUSES

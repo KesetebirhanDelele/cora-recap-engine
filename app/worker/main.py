@@ -7,7 +7,8 @@ Canonical job state lives in Postgres; Redis/RQ is the execution rail only.
 Queue topology:
   default         — process_call_event, process_voicemail_tier
   ai              — run_call_analysis / classify_call_event
-  callbacks       — create_crm_task, send_student_summary, launch_outbound_call
+  callbacks       — create_crm_task, send_student_summary, launch_outbound_call,
+                    write_conversation_log, write_internal_comment_note
   retries         — retry_failed_job
   sheet_mirror    — sync_sheet_rows (Phase 9, out of scope)
 
@@ -67,6 +68,10 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "send_email":            "rq_default_queue",
     "collect_metrics":            "rq_default_queue",
     "update_ghl_after_vm_message": "rq_callback_queue",
+    "write_conversation_log":     "rq_callback_queue",
+    "write_internal_comment_note": "rq_callback_queue",
+    "rebalance_call_slots":       "rq_default_queue",
+    "auto_webhook_recovery":      "rq_default_queue",
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -171,12 +176,16 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.ai_jobs import classify_call_event, run_call_analysis
     from app.worker.jobs.call_processing import process_call_event
     from app.worker.jobs.channel_jobs import send_email_job, send_sms_job
+    from app.worker.jobs.conversation_log_jobs import write_conversation_log
+    from app.worker.jobs.internal_comment_jobs import write_internal_comment_note
     from app.worker.jobs.crm_jobs import create_crm_task, send_student_summary, update_ghl_after_vm_message
     from app.worker.jobs.lifecycle_jobs import update_lead_state
     from app.worker.jobs.metrics_jobs import collect_metrics_job
     from app.worker.jobs.nurture_scheduler import run_nurture_scheduler
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+    from app.worker.jobs.slot_rebalancer import rebalance_call_slots_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
+    from app.worker.jobs.webhook_recovery_jobs import auto_webhook_recovery_job
 
     return {
         "process_call_event": process_call_event,
@@ -198,6 +207,14 @@ def get_job_registry() -> dict[str, object]:
         "collect_metrics": collect_metrics_job,
         # GHL post-voicemail update
         "update_ghl_after_vm_message": update_ghl_after_vm_message,
+        # GHL Marketplace OAuth: call-log write to Conversations (spec/19, spec/20)
+        "write_conversation_log": write_conversation_log,
+        # GHL InternalComment: transcript + recording link into Conversations
+        "write_internal_comment_note": write_internal_comment_note,
+        # Automatic slot rebalancer
+        "rebalance_call_slots": rebalance_call_slots_job,
+        # Auto webhook recovery
+        "auto_webhook_recovery": auto_webhook_recovery_job,
     }
 
 
@@ -253,6 +270,22 @@ def run() -> None:
             logger.info("Metrics scheduler ensured on startup")
         except Exception as exc:
             logger.warning("Could not ensure metrics scheduler on startup: %s", exc)
+
+        # Ensure the call-slot rebalancer is scheduled on startup.
+        try:
+            from app.worker.jobs.slot_rebalancer import start_slot_rebalancer
+            start_slot_rebalancer()
+            logger.info("Slot rebalancer ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure slot rebalancer on startup: %s", exc)
+
+        # Ensure the auto webhook recovery job is scheduled on startup.
+        try:
+            from app.worker.jobs.webhook_recovery_jobs import start_webhook_recovery_scheduler
+            start_webhook_recovery_scheduler()
+            logger.info("Webhook recovery scheduler ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure webhook recovery scheduler on startup: %s", exc)
 
     try:
         import redis
