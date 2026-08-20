@@ -1,5 +1,7 @@
 # Cora Recap Engine
 
+![alt text](Recap_Engine_Dashboard_Operator_Guide.png)
+
 Python-based API + worker platform that replaces Zapier workflows for inbound recap, outbound cold-lead recap, and outbound new-lead recap.
 
 Provides durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates, Synthflow callback scheduling, OpenAI-generated summaries, and consent-gated recap writeback.
