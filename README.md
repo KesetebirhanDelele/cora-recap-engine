@@ -1,6 +1,6 @@
 # Cora Recap Engine
 
-![alt text](Recap_Engine_Dashboard_Operator_Guide.png)
+![alt text](<Cora Admission Automation.png>)
 
 Python-based API + worker platform that replaces Zapier workflows for inbound recap, outbound cold-lead recap, and outbound new-lead recap.
 
