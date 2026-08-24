@@ -15,6 +15,7 @@ COPY pyproject.toml ./
 COPY app/ ./app/
 COPY migrations/ ./migrations/
 COPY execution/ ./execution/
+COPY docs/ ./docs/
 COPY alembic.ini ./
 
 # Install the package and all runtime dependencies

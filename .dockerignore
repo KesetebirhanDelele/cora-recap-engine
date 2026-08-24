@@ -13,3 +13,4 @@ __pycache__/
 tmp/
 tests/
 *.md
+!docs/*.md
