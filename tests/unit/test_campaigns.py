@@ -48,6 +48,7 @@ def _make_lead(
     status: str | None = "nurture",
     campaign_name: str | None = None,
     ai_campaign_value: str | None = "2",
+    next_action_at: datetime | None = None,
 ) -> LeadState:
     now = datetime.now(tz=timezone.utc)
     lead = LeadState(
@@ -57,6 +58,7 @@ def _make_lead(
         status=status,
         campaign_name=campaign_name,
         ai_campaign_value=ai_campaign_value,
+        next_action_at=next_action_at,
         version=0,
         created_at=now,
         updated_at=now,
@@ -140,6 +142,21 @@ def test_enter_campaign_increments_version(session):
     enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
     session.refresh(lead)
     assert lead.version == initial_version + 1
+
+
+def test_enter_campaign_clears_stale_next_action_at(session):
+    """
+    Regression test for the 2026-08-24 dashboard visibility bug: a leftover
+    next_action_at from a prior nurture wait (or any earlier state) must be
+    cleared on campaign entry, or it silently outranks the fresh scheduled
+    call in the dashboard's Scheduled Actions LEAST(job.run_at,
+    next_action_at) computation and hides real upcoming calls from view.
+    """
+    stale = datetime(2026, 8, 19, 22, 11, 27, tzinfo=timezone.utc)
+    lead = _make_lead(session, next_action_at=stale)
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+    assert lead.next_action_at is None
 
 
 def test_enter_campaign_schedules_outbound_call(session):

@@ -128,7 +128,16 @@ def enter_campaign(
             cancelled, lead.contact_id, campaign_type,
         )
 
-    # 2 + 3. Reset voicemail tier and set campaign name
+    # 2 + 3. Reset voicemail tier, set campaign name, and clear any stale
+    # nurture-wait timestamp (see intent_actions.py / nurture_scheduler.py —
+    # next_action_at is a one-shot "come back to this lead at this time"
+    # marker; once a campaign entry has fired, whether from nurture graduating
+    # or a fresh GHL trigger, its job is done. Left uncleared, it lingers
+    # indefinitely and can outrank a genuinely-scheduled call in the
+    # dashboard's Scheduled Actions view (LEAST(scheduled_job.run_at,
+    # next_action_at) picks the older stale value), hiding real upcoming
+    # calls from view — see PROGRESS.md 2026-08-24 for the incident this
+    # was found from.
     now = datetime.now(tz=timezone.utc)
     session.execute(
         update(LeadState)
@@ -136,6 +145,7 @@ def enter_campaign(
         .values(
             ai_campaign_value=None,
             campaign_name=campaign_name,
+            next_action_at=None,
             version=lead.version + 1,
             updated_at=now,
         )
