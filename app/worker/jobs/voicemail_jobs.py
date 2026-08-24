@@ -106,7 +106,8 @@ def process_voicemail_tier(job_id: str) -> None:
             or payload.get("phone_number")
             or ""
         )
-        payload_campaign_name = payload.get("campaign_name") or "New Lead"
+        raw_payload_campaign_name = payload.get("campaign_name")
+        payload_campaign_name = raw_payload_campaign_name or "New Lead"
         payload_lead_name = payload.get("lead_name", "") or ""
 
         try:
@@ -160,10 +161,17 @@ def process_voicemail_tier(job_id: str) -> None:
                 session.flush()
 
             current_tier = lead.ai_campaign_value  # None | '0' | '1' | '2' | '3'
-            # campaign_name: prefer the value stored on the row (set by GHL sync),
-            # fall back to what was forwarded in the job payload (useful for testing
-            # and for contacts whose lead_state was auto-created this invocation).
-            campaign_name = lead.campaign_name or payload_campaign_name
+            # campaign_name: trust the campaign this call's own payload was placed
+            # under when the caller explicitly provided one — it reflects the
+            # campaign active at schedule time and can otherwise diverge from
+            # lead_state.campaign_name if the contact's row was touched by
+            # unrelated activity between scheduling and now (e.g. the same
+            # contact separately called Cora's inbound line, which sets
+            # lead_state.campaign_name = "Inbound" and has nothing to do with
+            # this outbound voicemail retry — see the 2026-08-24 "Inbound"
+            # tier-policy crash for +16822812224). Fall back to the row, then
+            # the default, only when the payload didn't carry an explicit value.
+            campaign_name = raw_payload_campaign_name or lead.campaign_name or payload_campaign_name
 
             # Already at terminal tier — nothing to do, complete cleanly.
             if current_tier == _TERMINAL_TIER:

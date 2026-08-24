@@ -429,6 +429,90 @@ def test_process_voicemail_tier_missing_lead_state_is_auto_created(session):
     assert created.version == 0
 
 
+def test_process_voicemail_tier_trusts_payload_campaign_over_stale_lead_row(session):
+    """
+    Regression test for the 2026-08-24 production crash on +16822812224:
+    an outbound voicemail-tier job must resolve its campaign from the job's
+    own payload, not from lead_state.campaign_name, when the two disagree.
+    The row can drift to "Inbound" if the same contact separately calls
+    Cora's inbound line — unrelated to this job's outbound retry. Before the
+    fix this raised ValueError("Unknown campaign type: 'Inbound'") from
+    get_tier_policy and the job failed with a critical alert.
+    """
+    from app.worker.jobs.voicemail_jobs import process_voicemail_tier
+
+    contact_id = f"c-drift-{uuid.uuid4().hex[:6]}"
+    lead = _make_lead(session, contact_id, tier=None)
+    lead.campaign_name = "Inbound"  # simulates drift from an unrelated later inbound call
+    session.flush()
+
+    job = _make_mock_job_obj({
+        "call_id": "call-drift-1",
+        "contact_id": contact_id,
+        "campaign_name": "New Lead",  # what THIS outbound call was actually placed under
+    })
+
+    with (
+        patch("app.worker.jobs.voicemail_jobs.get_sync_session") as mock_ctx,
+        patch("app.worker.jobs.voicemail_jobs.claim_job", return_value=job),
+        patch("app.worker.jobs.voicemail_jobs.mark_running"),
+        patch("app.worker.jobs.voicemail_jobs.complete_job"),
+        patch("app.worker.jobs.voicemail_jobs.fail_job") as mock_fail,
+        patch("app.worker.jobs.voicemail_jobs.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.voicemail_jobs.get_settings", return_value=_make_settings()),
+        patch("app.worker.jobs.voicemail_jobs._schedule_retry_outbound_call") as mock_retry,
+        patch("app.worker.jobs.voicemail_jobs._schedule_messaging_after_voicemail"),
+    ):
+        mock_ctx.return_value.__enter__ = lambda s, *a: session
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        process_voicemail_tier("job-drift-1")  # must not raise
+
+    mock_fail.assert_not_called()
+    mock_retry.assert_called_once()
+    assert mock_retry.call_args.args[5] == "New Lead"
+
+
+def test_process_voicemail_tier_falls_back_to_row_when_payload_omits_campaign(session):
+    """
+    When the job payload carries no campaign_name at all, lead_state's value
+    is still trusted — unchanged behavior for the GHL-sync / auto-created-row
+    case the original fallback existed for.
+    """
+    from app.worker.jobs.voicemail_jobs import process_voicemail_tier
+
+    contact_id = f"c-noexplicit-{uuid.uuid4().hex[:6]}"
+    lead = _make_lead(session, contact_id, tier=None)
+    lead.campaign_name = "Cold Lead"
+    session.flush()
+
+    job = _make_mock_job_obj({
+        "call_id": "call-noexplicit-1",
+        "contact_id": contact_id,
+        # no campaign_name key at all
+    })
+
+    with (
+        patch("app.worker.jobs.voicemail_jobs.get_sync_session") as mock_ctx,
+        patch("app.worker.jobs.voicemail_jobs.claim_job", return_value=job),
+        patch("app.worker.jobs.voicemail_jobs.mark_running"),
+        patch("app.worker.jobs.voicemail_jobs.complete_job"),
+        patch("app.worker.jobs.voicemail_jobs.fail_job") as mock_fail,
+        patch("app.worker.jobs.voicemail_jobs.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.voicemail_jobs.get_settings", return_value=_make_settings()),
+        patch("app.worker.jobs.voicemail_jobs._schedule_retry_outbound_call") as mock_retry,
+        patch("app.worker.jobs.voicemail_jobs._schedule_messaging_after_voicemail"),
+    ):
+        mock_ctx.return_value.__enter__ = lambda s, *a: session
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        process_voicemail_tier("job-noexplicit-1")
+
+    mock_fail.assert_not_called()
+    mock_retry.assert_called_once()
+    assert mock_retry.call_args.args[5] == "Cold Lead"
+
+
 def test_process_voicemail_tier_empty_contact_id_fails_job(session):
     """Empty contact_id (no lead to attach tier to) → ValueError → job fails."""
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
