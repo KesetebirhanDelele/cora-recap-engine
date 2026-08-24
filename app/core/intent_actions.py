@@ -361,12 +361,22 @@ def _handle_low_confidence_audio(session, contact_id, phone, entities, settings)
     """
     Low-confidence audio — transcript too short or noisy to classify.
 
-    CRITICAL: Transitions the lead to Cold Lead campaign.
-    1. Apply "low_confidence" lifecycle event (any non-terminal → cold)
-    2. Enter cold_lead campaign (cancels remaining jobs, resets tier, schedules call)
+    No retry. A low-confidence result generally means the call reached
+    something that will never produce a real conversation no matter how many
+    times it's retried — a business IVR, a wrong number, a disconnected line
+    — not a person who might simply answer differently next time. The prior
+    behavior (enter_campaign("cold_lead") on every occurrence) schedules an
+    immediate tier-0 call every time, which turned into an unbounded
+    ~15-minute call loop against exactly this kind of number. See
+    PROGRESS.md 2026-08-24 for the incident (+18666932332 called every
+    ~15 min since May).
+
+    Marks the lead cold and stops. handle_intent() has already cancelled any
+    other pending jobs for this contact — nothing is rescheduled here, so no
+    further call happens automatically. Re-entry into a campaign, if
+    warranted, is a human decision or a fresh external GHL trigger.
     """
     from app.core.lifecycle import transition_lead_state
-    from app.core.campaigns import enter_campaign
     from sqlalchemy import select
     from app.models.lead_state import LeadState
 
@@ -383,19 +393,14 @@ def _handle_low_confidence_audio(session, contact_id, phone, entities, settings)
 
     if lead.status in ("closed", "terminal"):
         logger.info(
-            "low_confidence_audio: lead already %s — skipping cold_lead escalation | contact_id=%s",
+            "low_confidence_audio: lead already %s — no action | contact_id=%s",
             lead.status, contact_id,
         )
         return
 
-    # 1. Transition status to "cold" via lifecycle event
     transition_lead_state(session, lead, "low_confidence")
-    session.refresh(lead)
-
-    # 2. Enter cold_lead campaign (cancels remaining jobs, resets tier, schedules first call)
-    enter_campaign(session, lead, "cold_lead", settings=settings)
     logger.info(
-        "low_confidence_audio_detected: lead moved to cold_lead | contact_id=%s",
+        "low_confidence_audio_detected: lead marked cold, no retry scheduled | contact_id=%s",
         contact_id,
     )
 

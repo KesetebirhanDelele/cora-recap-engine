@@ -651,3 +651,99 @@ merged and pushed same session, commit `85a6e32`, fast-forward, no conflicts).
 - Worth a quick scan for any *other* contacts with the same `lead_state.campaign_name = "Inbound"`
   + a pending/stuck outbound voicemail-tier job, in case this bug produced more than one silent
   failure historically.
+
+---
+
+## Session: 2026-08-24 (cont'd 2) — Cold Lead went live: 6 production bugs found and fixed same-day
+
+Branch: all commits directly to `feat/ghl-call-conversation-sync` (this repo's convention — no PR
+required for merges into it, see top-of-file branching rule). Every fix below was verified against
+real production data via SSH before and after deploy, not just local tests.
+
+### What happened, in order
+
+1. **Cold Lead calls were routing to a dead workflow** (`e1520c8`). `get_synthflow_launch_url()`
+   branched on `"cold"` in the campaign name to pick `SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold` — but
+   that workflow (`33J546NiXxUUIRCbywNVH`) has no phone number attached and cannot place real
+   calls. Only `SYNTHFLOW_LAUNCH_WORKFLOW_URL_New` (`p6ihFj7HmplXM2WiuVsaC`, phone
+   `+19729921028`) is live. Fixed to always return the shared New workflow URL; campaign identity
+   is now carried entirely through the dynamic `prompt` payload field, not URL routing. Confirmed
+   via a real test call to Kes's own phone using the actual Cold Lead prompt.
+2. **Prompt gap found from that real test call** (`81d035e`): the agent asked an open-ended "what's
+   on your mind?" after the greeting instead of proceeding into the pitch, making outbound calls
+   feel like the lead had called in. Added an explicit transition instruction after the Section 1
+   greeting in both `docs/synthflow-cold-lead-prompt.md` and `docs/synthflow-warm-lead-prompt.md`.
+3. **Critical: `docs/` was never baked into the Docker image** (`5823b6c`). Discovered while
+   verifying the prompt fix — `_load_campaign_prompt()` raised `FileNotFoundError` inside the
+   running container. `Dockerfile` never had `COPY docs/`, and `.dockerignore`'s blanket `*.md`
+   rule excluded it even if it had. Confirmed severity by querying `scheduled_jobs`: **zero**
+   `launch_outbound_call` completions since 3 days before this deploy — every real production
+   call had been silently failing the entire time Cold Lead was supposedly live. Fixed both files;
+   verified by loading both prompts from inside the rebuilt container.
+4. **Dashboard hiding real scheduled calls** (`16e5ebb`). Kes reported Cold Lead's scheduled calls
+   missing from the "Scheduled Actions" view. Traced to `LEAST(scheduled_job.run_at,
+   lead_state.next_action_at)` in the dashboard query picking a stale, days-old `next_action_at`
+   left over from a prior nurture-wait state over the genuinely fresh scheduled call. Fixed at the
+   source: `enter_campaign()` now clears `next_action_at` on every campaign entry. Confirmed 5/7
+   real Cold Lead contacts were hidden before the fix.
+5. **All outbound calls misattributed to "New Lead" regardless of actual campaign**. Root cause:
+   Synthflow's completion webhook self-reports a static `campaign_name` baked into the now-shared
+   workflow's config — it does not echo what Cora actually sent at launch, and can't, now that
+   both campaigns share one workflow (see fix #1). Fixed (`7bf2055`) by resolving
+   `call_events.campaign_name`/`voice_agent` from Cora's own most recent *completed*
+   `launch_outbound_call` job for the contact instead of trusting Synthflow's self-report; inbound
+   calls untouched; falls back to the payload's own value when no launch job is found. Backfilled
+   that day's misattributed rows directly in production, excluding one contact
+   (`+15714782790`) whose most recent launch job had a blank campaign value rather than guessing.
+6. **Cora's outbound dialer was repeatedly calling its own Inbound line**. `+16822812224`
+   (confirmed via Synthflow's Agents dashboard: "Cora - Inbound Admissions Agent") had been dialed
+   as an outbound "lead" 48 times since April — because 33 separate `lead_state` rows created from
+   real inbound callers have `normalized_phone` incorrectly set to Cora's own inbound number
+   instead of the caller's own number (a GHL-side data mapping bug, not yet root-caused or fixed —
+   flagged as separate follow-up work). Stopgapped by setting `BLOCKED_DIAL_NUMBERS=+16822812224`
+   on Hetzner's `.env` (the guard already existed in `outbound_jobs.py`, just unconfigured in
+   prod) — confirmed loaded, no pending job was at risk at deploy time. Env-only change, no code
+   commit; containers force-recreated to pick it up.
+7. **Uncapped low-confidence-audio retry loop, found from a different angle of the same
+   self-call investigation**: reviewing today's Call Logs turned up `+18666932332` ("Mazda
+   Financial Services", an automated IVR) being called every ~15 minutes non-stop since May.
+   Traced the mechanism: every call to an IVR produces a too-short/noisy transcript →
+   `low_confidence_audio` intent → `_handle_low_confidence_audio()` called `enter_campaign(...,
+   "cold_lead", ...)` **unconditionally, on every occurrence** — and `enter_campaign()` always
+   resets the voicemail tier to 0 and schedules an immediate call. No cap, no backoff, no terminal
+   state — unlike the structurally identical `_handle_partial_engagement()`, which retries twice
+   with a 2h gap then escalates once. Fixed by removing the auto-retry/auto-escalate entirely:
+   `_handle_low_confidence_audio` now only transitions the lead to `status="cold"` and schedules
+   nothing further — a number that produces low-confidence audio once will keep doing so forever
+   (IVR/wrong number/disconnected line), so any retry cadence just delays the same infinite loop.
+   Confirmed via grep that `handle_intent()`'s dispatch table has no campaign gating, so this
+   applied identically to New Lead, Cold Lead, and Inbound-originated contacts alike. 2 tests
+   updated in `test_live_call_intents.py`. Full suite: 1040 passed, 5 failed — same 5
+   pre-existing flaky failures as before (`MagicMock` vs `int` in `app/worker/claim.py:270`,
+   unrelated), confirmed zero regressions from this change.
+
+### Explicitly NOT done yet
+
+- **GHL-side root cause of the `+16822812224` phone mismapping (item 6) is unresolved.** The
+  `BLOCKED_DIAL_NUMBERS` fix is a stopgap on Cora's side only; the 33 `lead_state` rows still have
+  the wrong `normalized_phone` value, and whatever GHL workflow is writing Cora's own inbound
+  number into new inbound-caller contacts' phone field is still doing so. Needs a GHL-side
+  investigation, not a Cora-side one.
+- **`+15714782790` was excluded from the campaign-attribution backfill** (item 5) — its most
+  recent launch job had a blank `campaign_name`. Never manually resolved; still shows whatever
+  attribution it had before the fix.
+- **Same auto-retry design gap identified in `partial_engagement`, `interested_not_now`,
+  `uncertain`, `failed_booking`, and unconfirmed `human_transfer_request` intents — but for
+  Inbound-originated calls specifically, not fixed yet.** All five schedule a future outbound
+  call (either directly, or via the `nurture` → `nurture_scheduler` → Cold Lead pipeline) with no
+  campaign-awareness, meaning someone who merely calls Cora's Inbound line and has an ambiguous
+  conversation — never asking for a callback, never booking — can still end up auto-enrolled into
+  an outbound calling campaign days later. Flagged to Kes; scope of the fix (skip auto-retry
+  specifically for `campaign_name == "Inbound"`, or something narrower) not yet agreed.
+
+### Next steps
+
+1. Investigate the GHL workflow responsible for writing `normalized_phone` on new inbound-caller
+   contacts — find why it's writing Cora's own inbound number instead of the caller's.
+2. Decide and implement the Inbound-campaign auto-retry scope boundary (item above).
+3. Manually resolve `+15714782790`'s campaign attribution if/when the real value is known.

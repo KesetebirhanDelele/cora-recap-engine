@@ -291,10 +291,17 @@ def test_human_transfer_schedules_followup(session):
 
 
 # ---------------------------------------------------------------------------
-# Handler — low_confidence_audio moves lead to cold_lead campaign
+# Handler — low_confidence_audio marks the lead cold with no retry
 # ---------------------------------------------------------------------------
 
-def test_low_confidence_moves_to_cold_lead(session):
+def test_low_confidence_marks_cold_with_no_retry(session):
+    """
+    low_confidence_audio must not schedule any further call — a number that
+    produces low-confidence audio (IVR, wrong number, disconnected line) will
+    keep doing so forever, so retrying (even on a cap) just delays an
+    inevitable infinite loop. The lead is marked cold and nothing else
+    happens automatically.
+    """
     contact_id = "live-lowconf-001"
     lead = _make_lead(session, contact_id, campaign_name="New Lead")
     settings = _settings()
@@ -314,12 +321,41 @@ def test_low_confidence_moves_to_cold_lead(session):
     )
     session.flush()
 
+    # No outbound call scheduled — no retry, no campaign re-entry
+    jobs = _pending_jobs(session, contact_id)
+    assert jobs == []
+
     session.expire(lead)
     updated = session.get(LeadState, lead.id)
-    # Status should be "cold"
+    # Status moves to "cold" ...
     assert updated.status == "cold"
-    # Campaign should be Cold Lead
-    assert updated.campaign_name == "Cold Lead"
+    # ... but campaign_name is untouched (enter_campaign is never called)
+    assert updated.campaign_name == "New Lead"
+
+
+def test_low_confidence_repeated_occurrences_never_reschedule(session):
+    """Even repeated low_confidence_audio results in a row must not start scheduling calls."""
+    contact_id = "live-lowconf-repeat"
+    lead = _make_lead(session, contact_id, campaign_name="Cold Lead")
+    settings = _settings()
+
+    intent_result = {
+        "intent": "low_confidence_audio",
+        "confidence": 0.8,
+        "entities": {},
+    }
+    for _ in range(3):
+        handle_intent(
+            session=session,
+            intent_result=intent_result,
+            contact_id=contact_id,
+            phone=lead.normalized_phone,
+            current_job_id="fake-job-id",
+            settings=settings,
+        )
+        session.flush()
+
+    assert _pending_jobs(session, contact_id) == []
 
 
 # ---------------------------------------------------------------------------
