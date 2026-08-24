@@ -241,6 +241,100 @@ def test_create_call_event_synthflow_fields_null_when_absent(session):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# _resolve_outbound_campaign — trust Cora's launch record over Synthflow's
+# self-reported Agent/campaign_name, which is unreliable now that New Lead
+# and Cold Lead share one physical workflow (2026-08-24 fix)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_launch_job(session: Session, contact_id: str, campaign_name: str,
+                      status: str = "completed") -> ScheduledJob:
+    job = ScheduledJob(
+        id=str(uuid.uuid4()),
+        job_type="launch_outbound_call",
+        entity_type="lead",
+        entity_id=contact_id,
+        status=status,
+        run_at=datetime.now(tz=timezone.utc),
+        payload_json={"contact_id": contact_id, "campaign_name": campaign_name},
+        created_at=datetime.now(tz=timezone.utc),
+        updated_at=datetime.now(tz=timezone.utc),
+        version=0,
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+def test_create_call_event_outbound_uses_launch_job_campaign_not_synthflow(session):
+    """
+    Regression test for the 2026-08-24 Cold Lead misattribution bug: a real
+    Cold Lead outbound call whose Synthflow completion webhook self-reports
+    Agent="...NewLead..." / campaign_name="New Lead" must still be recorded
+    as Cold Lead, because that's what Cora's own launch record says was
+    actually used to place the call.
+    """
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_launch_job(session, contact_id, "Cold Lead")
+
+    call_id = str(uuid.uuid4())
+    payload = {
+        "call_id": call_id,
+        "call_status": "completed",
+        "direction": "outbound",
+        "contact_id": contact_id,
+        "Agent": "Cora Outbound NewLead Completed Call",
+        "campaign_name": "New Lead",  # Synthflow's self-reported (wrong) value
+    }
+    ce = _create_call_event(session, call_id, payload, "completed")
+
+    assert ce.campaign_name == "Cold Lead"
+    assert ce.voice_agent == "ColdLead"
+
+
+def test_create_call_event_outbound_falls_back_when_no_launch_job(session):
+    """No matching launch record (e.g. calls placed via the standalone test
+    script, bypassing the job queue) — falls back to the payload's own
+    self-reported value rather than storing nothing."""
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    call_id = str(uuid.uuid4())
+    payload = {
+        "call_id": call_id,
+        "call_status": "completed",
+        "direction": "outbound",
+        "contact_id": contact_id,
+        "Agent": "Cora Outbound NewLead Completed Call",
+        "campaign_name": "New Lead",
+    }
+    ce = _create_call_event(session, call_id, payload, "completed")
+
+    assert ce.campaign_name == "New Lead"
+    assert ce.voice_agent == "NewLead"
+
+
+def test_create_call_event_inbound_unaffected_by_launch_job_resolution(session):
+    """Inbound calls have their own dedicated model/workflow and must keep
+    using the payload's self-reported campaign_name — resolution only
+    applies to outbound calls, even if a launch job happens to exist for
+    the same contact_id."""
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_launch_job(session, contact_id, "Cold Lead")
+
+    call_id = str(uuid.uuid4())
+    payload = {
+        "call_id": call_id,
+        "call_status": "completed",
+        "direction": "inbound",
+        "contact_id": contact_id,
+        "Agent": "Cora Inbound - Completed Call",
+        "campaign_name": "Inbound",
+    }
+    ce = _create_call_event(session, call_id, payload, "completed")
+
+    assert ce.campaign_name == "Inbound"
+    assert ce.voice_agent == "Inbound"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 17–20: process_call_event integration (mocked DB session)
 # ─────────────────────────────────────────────────────────────────────────────
 

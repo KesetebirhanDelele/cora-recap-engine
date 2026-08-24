@@ -196,6 +196,57 @@ def _log_executed_actions(call_id: str, payload: dict[str, Any]) -> None:
             )
 
 
+_CAMPAIGN_VOICE_AGENT = {
+    "cold lead": "ColdLead",
+    "new lead": "NewLead",
+}
+
+
+def _resolve_outbound_campaign(session, contact_id: str | None) -> str | None:
+    """
+    Resolve the true campaign for an outbound call from Cora's own launch
+    record, not from Synthflow's self-reported Agent/campaign_name fields.
+
+    Since New Lead and Cold Lead now share a single physical Synthflow
+    workflow (spec/21 — SYNTHFLOW_LAUNCH_WORKFLOW_URL_New is the only
+    workflow with a working phone number), Synthflow's completion webhook
+    always reports Agent="...NewLead..." and campaign_name="New Lead"
+    regardless of which campaign actually placed the call — confirmed
+    2026-08-24 against real Cold Lead completions. Synthflow does not echo
+    back the metadata Cora sends at launch time, so there is no call_id-based
+    correlation available; the most recent *completed* launch_outbound_call
+    job for this contact is the job that placed this call (first-touch and
+    voicemail-tier retries both use this same job_type with campaign_name in
+    their own payload — see enter_campaign() and
+    voicemail_jobs._schedule_retry_outbound_call).
+
+    Returns None if no matching job is found (e.g. calls placed via the
+    standalone test script, which bypasses the job queue) — callers should
+    fall back to the payload's own value in that case.
+    """
+    if not contact_id:
+        return None
+
+    from sqlalchemy import select
+
+    from app.models.scheduled_job import ScheduledJob
+
+    job = session.scalars(
+        select(ScheduledJob)
+        .where(
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.entity_id == contact_id,
+            ScheduledJob.status == "completed",
+        )
+        .order_by(ScheduledJob.updated_at.desc())
+        .limit(1)
+    ).first()
+
+    if job is None:
+        return None
+    return (job.payload_json or {}).get("campaign_name")
+
+
 def _create_call_event(session, call_id: str, payload: dict[str, Any], status: str):
     """
     Persist a CallEvent row from a Synthflow completed-call payload.
@@ -227,11 +278,29 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
     duration_raw = payload.get("duration") or payload.get("duration_seconds")
     duration_seconds = int(duration_raw) if duration_raw is not None else None
 
+    # campaign_name / voice_agent: Synthflow's self-reported Agent and
+    # campaign_name fields are only trustworthy for inbound calls, which have
+    # their own dedicated model/workflow. For outbound calls, New Lead and
+    # Cold Lead now share one physical workflow (spec/21), so Synthflow
+    # always reports "New Lead"/"NewLead" regardless of which campaign
+    # actually placed the call — resolve from Cora's own launch record
+    # instead. See _resolve_outbound_campaign for the full rationale.
+    direction = payload.get("direction", "outbound")
+    campaign_name = payload.get("campaign_name")
+    voice_agent = _infer_voice_agent(payload)
+    if direction == "outbound":
+        launched_campaign = _resolve_outbound_campaign(session, payload.get("contact_id"))
+        if launched_campaign:
+            campaign_name = launched_campaign
+            voice_agent = _CAMPAIGN_VOICE_AGENT.get(
+                launched_campaign.strip().lower(), voice_agent
+            )
+
     event = CallEvent(
         id=str(uuid.uuid4()),
         call_id=call_id,
         contact_id=payload.get("contact_id"),
-        direction=payload.get("direction", "outbound"),
+        direction=direction,
         status=status,
         end_call_reason=payload.get("end_call_reason"),
         transcript=payload.get("transcript"),
@@ -246,8 +315,8 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
         telephony_duration=payload.get("telephony_duration"),
         telephony_start=_parse_datetime(payload.get("telephony_start")),
         telephony_end=_parse_datetime(payload.get("telephony_end")),
-        voice_agent=_infer_voice_agent(payload),
-        campaign_name=payload.get("campaign_name"),
+        voice_agent=voice_agent,
+        campaign_name=campaign_name,
         dedupe_key=dedupe_key,
         raw_payload_json=payload,
         created_at=datetime.now(tz=timezone.utc),
