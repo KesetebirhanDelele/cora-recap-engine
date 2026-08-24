@@ -26,6 +26,16 @@ Lead name
   LeadState does not store the contact's display name — it is only present in
   call event payloads.  Campaign-entry calls will use an empty lead_name,
   which causes Synthflow to default to "Customer".
+
+Call spacing
+------------
+  The first-touch job's run_at is slot-aware (see spec/21) — it is placed on
+  the same shared 75-second bucket grid voicemail-tier retries already use
+  (voicemail_jobs.py::_slot_aware_run_at), not scheduled at a bare `now`.
+  This closes a gap where multiple leads entering a campaign close together
+  (e.g. nurture_scheduler.py's up-to-50-lead batch) could previously produce
+  several launch_outbound_call jobs with near-identical run_at and no
+  collision protection between them.
 """
 from __future__ import annotations
 
@@ -78,6 +88,7 @@ def enter_campaign(
     from sqlalchemy import update
 
     from app.models.lead_state import LeadState
+    from app.worker.jobs.voicemail_jobs import _slot_aware_run_at
     from app.worker.scheduler import schedule_job
 
     campaign_name = _CAMPAIGN_NAMES.get(campaign_type)
@@ -155,7 +166,7 @@ def enter_campaign(
         job_type="launch_outbound_call",
         entity_type="lead",
         entity_id=lead.contact_id,
-        run_at=now,
+        run_at=_slot_aware_run_at(session, 0, campaign_name),
         payload={
             "contact_id": lead.contact_id,
             "phone_number": phone,

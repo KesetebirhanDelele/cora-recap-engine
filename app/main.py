@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import admin as admin_routes
+from app.api.routes import call_intake
 from app.api.routes import exceptions as exception_routes
 from app.api.routes import ghl_oauth
 from app.api.routes import webhooks
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
 
     # ── Route registration ────────────────────────────────────────────────────
     app.include_router(webhooks.router, prefix="/v1/webhooks", tags=["webhooks"])
+    app.include_router(call_intake.router, prefix="/v1/webhooks", tags=["webhooks"])
     app.include_router(exception_routes.router, prefix="/v1/exceptions", tags=["exceptions"])
     app.include_router(admin_routes.router, prefix="/v1/admin", tags=["admin"])
     # No /v1 prefix — must match the Redirect URI configured in the GHL

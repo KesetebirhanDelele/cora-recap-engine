@@ -65,7 +65,67 @@ def _bucket_start(index: int) -> datetime:
     return _EPOCH + timedelta(seconds=index * _CALL_WITHIN_SLOT_SPACING)
 
 
-def _compute_window_run_at(session, window_start: datetime) -> datetime:
+# Priority campaign for the bump logic below (spec/21). New Lead is rare
+# (<2% of volume) but time-sensitive; Cold Lead is the overwhelming majority
+# and not time-sensitive, so New Lead may displace a pending Cold Lead job
+# from a contested slot. Comparison is case-insensitive, matching every
+# other campaign_name check in this codebase (e.g. the pause-flag checks
+# just below in launch_outbound_call_job).
+_PRIORITY_CAMPAIGN = "new lead"
+
+
+def _bump_lower_priority_job(session, job, *, start_bucket: int, end_bucket: int, occupied: dict) -> None:
+    """
+    Move a displaced pending job to the next free bucket.
+
+    Single bump only (spec/21 — Kes's explicit decision, given Cold Lead's
+    volume share makes cascading/starvation risk from this negligible in
+    practice): this never recurses to bump whatever bucket it lands on —
+    it always searches forward for a bucket that is *actually free*, the
+    same search every other job in this module uses, so a bump can never
+    create a new collision as a side effect of resolving one.
+
+    Uses a version-checked UPDATE (claim.py's optimistic-concurrency
+    pattern) rather than a raw update, so this is safe if a worker claims
+    `job` between this function reading it and writing the new run_at — in
+    that race, rowcount is 0 and the bump is simply skipped (the job is no
+    longer pending, so it no longer needs to move).
+    """
+    from sqlalchemy import update
+
+    from app.models.scheduled_job import ScheduledJob
+
+    for bucket in range(start_bucket, end_bucket):
+        if bucket in occupied:
+            continue
+        new_run_at = _bucket_start(bucket)
+        result = session.execute(
+            update(ScheduledJob)
+            .where(ScheduledJob.id == job.id, ScheduledJob.version == job.version)
+            .values(run_at=new_run_at, version=job.version + 1, updated_at=datetime.now(tz=timezone.utc))
+        )
+        if result.rowcount == 0:
+            logger.info(
+                "_bump_lower_priority_job: version conflict on job %s — already claimed "
+                "elsewhere, no longer needs bumping",
+                job.id,
+            )
+            return
+        logger.info(
+            "_bump_lower_priority_job: displaced job %s (campaign=%r) to %s to make room "
+            "for a priority (%s) job",
+            job.id, (job.payload_json or {}).get("campaign_name"),
+            new_run_at.isoformat(), _PRIORITY_CAMPAIGN,
+        )
+        return
+
+    logger.warning(
+        "_bump_lower_priority_job: no free bucket in search range for job %s — leaving it in place",
+        job.id,
+    )
+
+
+def _compute_window_run_at(session, window_start: datetime, *, campaign_name: str | None = None) -> datetime:
     """
     Find the next free 75-second bucket at or after window_start.
 
@@ -84,6 +144,15 @@ def _compute_window_run_at(session, window_start: datetime) -> datetime:
     same grid, which broke silently the moment an arbitrary-timestamp
     callback entered the same pool).
 
+    campaign_name (spec/21): when this normalizes to "new lead", the search
+    is priority-aware — if the earliest candidate bucket is held by a
+    *pending* job from a lower-priority campaign, that job is bumped (see
+    _bump_lower_priority_job) and this bucket is returned immediately.
+    Claimed/running jobs and jobs already at New Lead priority are never
+    bumped — the search just continues forward past them, identical to the
+    non-priority path. Omitting campaign_name (the default, None) preserves
+    the exact prior behavior with no priority awareness at all.
+
     Searches up to 4 hours ahead (_MAX_BUCKET_SEARCH buckets). If that
     entire range is already fully occupied — implausible under any
     realistic load, it would require ~192 simultaneous pending calls — falls
@@ -94,24 +163,39 @@ def _compute_window_run_at(session, window_start: datetime) -> datetime:
 
     from app.models.scheduled_job import ScheduledJob
 
+    is_priority = (campaign_name or "").strip().lower() == _PRIORITY_CAMPAIGN
+
     # Ceiling: never return a time before window_start.
     start_bucket = -(-(window_start - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)
     start_bucket = int(start_bucket)
     end_bucket = start_bucket + _MAX_BUCKET_SEARCH
 
-    existing_run_ats = session.scalars(
-        select(ScheduledJob.run_at).where(
+    existing_jobs = session.scalars(
+        select(ScheduledJob).where(
             ScheduledJob.job_type == "launch_outbound_call",
             ScheduledJob.status.in_(["pending", "claimed"]),
             ScheduledJob.run_at >= _bucket_start(start_bucket),
             ScheduledJob.run_at < _bucket_start(end_bucket),
         )
     ).all()
-    occupied = {_bucket_index(r) for r in existing_run_ats}
+    occupied = {_bucket_index(j.run_at): j for j in existing_jobs}
 
     for bucket in range(start_bucket, end_bucket):
-        if bucket not in occupied:
+        occupant = occupied.get(bucket)
+        if occupant is None:
             return _bucket_start(bucket)
+
+        if is_priority and occupant.status == "pending":
+            occupant_campaign = (occupant.payload_json or {}).get("campaign_name", "")
+            if occupant_campaign.strip().lower() != _PRIORITY_CAMPAIGN:
+                _bump_lower_priority_job(
+                    session, occupant,
+                    start_bucket=bucket + 1, end_bucket=end_bucket, occupied=occupied,
+                )
+                return _bucket_start(bucket)
+        # Occupied by a claimed/running job, by another New Lead job, or by
+        # a pending lower-priority job when this job isn't priority itself
+        # — search forward, same as the non-priority path.
 
     logger.warning(
         "_compute_window_run_at: no free bucket in %d-bucket search window starting %s "
@@ -228,7 +312,7 @@ def launch_outbound_call_job(job_id: str) -> None:
             contact_tz = get_contact_timezone(session, contact_id, settings)
             if not is_campaign_active(campaign_name, now, settings, contact_tz, session):
                 next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
-                run_at = _compute_window_run_at(session, next_open)
+                run_at = _compute_window_run_at(session, next_open, campaign_name=campaign_name)
                 logger.info(
                     "launch_outbound_call_job: outside active window — deferring | "
                     "campaign=%s contact_tz=%s job_id=%s rescheduled_for=%s slot_offset_s=%d",

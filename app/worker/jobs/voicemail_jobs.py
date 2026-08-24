@@ -348,9 +348,10 @@ def _make_default_queue(settings):
         return None
 
 
-def _slot_aware_run_at(session, delay_minutes: int) -> datetime:
+def _slot_aware_run_at(session, delay_minutes: int, campaign_name: str | None = None) -> datetime:
     """
-    Compute a slot-aware run_at for a voicemail retry.
+    Compute a slot-aware run_at for a voicemail retry (or, since spec/21,
+    any launch_outbound_call scheduling — see campaigns.py::enter_campaign).
 
     Rounds raw_run_at down to the nearest slot boundary so that concurrent
     retries from the same burst land on the same shared bucket grid that
@@ -358,6 +359,11 @@ def _slot_aware_run_at(session, delay_minutes: int) -> datetime:
     at the same second. Uses outbound_jobs.py's _EPOCH (not a local copy) so
     this stays on the exact same grid as every other launch_outbound_call
     scheduling path, including lead-requested exact-time callbacks.
+
+    campaign_name: forwarded to _compute_window_run_at for priority/bump
+    awareness (spec/21) — a New Lead job scheduled through this helper can
+    displace a pending Cold Lead job occupying its slot. Omitting it (the
+    default) preserves plain non-priority scheduling.
     """
     from datetime import timedelta
 
@@ -366,7 +372,7 @@ def _slot_aware_run_at(session, delay_minutes: int) -> datetime:
     raw = datetime.now(tz=timezone.utc) + timedelta(minutes=delay_minutes)
     slot_idx = int((raw - _EPOCH).total_seconds() / _CALL_SLOT_SECONDS)
     window_start = _EPOCH + timedelta(seconds=slot_idx * _CALL_SLOT_SECONDS)
-    return _compute_window_run_at(session, window_start)
+    return _compute_window_run_at(session, window_start, campaign_name=campaign_name)
 
 
 def _schedule_retry_outbound_call(
@@ -434,7 +440,7 @@ def _schedule_retry_outbound_call(
 
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
-    run_at = _slot_aware_run_at(session, delay_minutes)
+    run_at = _slot_aware_run_at(session, delay_minutes, campaign_name)
     default_queue = _make_default_queue(settings)
 
     schedule_job(

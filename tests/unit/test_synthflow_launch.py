@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from app.adapters.synthflow import SynthflowClient, SynthflowError
+from app.adapters.synthflow import SynthflowClient, SynthflowError, _load_campaign_prompt
 from app.config.settings import ConfigError, Settings
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,3 +203,72 @@ def test_launch_returns_empty_dict_on_empty_response():
         _retry_delay=0.0,
     )
     assert result == {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11–15: per-campaign dynamic prompt injection (spec/21)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_launch_payload_includes_prompt_for_new_lead():
+    http = MagicMock(spec=httpx.Client)
+    http.post.return_value = _mock_response(200)
+    client = _client(mock_http=http)
+
+    client.launch_new_lead_call(
+        phone="+15551234567",
+        lead_name="Jane",
+        campaign_name="New Lead",
+        _retry_delay=0.0,
+    )
+
+    payload = http.post.call_args[1]["json"]
+    assert payload["prompt"].startswith("# Synthflow")
+    assert "Warm" in payload["prompt"]
+
+
+def test_launch_payload_includes_prompt_for_cold_lead():
+    http = MagicMock(spec=httpx.Client)
+    http.post.return_value = _mock_response(200)
+    client = _client(mock_http=http)
+
+    client.launch_new_lead_call(
+        phone="+15551234567",
+        lead_name="Jane",
+        campaign_name="Cold Lead",
+        _retry_delay=0.0,
+    )
+
+    payload = http.post.call_args[1]["json"]
+    assert payload["prompt"].startswith("# Synthflow")
+    assert "Cold" in payload["prompt"]
+
+
+def test_launch_payload_prompt_differs_between_campaigns():
+    http = MagicMock(spec=httpx.Client)
+    http.post.return_value = _mock_response(200)
+    client = _client(mock_http=http)
+
+    client.launch_new_lead_call(
+        phone="+15551234567", lead_name="Jane", campaign_name="New Lead", _retry_delay=0.0,
+    )
+    new_lead_prompt = http.post.call_args[1]["json"]["prompt"]
+
+    client.launch_new_lead_call(
+        phone="+15551234567", lead_name="Jane", campaign_name="Cold Lead", _retry_delay=0.0,
+    )
+    cold_lead_prompt = http.post.call_args[1]["json"]["prompt"]
+
+    assert new_lead_prompt != cold_lead_prompt
+
+
+def test_load_campaign_prompt_strips_leading_description_and_note():
+    prompt = _load_campaign_prompt("New Lead")
+    assert not prompt.startswith("Warm lead")  # the one-line doc description
+    assert "Engineering note" not in prompt  # the internal blockquote
+    assert prompt.startswith("# Synthflow")
+
+
+def test_load_campaign_prompt_unknown_campaign_falls_back_to_new_lead():
+    fallback = _load_campaign_prompt("Some Unknown Campaign")
+    new_lead = _load_campaign_prompt("New Lead")
+    assert fallback == new_lead

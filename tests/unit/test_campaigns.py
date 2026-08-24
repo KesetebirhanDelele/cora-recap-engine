@@ -322,3 +322,44 @@ def test_enter_campaign_new_lead_unaffected_by_cold_lead_campaign_pause(session)
     enter_campaign(session, lead, "new_lead", settings=_mock_settings_cold_lead_paused())
     session.refresh(lead)
     assert lead.campaign_name == "New Lead"
+
+
+# ---------------------------------------------------------------------------
+# Slot-aware run_at (spec/21) — regression guard for the "run_at=now, no
+# grid" gap that let same-moment campaign entries collide with no spacing.
+# ---------------------------------------------------------------------------
+
+def test_enter_campaign_run_at_lands_on_shared_bucket_grid(session):
+    from app.worker.jobs.outbound_jobs import _bucket_index, _bucket_start
+
+    lead = _make_lead(session)
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+
+    job = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == lead.contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+        )
+    ).one()
+
+    run_at = job.run_at
+    if run_at.tzinfo is None:
+        run_at = run_at.replace(tzinfo=timezone.utc)
+    assert run_at == _bucket_start(_bucket_index(run_at))
+
+
+def test_enter_campaign_two_leads_same_moment_land_in_different_buckets(session):
+    lead_a = _make_lead(session)
+    lead_b = _make_lead(session)
+
+    enter_campaign(session, lead_a, "cold_lead", settings=_mock_settings())
+    enter_campaign(session, lead_b, "cold_lead", settings=_mock_settings())
+
+    job_a = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead_a.contact_id)
+    ).one()
+    job_b = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead_b.contact_id)
+    ).one()
+
+    assert job_a.run_at != job_b.run_at

@@ -37,6 +37,8 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -55,6 +57,56 @@ class SynthflowError(RuntimeError):
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+# ── Per-campaign dynamic prompt loading ─────────────────────────────────────
+#
+# Both New Lead and Cold Lead calls are placed through the same shared
+# Synthflow assistant/number (see module docstring above). The assistant's
+# saved prompt is a single `{prompt}` placeholder — spec/21 confirmed
+# (2026-08-23) that Synthflow only honors this via a per-call Custom
+# Variable named `prompt`, sent here as the top-level `prompt` payload key.
+# The assistant's Greeting Message must also be left blank on Synthflow's
+# side for the injected prompt to govern the call from the first turn —
+# that's a one-time dashboard config, not something this code controls.
+
+_DOCS_DIR = Path(__file__).resolve().parents[2] / "docs"
+
+_CAMPAIGN_PROMPT_FILES = {
+    "new lead": _DOCS_DIR / "synthflow-warm-lead-prompt.md",
+    "cold lead": _DOCS_DIR / "synthflow-cold-lead-prompt.md",
+}
+
+
+@lru_cache(maxsize=8)
+def _load_campaign_prompt(campaign_name: str) -> str:
+    """
+    Load the full per-campaign Synthflow voice-agent system prompt.
+
+    Strips the doc's leading one-line description and engineering-note
+    blockquote — only the actual prompt content (starting at the first
+    top-level markdown header) is sent to Synthflow; the rest is
+    repo-internal documentation, not part of the agent's instructions.
+
+    Unknown/unrecognized campaign_name falls back to the New Lead prompt
+    (mirrors the fallback convention in voicemail_jobs.py's tier-delay
+    lookup) with a warning, rather than sending no override — the
+    assistant's saved prompt is just `{prompt}`, so no override means the
+    call runs with no instructions at all, not a safe default.
+    """
+    key = (campaign_name or "").strip().lower()
+    path = _CAMPAIGN_PROMPT_FILES.get(key)
+    if path is None:
+        logger.warning(
+            "_load_campaign_prompt: unrecognized campaign_name=%r, "
+            "falling back to New Lead prompt",
+            campaign_name,
+        )
+        path = _CAMPAIGN_PROMPT_FILES["new lead"]
+
+    text = path.read_text(encoding="utf-8")
+    idx = text.find("\n# ")
+    return text[idx + 1 :].strip() if idx != -1 else text.strip()
 
 
 class SynthflowClient:
@@ -241,6 +293,7 @@ class SynthflowClient:
             "phone": phone,
             "name": lead_name,
             "campaign_name": campaign_name,
+            "prompt": _load_campaign_prompt(campaign_name),
         }
         if metadata:
             payload["metadata"] = metadata

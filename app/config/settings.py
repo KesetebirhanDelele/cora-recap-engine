@@ -169,6 +169,16 @@ class Settings(BaseSettings):
     # Add Synthflow agent numbers and any other system/test phones here.
     blocked_dial_numbers: Optional[str] = None
 
+    # ── Inbound lead-intake webhook (spec/21) ───────────────────────────────────
+    # Shared secret GHL's New Lead / Cold Lead workflows send in a custom header
+    # (e.g. X-Cora-Webhook-Secret) when triggering POST /v1/webhooks/leads/{campaign}.
+    # This endpoint can trigger a real, billable outbound call — unlike the
+    # unauthenticated /v1/webhooks/calls completion callback, it must not be
+    # reachable without this secret. None/empty means the endpoint is closed
+    # (rejects everything) rather than silently accepting unauthenticated
+    # requests — see call_intake.py.
+    cora_inbound_webhook_secret: Optional[str] = None
+
     # ── OpenAI ────────────────────────────────────────────────────────────────
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None

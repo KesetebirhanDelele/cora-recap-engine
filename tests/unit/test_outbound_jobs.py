@@ -34,7 +34,9 @@ from app.worker.jobs.outbound_jobs import (
     _CALL_BATCH_SIZE,
     _CALL_WITHIN_SLOT_SPACING,
     _MAX_BUCKET_SEARCH,
+    _bucket_index,
     _bucket_start,
+    _bump_lower_priority_job,
     _compute_window_run_at,
 )
 
@@ -59,7 +61,16 @@ def session(engine):
         sess.rollback()
 
 
-def _pending_job(run_at: datetime, status: str = "pending") -> ScheduledJob:
+def _aware(dt: datetime) -> datetime:
+    """
+    Normalize a datetime read back from SQLite (naive) to UTC-aware, so it
+    can be compared against values computed in-process (aware). Same
+    normalization outbound_jobs.py::_bucket_index applies internally.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _pending_job(run_at: datetime, status: str = "pending", campaign_name: str | None = None) -> ScheduledJob:
     return ScheduledJob(
         id=str(uuid.uuid4()),
         job_type="launch_outbound_call",
@@ -67,6 +78,7 @@ def _pending_job(run_at: datetime, status: str = "pending") -> ScheduledJob:
         entity_id=str(uuid.uuid4()),
         run_at=run_at,
         status=status,
+        payload_json={"campaign_name": campaign_name} if campaign_name else None,
         version=0,
         created_at=datetime.now(tz=timezone.utc),
         updated_at=datetime.now(tz=timezone.utc),
@@ -139,6 +151,118 @@ def test_fully_occupied_search_range_falls_back_past_it(session):
     session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
     assert result == _WINDOW_START + timedelta(seconds=_MAX_BUCKET_SEARCH * _CALL_WITHIN_SLOT_SPACING)
+
+
+# ── Priority / bump logic (spec/21) ─────────────────────────────────────────
+#
+# AC4: free bucket, priority job -> no bump, same as non-priority path.
+# AC5: pending lower-priority occupant -> bumped to next free bucket.
+# AC6: claimed/running occupant -> never touched, regardless of campaign.
+# AC7: bumped job survives with only run_at/version changed.
+# Plus: same-priority occupant and non-priority caller never bump anything.
+
+def test_priority_job_free_bucket_takes_it_directly(session):
+    result = _compute_window_run_at(session, _WINDOW_START, campaign_name="New Lead")
+    assert result == _WINDOW_START
+
+
+def test_priority_job_bumps_pending_lower_priority_occupant(session):
+    cold_job = _pending_job(_WINDOW_START, campaign_name="Cold Lead")
+    session.add(cold_job)
+    session.flush()
+
+    result = _compute_window_run_at(session, _WINDOW_START, campaign_name="New Lead")
+
+    # New Lead takes the originally-contested bucket.
+    assert result == _WINDOW_START
+    # The bumped Cold Lead job moved to the next free bucket, version incremented.
+    session.refresh(cold_job)
+    assert _aware(cold_job.run_at) == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+    assert cold_job.version == 1
+
+
+def test_priority_job_never_bumps_claimed_occupant(session):
+    claimed_job = _pending_job(_WINDOW_START, status="claimed", campaign_name="Cold Lead")
+    session.add(claimed_job)
+    session.flush()
+
+    result = _compute_window_run_at(session, _WINDOW_START, campaign_name="New Lead")
+
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+    session.refresh(claimed_job)
+    assert _aware(claimed_job.run_at) == _WINDOW_START  # untouched
+    assert claimed_job.version == 0  # untouched
+
+
+def test_priority_job_does_not_bump_another_priority_job(session):
+    other_new_lead = _pending_job(_WINDOW_START, campaign_name="New Lead")
+    session.add(other_new_lead)
+    session.flush()
+
+    result = _compute_window_run_at(session, _WINDOW_START, campaign_name="New Lead")
+
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+    session.refresh(other_new_lead)
+    assert _aware(other_new_lead.run_at) == _WINDOW_START  # untouched
+
+
+def test_non_priority_job_never_bumps_anything(session):
+    """A Cold Lead job scheduling itself must not bump another pending Cold Lead job."""
+    cold_job = _pending_job(_WINDOW_START, campaign_name="Cold Lead")
+    session.add(cold_job)
+    session.flush()
+
+    result = _compute_window_run_at(session, _WINDOW_START, campaign_name="Cold Lead")
+
+    assert result == _WINDOW_START + timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+    session.refresh(cold_job)
+    assert _aware(cold_job.run_at) == _WINDOW_START  # untouched — incoming job isn't priority
+
+
+def test_bumped_job_survives_with_only_run_at_and_version_changed(session):
+    cold_job = _pending_job(_WINDOW_START, campaign_name="Cold Lead")
+    original_entity_id = cold_job.entity_id
+    session.add(cold_job)
+    session.flush()
+
+    _compute_window_run_at(session, _WINDOW_START, campaign_name="New Lead")
+
+    session.refresh(cold_job)
+    assert cold_job.job_type == "launch_outbound_call"
+    assert cold_job.entity_id == original_entity_id
+    assert cold_job.status == "pending"
+    assert cold_job.payload_json["campaign_name"] == "Cold Lead"
+
+
+def test_bump_lower_priority_job_skips_on_version_conflict(session):
+    """
+    Simulates a race: the occupant was claimed by a worker between being read
+    (stale_job, holding the old version) and the bump attempt — the
+    version-checked UPDATE must no-op rather than clobber the claim.
+    """
+    cold_job = _pending_job(_WINDOW_START, campaign_name="Cold Lead")
+    session.add(cold_job)
+    session.flush()
+    stale_version = cold_job.version
+
+    # Concurrent claim: version bumped, status advanced past pending.
+    cold_job.version += 1
+    cold_job.status = "claimed"
+    session.flush()
+
+    stale_job = SimpleNamespace(
+        id=cold_job.id, version=stale_version, payload_json={"campaign_name": "Cold Lead"},
+    )
+    start_bucket = _bucket_index(_WINDOW_START) + 1
+
+    _bump_lower_priority_job(
+        session, stale_job,
+        start_bucket=start_bucket, end_bucket=start_bucket + _MAX_BUCKET_SEARCH,
+        occupied={},
+    )
+
+    session.refresh(cold_job)
+    assert _aware(cold_job.run_at) == _WINDOW_START  # bump attempt was a safe no-op
 
 
 # ── Blocked dial-number guard ─────────────────────────────────────────────────
