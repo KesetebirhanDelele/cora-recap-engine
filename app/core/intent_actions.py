@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # Policy constants (override via settings fields if needed)
 CALLBACK_FALLBACK_MINUTES: int = 120    # 2 h default when no time was extracted
 NURTURE_DELAY_DAYS: int = 7             # days before nurture outbound call
-PARTIAL_ENGAGEMENT_RETRY_CAP: int = 2   # max retries before Cold Lead escalation
+FAILED_BOOKING_RETRY_CAP: int = 2       # max retries before giving up (mark cold)
+HUMAN_TRANSFER_RETRY_CAP: int = 2       # max retries before giving up (mark cold)
 
 
 # ---------------------------------------------------------------------------
@@ -118,14 +119,50 @@ def _handle_call_later_no_time(session, contact_id, phone, entities, settings) -
                             reason="call_later_no_time")
 
 
+_NO_NURTURE_RETRY_CAMPAIGNS = frozenset({"cold lead", "inbound"})
+
+
+def _blocks_nurture_retry(lead) -> bool:
+    """
+    True when nurture-then-auto-retry doesn't make sense for this lead's
+    current campaign (case-insensitive):
+
+      Cold Lead — already at the bottom outreach tier, no further campaign
+      to downgrade into.
+      Inbound   — the lead called *us*; auto-enrolling them into an outbound
+      campaign because of one ambiguous answer isn't something they asked
+      for (see PROGRESS.md 2026-08-24 — this was flagged as scope creep).
+
+    New Lead (and unset) are not in this set: a New Lead nurturing into
+    Cold Lead is a legitimate one-time tier downgrade.
+    """
+    return (lead.campaign_name or "").strip().lower() in _NO_NURTURE_RETRY_CAMPAIGNS
+
+
 def _handle_interested_not_now(session, contact_id, phone, entities, settings) -> None:
     """
-    Move lead to nurture status.
+    Move lead to nurture status — unless already in Cold Lead or Inbound.
 
-    Sets lead_state.status = 'nurture' and next_action_at = now + nurture_delay_days.
-    Does NOT schedule an outbound call here — the nurture scheduler will call
-    enter_campaign("cold_lead") once next_action_at has passed.
+    New Lead leads: nurture for nurture_delay_days, then nurture_scheduler
+    graduates them into Cold Lead — a one-time tier downgrade. Does NOT
+    schedule an outbound call here.
+
+    Cold Lead / Inbound leads: see _blocks_nurture_retry. Nurture-then-retry
+    here had no cap at all and could repeat every nurture_delay_days
+    indefinitely for a lead who keeps giving ambiguous answers — treated
+    like _handle_partial_engagement instead: mark cold, no retry, stop.
     """
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
+
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+
+    if lead is not None and _blocks_nurture_retry(lead):
+        _mark_cold_no_retry(session, lead, log_prefix="interested_not_now_no_retry")
+        return
+
     delay_days = getattr(settings, "nurture_delay_days", NURTURE_DELAY_DAYS)
     run_at = datetime.now(tz=timezone.utc) + timedelta(days=delay_days)
 
@@ -142,11 +179,24 @@ def _handle_interested_not_now(session, contact_id, phone, entities, settings) -
 
 def _handle_uncertain(session, contact_id, phone, entities, settings) -> None:
     """
-    Move an uncertain lead to nurture with a shorter follow-up window.
+    Move an uncertain lead to nurture with a shorter follow-up window —
+    unless already in Cold Lead or Inbound (see _handle_interested_not_now;
+    same reasoning applies).
 
     Uses half of nurture_delay_days (minimum 1 day) to check back sooner
     than a fully disinterested lead.
     """
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
+
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+
+    if lead is not None and _blocks_nurture_retry(lead):
+        _mark_cold_no_retry(session, lead, log_prefix="uncertain_no_retry")
+        return
+
     base_days = getattr(settings, "nurture_delay_days", NURTURE_DELAY_DAYS)
     delay_days = max(1, base_days // 2)
     run_at = datetime.now(tz=timezone.utc) + timedelta(days=delay_days)
@@ -248,7 +298,11 @@ def _handle_human_transfer_request(session, contact_id, phone, entities, setting
 
     If booking was already confirmed (via executed_actions), cancel all pending jobs
     and set status='human_transfer'.
-    If booking did NOT happen, schedule a follow-up call in 2 hours.
+    If booking did NOT happen, schedule a follow-up call in 2 hours, up to
+    HUMAN_TRANSFER_RETRY_CAP times. Past the cap, stop retrying (mark cold)
+    instead of looping indefinitely — this path previously had no cap at all;
+    production data showed contacts accumulating dozens of these retries
+    (see PROGRESS.md 2026-08-24).
     """
     from app.core.lifecycle import transition_lead_state
     from sqlalchemy import select
@@ -265,87 +319,133 @@ def _handle_human_transfer_request(session, contact_id, phone, entities, setting
         transition_lead_state(session, lead, "human_transfer")
         session.refresh(lead)
 
-    if not transfer_confirmed:
-        # Transfer or booking may not have completed — schedule follow-up in 2 hours
-        run_at = datetime.now(tz=timezone.utc) + timedelta(hours=2)
-        _schedule_outbound_call(
-            session, contact_id, phone, run_at, settings,
-            reason="transfer_requested",
-        )
-        logger.info(
-            "transfer_requested: follow-up scheduled +2h | contact_id=%s", contact_id
-        )
-    else:
+    if transfer_confirmed:
         logger.info(
             "transfer_requested: transfer confirmed, no follow-up scheduled | contact_id=%s",
             contact_id,
         )
+        return
+
+    prior_count = _count_retries_by_reason(session, contact_id, "transfer_requested")
+
+    if prior_count >= HUMAN_TRANSFER_RETRY_CAP:
+        if lead is not None:
+            _mark_cold_no_retry(session, lead, log_prefix="human_transfer_cap_reached")
+        return
+
+    # Transfer or booking may not have completed — schedule follow-up in 2 hours
+    run_at = datetime.now(tz=timezone.utc) + timedelta(hours=2)
+    _schedule_outbound_call(
+        session, contact_id, phone, run_at, settings,
+        reason="transfer_requested",
+    )
+    logger.info(
+        "transfer_requested: retry %d/%d scheduled +2h | contact_id=%s",
+        prior_count + 1, HUMAN_TRANSFER_RETRY_CAP, contact_id,
+    )
+
+
+def _mark_cold_no_retry(session, lead, *, log_prefix: str) -> None:
+    """
+    Transition a lead to status='cold' and schedule nothing further.
+
+    Shared terminal action for signals where retrying — even on a cap —
+    just delays an outcome that was never going to change: low_confidence_audio
+    and partial_engagement (the call happened but produced nothing actionable),
+    and interested_not_now/uncertain specifically when the lead is already in
+    the Cold Lead campaign (already at the bottom outreach tier, so there is
+    no further campaign to downgrade into — see PROGRESS.md 2026-08-24).
+    """
+    from app.core.lifecycle import transition_lead_state
+
+    if lead.status in ("closed", "terminal"):
+        logger.info(
+            "%s: lead already %s — no action | contact_id=%s",
+            log_prefix, lead.status, lead.contact_id,
+        )
+        return
+
+    transition_lead_state(session, lead, "low_confidence")
+    logger.info(
+        "%s: lead marked cold, no retry scheduled | contact_id=%s",
+        log_prefix, lead.contact_id,
+    )
+
+
+def _count_retries_by_reason(session: Session, contact_id: str, reason: str) -> int:
+    """
+    Count how many launch_outbound_call jobs tagged with the given
+    intent_reason have been scheduled for this contact (excluding cancelled).
+
+    Used to enforce FAILED_BOOKING_RETRY_CAP / HUMAN_TRANSFER_RETRY_CAP.
+    """
+    from sqlalchemy import func, select
+    from app.models.scheduled_job import ScheduledJob
+
+    result = session.execute(
+        select(func.count()).select_from(ScheduledJob).where(
+            ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.payload_json["intent_reason"].as_string() == reason,
+            ScheduledJob.status != "cancelled",
+        )
+    )
+    return result.scalar() or 0
 
 
 def _handle_partial_engagement(session, contact_id, phone, entities, settings) -> None:
     """
     Lead partially engaged — transcript exists but no strong intent matched.
 
-    Schedules a retry call in 2 hours, up to PARTIAL_ENGAGEMENT_RETRY_CAP times.
-    Once the cap is reached, escalates to Cold Lead campaign instead of retrying.
+    No retry (mirrors _handle_low_confidence_audio). The call connected and
+    produced content, but nothing in it matched a recognised intent — the
+    prior capped-retry-then-escalate design still auto-scheduled calls
+    nobody asked for, on a signal too weak to justify it. Marks the lead
+    cold and stops; nothing reschedules automatically.
     """
-    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
 
-    prior_count = _count_partial_engagement_retries(session, contact_id)
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
 
-    if prior_count >= PARTIAL_ENGAGEMENT_RETRY_CAP:
-        logger.info(
-            "partial_engagement cap reached (%d/%d): escalating to cold_lead | contact_id=%s",
-            prior_count, PARTIAL_ENGAGEMENT_RETRY_CAP, contact_id,
-        )
-        from app.core.lifecycle import transition_lead_state
-        from app.core.campaigns import enter_campaign
-        from sqlalchemy import select
-        from app.models.lead_state import LeadState
-
-        lead = session.scalars(
-            select(LeadState).where(LeadState.contact_id == contact_id)
-        ).first()
-
-        if lead is None:
-            logger.warning(
-                "_handle_partial_engagement: no lead_state for contact_id=%s — skipping escalation",
-                contact_id,
-            )
-            return
-
-        if lead.status in ("closed", "terminal"):
-            logger.info(
-                "partial_engagement cap reached: lead already %s — skipping cold_lead escalation | contact_id=%s",
-                lead.status, contact_id,
-            )
-            return
-
-        transition_lead_state(session, lead, "low_confidence")
-        session.refresh(lead)
-        enter_campaign(session, lead, "cold_lead", settings=settings)
-        logger.info(
-            "partial_engagement escalated to cold_lead | contact_id=%s prior_retries=%d",
-            contact_id, prior_count,
+    if lead is None:
+        logger.warning(
+            "_handle_partial_engagement: no lead_state for contact_id=%s — skipping",
+            contact_id,
         )
         return
 
-    run_at = datetime.now(tz=timezone.utc) + timedelta(hours=2)
-    _schedule_outbound_call(
-        session, contact_id, phone, run_at, settings,
-        reason="partial_engagement",
-    )
-    logger.info(
-        "partial_engagement_detected: retry %d/%d scheduled +2h | contact_id=%s",
-        prior_count + 1, PARTIAL_ENGAGEMENT_RETRY_CAP, contact_id,
-    )
+    _mark_cold_no_retry(session, lead, log_prefix="partial_engagement_detected")
 
 
 def _handle_failed_booking(session, contact_id, phone, entities, settings) -> None:
     """
-    Booking was attempted but failed. Schedule retry call in 4 hours, same campaign.
+    Booking was attempted but failed. Schedule retry call in 4 hours, same
+    campaign, up to FAILED_BOOKING_RETRY_CAP times. Past the cap, stop
+    retrying (mark cold) instead of looping indefinitely — this path
+    previously had no cap at all; production data showed contacts
+    accumulating dozens of these retries (see PROGRESS.md 2026-08-24).
     """
     from datetime import timedelta
+    from sqlalchemy import select
+    from app.models.lead_state import LeadState
+
+    prior_count = _count_retries_by_reason(session, contact_id, "booking_retry")
+
+    if prior_count >= FAILED_BOOKING_RETRY_CAP:
+        lead = session.scalars(
+            select(LeadState).where(LeadState.contact_id == contact_id)
+        ).first()
+        if lead is None:
+            logger.warning(
+                "_handle_failed_booking: no lead_state for contact_id=%s — skipping",
+                contact_id,
+            )
+            return
+        _mark_cold_no_retry(session, lead, log_prefix="failed_booking_cap_reached")
+        return
 
     run_at = datetime.now(tz=timezone.utc) + timedelta(hours=4)
     _schedule_outbound_call(
@@ -353,7 +453,8 @@ def _handle_failed_booking(session, contact_id, phone, entities, settings) -> No
         reason="booking_retry",
     )
     logger.info(
-        "failed_booking_detected: retry scheduled +4h | contact_id=%s", contact_id
+        "failed_booking_detected: retry %d/%d scheduled +4h | contact_id=%s",
+        prior_count + 1, FAILED_BOOKING_RETRY_CAP, contact_id,
     )
 
 
@@ -376,7 +477,6 @@ def _handle_low_confidence_audio(session, contact_id, phone, entities, settings)
     further call happens automatically. Re-entry into a campaign, if
     warranted, is a human decision or a fresh external GHL trigger.
     """
-    from app.core.lifecycle import transition_lead_state
     from sqlalchemy import select
     from app.models.lead_state import LeadState
 
@@ -391,18 +491,7 @@ def _handle_low_confidence_audio(session, contact_id, phone, entities, settings)
         )
         return
 
-    if lead.status in ("closed", "terminal"):
-        logger.info(
-            "low_confidence_audio: lead already %s — no action | contact_id=%s",
-            lead.status, contact_id,
-        )
-        return
-
-    transition_lead_state(session, lead, "low_confidence")
-    logger.info(
-        "low_confidence_audio_detected: lead marked cold, no retry scheduled | contact_id=%s",
-        contact_id,
-    )
+    _mark_cold_no_retry(session, lead, log_prefix="low_confidence_audio_detected")
 
 
 def _handle_request_sms(session, contact_id, phone, entities, settings) -> None:
@@ -574,27 +663,6 @@ def _update_lead_state(
         .values(**updates)
     )
     session.flush()
-
-
-def _count_partial_engagement_retries(session: Session, contact_id: str) -> int:
-    """
-    Count how many partial_engagement outbound call jobs have been scheduled
-    for this contact (excluding cancelled jobs).
-
-    Used to enforce PARTIAL_ENGAGEMENT_RETRY_CAP.
-    """
-    from sqlalchemy import func, select
-    from app.models.scheduled_job import ScheduledJob
-
-    result = session.execute(
-        select(func.count()).select_from(ScheduledJob).where(
-            ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
-            ScheduledJob.job_type == "launch_outbound_call",
-            ScheduledJob.payload_json["intent_reason"].as_string() == "partial_engagement",
-            ScheduledJob.status != "cancelled",
-        )
-    )
-    return result.scalar() or 0
 
 
 def _schedule_outbound_call(

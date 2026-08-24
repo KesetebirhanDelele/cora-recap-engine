@@ -21,7 +21,7 @@ from app.models.base import Base
 from app.models.lead_state import LeadState
 from app.models.scheduled_job import ScheduledJob
 from app.core.intent_detection import detect_intent, _extract_executed_actions
-from app.core.intent_actions import handle_intent, PARTIAL_ENGAGEMENT_RETRY_CAP
+from app.core.intent_actions import handle_intent
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +290,84 @@ def test_human_transfer_schedules_followup(session):
     assert run_at > now + timedelta(hours=1, minutes=50)
 
 
+def _make_completed_job_with_reason(session, contact_id: str, phone: str, reason: str) -> ScheduledJob:
+    """Insert a completed launch_outbound_call job tagged with the given intent_reason."""
+    import uuid as _uuid
+
+    now = datetime.now(tz=timezone.utc)
+    job = ScheduledJob(
+        id=str(_uuid.uuid4()),
+        job_type="launch_outbound_call",
+        entity_type="lead",
+        entity_id=contact_id,
+        run_at=now,
+        status="completed",
+        payload_json={"contact_id": contact_id, "phone_number": phone,
+                      "intent_reason": reason},
+        version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+def test_human_transfer_below_cap_still_retries(session):
+    """With 1 prior transfer_requested job (below cap of 2), should schedule another retry."""
+    contact_id = "live-xfer-cap-under"
+    lead = _make_lead(session, contact_id)
+    _make_completed_job_with_reason(session, contact_id, lead.normalized_phone, "transfer_requested")
+
+    intent_result = {
+        "intent": "human_transfer_request",
+        "confidence": 0.9,
+        "entities": {},
+    }
+    handle_intent(
+        session=session,
+        intent_result=intent_result,
+        contact_id=contact_id,
+        phone=lead.normalized_phone,
+        current_job_id="fake-job-id",
+        settings=_settings(),
+    )
+    session.flush()
+
+    jobs = _pending_jobs(session, contact_id)
+    assert len(jobs) == 1
+    assert jobs[0].payload_json.get("intent_reason") == "transfer_requested"
+
+
+def test_human_transfer_at_cap_marks_cold_no_retry(session):
+    """With 2 prior transfer_requested jobs (at cap), must stop retrying — no infinite loop."""
+    contact_id = "live-xfer-cap-over"
+    lead = _make_lead(session, contact_id, campaign_name="New Lead")
+    _make_completed_job_with_reason(session, contact_id, lead.normalized_phone, "transfer_requested")
+    _make_completed_job_with_reason(session, contact_id, lead.normalized_phone, "transfer_requested")
+
+    intent_result = {
+        "intent": "human_transfer_request",
+        "confidence": 0.9,
+        "entities": {},
+    }
+    handle_intent(
+        session=session,
+        intent_result=intent_result,
+        contact_id=contact_id,
+        phone=lead.normalized_phone,
+        current_job_id="fake-job-id",
+        settings=_settings(),
+    )
+    session.flush()
+
+    assert _pending_jobs(session, contact_id) == []
+
+    session.expire(lead)
+    updated = session.get(LeadState, lead.id)
+    assert updated.status == "cold"
+
+
 # ---------------------------------------------------------------------------
 # Handler — low_confidence_audio marks the lead cold with no retry
 # ---------------------------------------------------------------------------
@@ -359,12 +437,18 @@ def test_low_confidence_repeated_occurrences_never_reschedule(session):
 
 
 # ---------------------------------------------------------------------------
-# Handler — partial_engagement schedules short retry
+# Handler — partial_engagement marks the lead cold with no retry
 # ---------------------------------------------------------------------------
 
-def test_partial_engagement_schedules_short_retry(session):
+def test_partial_engagement_marks_cold_with_no_retry(session):
+    """
+    partial_engagement must not schedule any further call — the previous
+    capped-retry-then-escalate design still auto-scheduled calls nobody
+    asked for. The lead is marked cold and nothing else happens
+    automatically.
+    """
     contact_id = "live-partial-001"
-    lead = _make_lead(session, contact_id)
+    lead = _make_lead(session, contact_id, campaign_name="New Lead")
     settings = _settings()
 
     intent_result = {
@@ -382,14 +466,40 @@ def test_partial_engagement_schedules_short_retry(session):
     )
     session.flush()
 
-    jobs = _pending_jobs(session, contact_id)
-    assert len(jobs) == 1
-    outbound = jobs[0]
-    assert outbound.job_type == "launch_outbound_call"
-    assert outbound.payload_json.get("intent_reason") == "partial_engagement"
-    now = datetime.utcnow()
-    run_at = outbound.run_at.replace(tzinfo=None) if outbound.run_at.tzinfo else outbound.run_at
-    assert run_at > now + timedelta(hours=1, minutes=50)
+    # No outbound call scheduled — no retry, no campaign re-entry
+    assert _pending_jobs(session, contact_id) == []
+
+    session.expire(lead)
+    updated = session.get(LeadState, lead.id)
+    # Status moves to "cold" ...
+    assert updated.status == "cold"
+    # ... but campaign_name is untouched (enter_campaign is never called)
+    assert updated.campaign_name == "New Lead"
+
+
+def test_partial_engagement_repeated_occurrences_never_reschedule(session):
+    """Even repeated partial_engagement results in a row must not start scheduling calls."""
+    contact_id = "live-partial-repeat"
+    lead = _make_lead(session, contact_id, campaign_name="Cold Lead")
+    settings = _settings()
+
+    intent_result = {
+        "intent": "partial_engagement",
+        "confidence": 0.6,
+        "entities": {},
+    }
+    for _ in range(3):
+        handle_intent(
+            session=session,
+            intent_result=intent_result,
+            contact_id=contact_id,
+            phone=lead.normalized_phone,
+            current_job_id="fake-job-id",
+            settings=settings,
+        )
+        session.flush()
+
+    assert _pending_jobs(session, contact_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -426,43 +536,15 @@ def test_failed_booking_schedules_retry(session):
     assert run_at > now + timedelta(hours=3, minutes=50)
 
 
-# ---------------------------------------------------------------------------
-# Handler — partial_engagement retry cap escalates to Cold Lead
-# ---------------------------------------------------------------------------
-
-def _make_completed_pe_job(session, contact_id: str, phone: str) -> ScheduledJob:
-    """Insert a completed partial_engagement launch_outbound_call job."""
-    import uuid as _uuid
-    from app.worker.scheduler import schedule_job
-
-    now = datetime.now(tz=timezone.utc)
-    job = ScheduledJob(
-        id=str(_uuid.uuid4()),
-        job_type="launch_outbound_call",
-        entity_type="lead",
-        entity_id=contact_id,
-        run_at=now,
-        status="completed",
-        payload_json={"contact_id": contact_id, "phone_number": phone,
-                      "intent_reason": "partial_engagement"},
-        version=1,
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(job)
-    session.flush()
-    return job
-
-
-def test_partial_engagement_below_cap_still_schedules_retry(session):
-    """With 1 prior PE job (below cap of 2), should schedule another retry."""
-    contact_id = "live-partial-cap-under"
+def test_failed_booking_below_cap_still_retries(session):
+    """With 1 prior booking_retry job (below cap of 2), should schedule another retry."""
+    contact_id = "live-booking-cap-under"
     lead = _make_lead(session, contact_id)
-    _make_completed_pe_job(session, contact_id, lead.normalized_phone)
+    _make_completed_job_with_reason(session, contact_id, lead.normalized_phone, "booking_retry")
 
     intent_result = {
-        "intent": "partial_engagement",
-        "confidence": 0.6,
+        "intent": "failed_booking",
+        "confidence": 0.9,
         "entities": {},
     }
     handle_intent(
@@ -477,19 +559,19 @@ def test_partial_engagement_below_cap_still_schedules_retry(session):
 
     jobs = _pending_jobs(session, contact_id)
     assert len(jobs) == 1
-    assert jobs[0].payload_json.get("intent_reason") == "partial_engagement"
+    assert jobs[0].payload_json.get("intent_reason") == "booking_retry"
 
 
-def test_partial_engagement_at_cap_escalates_to_cold_lead(session):
-    """With 2 prior PE jobs (at cap), should move lead to Cold Lead."""
-    contact_id = "live-partial-cap-over"
+def test_failed_booking_at_cap_marks_cold_no_retry(session):
+    """With 2 prior booking_retry jobs (at cap), must stop retrying — no infinite loop."""
+    contact_id = "live-booking-cap-over"
     lead = _make_lead(session, contact_id, campaign_name="New Lead")
-    _make_completed_pe_job(session, contact_id, lead.normalized_phone)
-    _make_completed_pe_job(session, contact_id, lead.normalized_phone)
+    _make_completed_job_with_reason(session, contact_id, lead.normalized_phone, "booking_retry")
+    _make_completed_job_with_reason(session, contact_id, lead.normalized_phone, "booking_retry")
 
     intent_result = {
-        "intent": "partial_engagement",
-        "confidence": 0.6,
+        "intent": "failed_booking",
+        "confidence": 0.9,
         "entities": {},
     }
     handle_intent(
@@ -502,14 +584,10 @@ def test_partial_engagement_at_cap_escalates_to_cold_lead(session):
     )
     session.flush()
 
-    # No new pending outbound call — moved to Cold Lead instead
-    pending = _pending_jobs(session, contact_id)
-    # enter_campaign schedules the first cold_lead call
-    assert all(j.job_type == "launch_outbound_call" for j in pending)
-    # Lead should be in cold_lead campaign
+    assert _pending_jobs(session, contact_id) == []
+
     session.expire(lead)
     updated = session.get(LeadState, lead.id)
-    assert updated.campaign_name == "Cold Lead"
     assert updated.status == "cold"
 
 

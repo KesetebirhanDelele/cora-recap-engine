@@ -27,18 +27,56 @@ Four new signals extend `detect_intent()` in `app/core/intent_detection.py`:
 
 | Signal | Trigger | Handler action |
 |---|---|---|
-| `human_transfer_request` | "talk to a real person" keywords or `executed_actions` transfer | status → `human_transfer`; +2 h follow-up if unconfirmed |
-| `failed_booking` | "didn't work" / "couldn't book" keywords or `executed_actions` booking fail | +4 h retry, same campaign |
-| `partial_engagement` | No strong intent + short call (< 120 s) | +2 h retry, same campaign; after 2 retries → Cold Lead (same as `low_confidence_audio`) |
-| `low_confidence_audio` | Transcript < 5 chars or noise-only | lifecycle → `cold`; enter Cold Lead campaign |
+| `human_transfer_request` | "talk to a real person" keywords or `executed_actions` transfer | status → `human_transfer`; +2 h follow-up if unconfirmed, capped at `HUMAN_TRANSFER_RETRY_CAP` (2) |
+| `failed_booking` | "didn't work" / "couldn't book" keywords or `executed_actions` booking fail | +4 h retry, same campaign, capped at `FAILED_BOOKING_RETRY_CAP` (2) |
+| `partial_engagement` | No strong intent + short call (< 120 s) | lifecycle → `cold`; **no retry** |
+| `low_confidence_audio` | Transcript < 5 chars or noise-only | lifecycle → `cold`; **no retry** |
 
 Two new lifecycle events are defined in `app/core/lifecycle.py`:
 - `human_transfer`: any non-terminal → `"human_transfer"` status
 - `low_confidence`: any non-terminal → `"cold"` status
 
-`low_confidence_audio` and `partial_engagement` (after the retry cap) are the two handlers that enter a new campaign. All other handlers schedule a single one-shot retry call; the voicemail tier engine then governs further progression if subsequent calls go to voicemail.
+**`partial_engagement` and `low_confidence_audio` never schedule another call or enter a new
+campaign** (as of 2026-08-24) — both reached this condition from a genuinely deployed bug: a
+number that produces one of these signals will reliably keep producing it (a business IVR, wrong
+number, or disconnected line most commonly), so any retry cadence — even a capped one — just
+delays the same infinite loop, which is exactly what happened in production (see PROGRESS.md
+2026-08-24, `+18666932332` called every ~15 min for months). Both handlers now do nothing but
+`transition_lead_state(lead, "low_confidence")` and stop; re-entry into a campaign, if warranted,
+is a human decision or a fresh external GHL trigger.
 
-`partial_engagement` retry cap: tracked via `scheduled_jobs` where `intent_reason='partial_engagement'` and `status != 'cancelled'`; cap constant `PARTIAL_ENGAGEMENT_RETRY_CAP = 2` in `app/core/intent_actions.py`.
+**`failed_booking` and unconfirmed `human_transfer_request` had no cap at all** (found in the same
+audit) — a production query turned up one contact with 83 accumulated retries across these two
+reasons plus the callback-family intents since April (mostly the same self-call phone-mismapping
+bug surfacing through a different code path — see PROGRESS.md 2026-08-24). Unlike
+`partial_engagement`/`low_confidence_audio`, these two intents carry real signal (a genuine
+booking or transfer attempt happened), so retrying isn't wrong in principle — it just needed a
+ceiling. Both now retry up to their cap (`FAILED_BOOKING_RETRY_CAP`/`HUMAN_TRANSFER_RETRY_CAP`,
+2 each, tracked via `_count_retries_by_reason()` against `scheduled_jobs.payload_json->>'intent_reason'`),
+then fall through to `_mark_cold_no_retry()` — same terminal action as `partial_engagement`/
+`low_confidence_audio` — instead of looping forever. `callback_request`/`callback_with_time`/
+`call_later_no_time` were deliberately left uncapped — those are explicit lead asks ("call me
+back"), and a cap would break the legitimate case; the residual risk there is intent
+misclassification, not the retry policy itself.
+
+**`interested_not_now` and `uncertain` are campaign-scoped** (as of 2026-08-24) — they normally
+move the lead to `status="nurture"` with `next_action_at` set 2 days / 1 day out in production
+(`NURTURE_DELAY_DAYS` env override; code default 7 / 3.5), and `nurture_scheduler.py` later
+graduates the lead back into the Cold Lead campaign from a fresh tier 0 once that time passes.
+For a New Lead contact this is a legitimate one-time downgrade (New Lead → wait → Cold Lead).
+**But if the lead is already in Cold Lead or Inbound when either intent fires, there is no
+legitimate downgrade to make** — Cold Lead is already the bottom outreach tier (nurture-then-retry
+had no cap and could repeat every 1-2 days indefinitely; GHL separately re-registers exited Cold
+Leads after ~2 months, so an uncapped Cora-side loop on top of that is redundant), and an Inbound
+contact called *us* — auto-enrolling them into an outbound campaign from one ambiguous answer
+isn't something they asked for. `_handle_interested_not_now` and `_handle_uncertain` now check
+`_blocks_nurture_retry(lead)` first (true for `campaign_name` in `{"cold lead", "inbound"}`); if
+true, they call the same `_mark_cold_no_retry()` helper `partial_engagement`/`low_confidence_audio`
+use — mark cold, no retry, stop — instead of nurturing.
+
+All handlers not covered above schedule a single one-shot retry call, uncapped by design
+(explicit lead request) or governed by the tier-3-terminal voicemail engine for subsequent
+progression.
 
 Handlers live in `app/core/intent_actions.py`. Live-call routing is wired into `app/worker/jobs/ai_jobs.py` post-analysis, and `app/worker/jobs/voicemail_jobs.py` intent detection is extended to pass `executed_actions` and `duration_seconds`.
 

@@ -59,12 +59,14 @@ def _utc(dt: datetime) -> datetime:
 
 
 
-def _make_lead(session, contact_id: str, *, phone: str = "+15550001234") -> LeadState:
+def _make_lead(session, contact_id: str, *, phone: str = "+15550001234",
+                campaign_name: str | None = None) -> LeadState:
     now = datetime.now(tz=timezone.utc)
     lead = LeadState(
         id=str(uuid.uuid4()),
         contact_id=contact_id,
         normalized_phone=phone,
+        campaign_name=campaign_name,
         ai_campaign_value=None,
         version=0,
         created_at=now,
@@ -347,6 +349,99 @@ def test_handle_intent_interested_not_now_does_not_schedule_outbound_call(sessio
     assert len(jobs) == 0
 
 
+def test_handle_intent_interested_not_now_at_cold_lead_marks_cold_no_retry(session):
+    """
+    A lead already in the Cold Lead campaign is at the bottom outreach tier —
+    interested_not_now must not nurture-then-retry (that path is uncapped and
+    could repeat every nurture_delay_days indefinitely). Marks cold instead,
+    same as partial_engagement/low_confidence_audio.
+    """
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, campaign_name="Cold Lead")
+
+    handle_intent(
+        session=session,
+        intent_result=_intent("interested_not_now"),
+        contact_id=contact_id,
+        phone="+15550001234",
+        current_job_id=str(uuid.uuid4()),
+        settings=_mock_settings(),
+    )
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead.status == "cold"
+    assert lead.next_action_at is None
+    assert lead.campaign_name == "Cold Lead"
+
+    jobs = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+        )
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_handle_intent_interested_not_now_at_new_lead_still_nurtures(session):
+    """New Lead (not yet Cold Lead) keeps the existing nurture-then-downgrade path."""
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, campaign_name="New Lead")
+
+    handle_intent(
+        session=session,
+        intent_result=_intent("interested_not_now"),
+        contact_id=contact_id,
+        phone="+15550001234",
+        current_job_id=str(uuid.uuid4()),
+        settings=_mock_settings(),
+    )
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead.status == "nurture"
+    assert lead.next_action_at is not None
+
+
+def test_handle_intent_interested_not_now_at_inbound_marks_cold_no_retry(session):
+    """
+    Inbound-originated leads must not be auto-enrolled into an outbound
+    campaign just because a call ended with an ambiguous answer -- the lead
+    called us; they didn't ask for a callback. Same treatment as Cold Lead.
+    """
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, campaign_name="Inbound")
+
+    handle_intent(
+        session=session,
+        intent_result=_intent("interested_not_now"),
+        contact_id=contact_id,
+        phone="+15550001234",
+        current_job_id=str(uuid.uuid4()),
+        settings=_mock_settings(),
+    )
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead.status == "cold"
+    assert lead.next_action_at is None
+    assert lead.campaign_name == "Inbound"
+
+    jobs = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+        )
+    ).all()
+    assert len(jobs) == 0
+
+
 # ---------------------------------------------------------------------------
 # handle_intent — callback_request
 # ---------------------------------------------------------------------------
@@ -560,6 +655,90 @@ def test_handle_intent_uncertain_does_not_schedule_outbound_call(session):
     )
 
     from sqlalchemy import select
+    jobs = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+        )
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_handle_intent_uncertain_at_cold_lead_marks_cold_no_retry(session):
+    """Same reasoning as interested_not_now: no further downgrade tier exists."""
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, campaign_name="Cold Lead")
+
+    handle_intent(
+        session=session,
+        intent_result=_intent("uncertain"),
+        contact_id=contact_id,
+        phone="+15550001234",
+        current_job_id=str(uuid.uuid4()),
+        settings=_mock_settings(),
+    )
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead.status == "cold"
+    assert lead.next_action_at is None
+    assert lead.campaign_name == "Cold Lead"
+
+    jobs = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+        )
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_handle_intent_uncertain_at_new_lead_still_nurtures(session):
+    """New Lead (not yet Cold Lead) keeps the existing shorter-nurture path."""
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, campaign_name="New Lead")
+
+    handle_intent(
+        session=session,
+        intent_result=_intent("uncertain"),
+        contact_id=contact_id,
+        phone="+15550001234",
+        current_job_id=str(uuid.uuid4()),
+        settings=_mock_settings(),
+    )
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead.status == "nurture"
+    assert lead.next_action_at is not None
+
+
+def test_handle_intent_uncertain_at_inbound_marks_cold_no_retry(session):
+    """Same reasoning as interested_not_now: Inbound leads didn't ask for a callback."""
+    contact_id = f"c-{uuid.uuid4().hex[:6]}"
+    _make_lead(session, contact_id, campaign_name="Inbound")
+
+    handle_intent(
+        session=session,
+        intent_result=_intent("uncertain"),
+        contact_id=contact_id,
+        phone="+15550001234",
+        current_job_id=str(uuid.uuid4()),
+        settings=_mock_settings(),
+    )
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead.status == "cold"
+    assert lead.next_action_at is None
+    assert lead.campaign_name == "Inbound"
+
     jobs = session.scalars(
         select(ScheduledJob).where(
             ScheduledJob.entity_id == contact_id,

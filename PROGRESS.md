@@ -747,3 +747,88 @@ real production data via SSH before and after deploy, not just local tests.
    contacts — find why it's writing Cora's own inbound number instead of the caller's.
 2. Decide and implement the Inbound-campaign auto-retry scope boundary (item above).
 3. Manually resolve `+15714782790`'s campaign attribution if/when the real value is known.
+
+---
+
+## Session: 2026-08-24 (cont'd 3) — closed out every uncapped retry loop found in the item-7 audit
+
+Follow-up to the "Explicitly NOT done yet" list above. Walked through each flagged intent handler
+one at a time with Kes, decided the right terminal behavior for each, and implemented all of them
+same session. All commits directly to `feat/ghl-call-conversation-sync`.
+
+### What happened, in order
+
+1. **`partial_engagement` → no retry** (same reasoning as `low_confidence_audio`, same session as
+   item 7 above): removed the capped-retry-then-escalate design entirely. Now calls the same
+   `_mark_cold_no_retry()` terminal action `low_confidence_audio` uses. Removed the now-unused
+   `PARTIAL_ENGAGEMENT_RETRY_CAP` constant and its counter helper.
+2. **Traced `interested_not_now`/`uncertain` end-to-end** for a Cold Lead contact: confirmed they
+   never actually change `campaign_name` for a lead already in Cold Lead (no switch rule exists
+   for that transition), but they DO set `status="nurture"` + `next_action_at`
+   (`NURTURE_DELAY_DAYS` env — **2 days in production, not the code default of 7** — found via
+   direct `.env` check), and `nurture_scheduler.py` graduates that back into a fresh tier-0 Cold
+   Lead call automatically. No cap ever existed on this path.
+3. **Audited for other uncapped loops** given the above pattern. Found two more genuinely uncapped
+   handlers (`failed_booking`, and `human_transfer_request` when unconfirmed) and confirmed the
+   voicemail-tier engine itself (`tier_policy.py`) is fine — it has a real terminal tier "3".
+   Production query (`scheduled_jobs` grouped by `contact_id` + `intent_reason`) turned up one
+   contact, `+19592022210`, with **83 accumulated retries since April** across
+   `callback_with_time` (52), `transfer_requested` (13), `booking_retry` (8), `callback_request`
+   (6), `call_later_no_time` (4) — traced to `lead_state.normalized_phone` for that contact (and 3
+   others in the same query) being `+16822812224`, the same self-call mismapping bug from item 6,
+   just surfacing through different handlers this time. Zero currently-pending jobs under any of
+   these reasons — nothing actively looping right now, `BLOCKED_DIAL_NUMBERS` already covers it.
+4. **New variant of the mismapping bug found in the same audit**: one contact,
+   `+16153199706` (`status="closed"`, not currently at risk), has `normalized_phone` set to
+   `+19729921028` — Cora's own **Outbound** caller ID, not the Inbound one. Same bug, opposite
+   direction; this number was not yet in `BLOCKED_DIAL_NUMBERS`.
+5. **Decided and implemented terminal behavior for every flagged path**:
+   - `failed_booking` / unconfirmed `human_transfer_request`: these carry real signal (an actual
+     booking/transfer attempt happened), so retry isn't wrong in principle — capped at 2 each
+     (`FAILED_BOOKING_RETRY_CAP`, `HUMAN_TRANSFER_RETRY_CAP`), then fall through to
+     `_mark_cold_no_retry()` instead of looping forever.
+   - `callback_request` / `callback_with_time` / `call_later_no_time`: deliberately left uncapped
+     — explicit lead asks ("call me back"); a cap would break the legitimate case. Residual risk
+     there is intent misclassification, not the retry policy.
+   - `interested_not_now` / `uncertain`: the Cold-Lead-only check from item 7 was broadened to
+     also cover `campaign_name == "Inbound"` — a lead who called *us* and gave one ambiguous
+     answer must not get auto-enrolled into an outbound campaign days later just because they
+     didn't explicitly ask for a callback or book. New Lead is untouched — still gets the
+     legitimate one-time nurture-then-downgrade into Cold Lead. Helper renamed
+     `_is_cold_lead` → `_blocks_nurture_retry` to reflect the broadened scope.
+   - `BLOCKED_DIAL_NUMBERS` extended to `+16822812224,+19729921028` (both of Cora's own Synthflow
+     numbers now blocked from ever being dialed as a "lead"). Also cleaned up a pre-existing
+     duplicate `BLOCKED_DIAL_NUMBERS` line in the local `.env` while making this change.
+6. **Tests**: added/updated across `test_intent_actions.py` and `test_live_call_intents.py` —
+   cap-boundary tests (below-cap-still-retries / at-cap-marks-cold) for both `failed_booking` and
+   `human_transfer_request`, and Inbound-scoped no-retry tests for both `interested_not_now` and
+   `uncertain` (alongside the existing New-Lead-still-nurtures regression tests). Full suite:
+   1049 passed, 5 failed — same 5 pre-existing flaky failures as every other run this session
+   (`MagicMock` vs `int` in `app/worker/claim.py:270`, unrelated), zero regressions.
+7. **Updated `directives/spec/06_architecture.md`** to document the full current state of every
+   live-call intent handler's retry/terminal behavior in one place.
+
+### Incidental finding — secrets surfaced in an AI conversation
+
+Editing the local `.env` (to update `BLOCKED_DIAL_NUMBERS`) triggered an automatic "file changed
+on disk" diff that put the entire file's contents — including live `GHL_API_KEY`,
+`GHL_CONVERSATIONS_API_KEY`, `OPENAI_API_KEY`, `SYNTHFLOW_API_KEY`, and `POSTGRES_PASSWORD` — into
+the Claude Code conversation context. Not triggered by any print/cat command, just a side effect
+of the harness's edit-tracking. Flagged to Kes in the same session; no values were repeated back.
+**Worth a credential rotation if this needs to be treated as a real exposure** — not yet decided
+or actioned.
+
+### Explicitly NOT done yet
+
+- The credential rotation question above.
+- The underlying GHL-side phone-mismapping root cause (item 6 from the prior session) is still
+  unresolved — this session's fixes are all Cora-side stopgaps/policy fixes, not a fix to GHL
+  itself.
+- `+15714782790`'s campaign attribution still unresolved (unchanged from prior session).
+
+### Next steps
+
+1. Decide on the credential rotation question.
+2. Investigate the GHL workflow responsible for writing Cora's own numbers into new contacts'
+   `normalized_phone` field (both the Inbound and now-confirmed Outbound variants).
+3. Deploy this session's changes to Hetzner (code + the `BLOCKED_DIAL_NUMBERS` env update).
