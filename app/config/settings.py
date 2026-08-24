@@ -451,22 +451,27 @@ class Settings(BaseSettings):
 
     def get_synthflow_launch_url(self, campaign_name: str) -> str:
         """
-        Return the Synthflow Make Call webhook URL for the given campaign.
+        Return the Synthflow Make Call webhook URL for outbound calls.
 
-        Selects SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold for Cold Lead campaigns,
-        SYNTHFLOW_LAUNCH_WORKFLOW_URL_New for all others (New Lead, Inbound, etc.).
-        Raises ConfigError if the required URL is not configured.
+        All campaigns share a single Synthflow workflow
+        (SYNTHFLOW_LAUNCH_WORKFLOW_URL_New) — confirmed 2026-08-24 as the only
+        Make Call workflow with a working phone number attached. The separate
+        Cold Lead workflow (SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold) has no phone
+        number configured and cannot place real calls, even when "enabled" —
+        that's the reason for spec/21's per-campaign dynamic prompt injection
+        in the first place: campaign identity is carried entirely via the
+        `prompt` payload field (app/adapters/synthflow.py._load_campaign_prompt),
+        not by routing to a different URL per campaign.
+
+        campaign_name is accepted for call-site clarity and interface
+        stability but no longer affects which URL is returned.
+        Raises ConfigError if the shared launch URL is not configured.
         """
-        is_cold = "cold" in (campaign_name or "").lower()
-        if is_cold:
-            url = self.synthflow_launch_workflow_url_cold
-            key = "SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold"
-        else:
-            url = self.synthflow_launch_workflow_url_new
-            key = "SYNTHFLOW_LAUNCH_WORKFLOW_URL_New"
+        url = self.synthflow_launch_workflow_url_new
         if not url:
             raise ConfigError(
-                f"Synthflow outbound call launch requires {key} (campaign={campaign_name!r})"
+                f"Synthflow outbound call launch requires SYNTHFLOW_LAUNCH_WORKFLOW_URL_New "
+                f"(campaign={campaign_name!r})"
             )
         return url
 

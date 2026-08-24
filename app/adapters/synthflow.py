@@ -5,13 +5,20 @@ Triggers outbound AI calls via per-campaign Make Call webhooks.
 Auth: Bearer token (SYNTHFLOW_API_KEY).
 
 Voice agent / webhook routing (campaign → webhook → voice agent):
-  New Lead  → SYNTHFLOW_LAUNCH_WORKFLOW_URL_New  (p6ihFj7HmplXM2WiuVsaC)
-              → model_id 95fd0659-7446-423c-bc51-764c3060c90f (Cold Lead assistant —
-                repointed 2026-07-15 in Synthflow after the New Lead agent's phone
-                number was lost; the workflow's own "Agent" label text still reads
-                NewLead, so CallEvent.voice_agent classification is unaffected)
-  Cold Lead → SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold (33J546NiXxUUIRCbywNVH)
-              → model_id 95fd0659-7446-423c-bc51-764c3060c90f
+  ALL outbound campaigns (New Lead, Cold Lead) → SYNTHFLOW_LAUNCH_WORKFLOW_URL_New
+  (p6ihFj7HmplXM2WiuVsaC) → model_id 95fd0659-7446-423c-bc51-764c3060c90f. Confirmed
+  2026-08-24: this is the ONLY Make Call workflow with a working phone number
+  attached — the separate ColdLeads workflow (SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold,
+  33J546NiXxUUIRCbywNVH) has no phone number and cannot place real calls even
+  when enabled in the Synthflow dashboard. Campaign identity is carried entirely
+  by the dynamic `prompt` payload field (_load_campaign_prompt below), not by
+  routing to a different URL — that's the whole reason this per-campaign prompt
+  injection mechanism exists. Do not reintroduce URL branching by campaign_name;
+  see settings.get_synthflow_launch_url for the single-URL implementation.
+  The shared workflow's own "Agent" label text still reads NewLead regardless of
+  which campaign a given call is for, so CallEvent.voice_agent classification is
+  unaffected by which campaign actually placed the call.
+
   Inbound   → no outbound Make Call (inbound only)
               → model_id f98454c1-2cd4-476c-b6f2-c5c425689e61
 
@@ -21,7 +28,8 @@ Voice agent / webhook routing (campaign → webhook → voice agent):
   Do NOT use JylDXjF8QB0Skr5cQzGGm — test/Nexus workflow, silently drops calls.
 
 URL selection: settings.get_synthflow_launch_url(campaign_name)
-  Raises ConfigError if the required URL is not configured.
+  Always returns SYNTHFLOW_LAUNCH_WORKFLOW_URL_New regardless of campaign_name.
+  Raises ConfigError if that URL is not configured.
 
 schedule_callback() / SYNTHFLOW_MODEL_ID / SYNTHFLOW_BASE_URL:
   Dead config — schedule_callback() is never called in production.

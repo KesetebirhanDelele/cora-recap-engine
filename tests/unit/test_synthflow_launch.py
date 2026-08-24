@@ -132,6 +132,34 @@ def test_launch_includes_metadata_when_provided():
     assert payload["metadata"]["correlation_id"] == "abc-123"
 
 
+def test_launch_cold_lead_uses_shared_new_lead_url_not_cold_url():
+    """
+    Cold Lead calls must go through SYNTHFLOW_LAUNCH_WORKFLOW_URL_New — the only
+    Make Call workflow with a working phone number attached. The separate Cold
+    URL is not used for routing even when configured, since that workflow has
+    no phone number and cannot place real calls (confirmed 2026-08-24).
+    """
+    http = MagicMock(spec=httpx.Client)
+    http.post.return_value = _mock_response(200)
+    new_url = "https://synthflow.example.com/webhooks/new-only"
+    cold_url = "https://synthflow.example.com/webhooks/cold-dead-end"
+    s = _settings(
+        synthflow_launch_workflow_url_new=new_url,
+        synthflow_launch_workflow_url_cold=cold_url,
+    )
+    client = _client(settings=s, mock_http=http)
+
+    client.launch_new_lead_call(
+        phone="+15551234567",
+        lead_name="Jane",
+        campaign_name="Cold Lead",
+        _retry_delay=0.0,
+    )
+
+    url_used = http.post.call_args[0][0]
+    assert url_used == new_url
+
+
 def test_launch_raises_config_error_when_url_not_configured():
     s = _settings(synthflow_launch_workflow_url_new=None, synthflow_launch_workflow_url_cold=None)
     client = _client(settings=s)
