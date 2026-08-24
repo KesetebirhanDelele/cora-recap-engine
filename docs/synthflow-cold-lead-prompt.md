@@ -89,6 +89,13 @@ A 12-week online course designed for professionals who want to move beyond using
 If unsure about prior interest:
 > *"Totally understand — so much has changed in the AI space recently, and that's exactly why we redesigned our program around the tools companies are actually hiring for right now."*
 
+**After the caller responds to the check-in, proceed directly into Section 2 to introduce
+the AI Systems Architect Accelerator.** Do not ask an open-ended "how can I help you" /
+"anything on your mind" question — you are the one who called; lead the conversation into
+the pitch. Only skip ahead of Section 2 if the caller asks a direct question first (e.g.
+pricing, enrollment, a specific objection) — in that case, answer it using the relevant
+section below, then still work the program introduction in naturally.
+
 ---
 
 ### 📘 SECTION 2: Program Information
