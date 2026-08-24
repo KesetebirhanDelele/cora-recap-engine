@@ -513,3 +513,90 @@ fast-forward, no conflicts). Full design/decision trail in `directives/spec/21_c
 4. Check whether the bare-IP TLS cert issue actually blocks GHL (or whether DNS/reverse-proxy
    has landed since the 2026-07 session, making this moot).
 5. Only then: Kes repoints GHL's New Lead and Cold Lead actions to the new Cora endpoint.
+
+---
+
+## Session: 2026-08-24 — Hetzner deploy, TLS via Caddy, GHL intake endpoint verified live
+
+**Branch**: `feat/ghl-call-conversation-sync` (direct commits — infra-only, no feature branch needed
+for this kind of change per this repo's convention).
+
+### What happened
+
+1. **Deployed yesterday's merged code to production**: `git pull && docker compose up -d --build`
+   at `/opt/cora-recap-engine`. Confirmed `cora_inbound_webhook_secret` loaded correctly
+   post-rebuild (it previously threw `AttributeError` — the code implementing it hadn't reached
+   the server yet; a plain `.env` edit alone can never fix a missing-field error like that, only
+   a real code deploy can).
+
+2. **Discovered no TLS existed at all.** `docker compose ps` showed `api` exposed only on plain
+   HTTP (`0.0.0.0:8000`), nothing listening on 443 — `curl https://204.168.245.238` returned
+   connection refused. The `GHL_OAUTH_REDIRECT_URI=https://204.168.245.238/oauth/callback` value
+   already sitting in `.env` was stale/aspirational, never actually reachable.
+
+3. **Added Caddy as a reverse proxy** (`docker-compose.yml` + new `Caddyfile`, committed) for
+   automatic HTTPS via Let's Encrypt, fronting a free `sslip.io` hostname
+   (`204-168-245-238.sslip.io` — encodes the server's IP, needs no domain registration/account).
+   Deliberately additive only: `api`'s existing plain-HTTP `8000:8000` binding was left untouched
+   so nothing already depending on it (whatever Synthflow's completion webhook currently targets)
+   could break. Locking that port down to `127.0.0.1` is a separate, later decision.
+
+4. **Extended secret-sync debugging** — local `.env` and Hetzner's `.env` drifted on
+   `CORA_INBOUND_WEBHOOK_SECRET` across several rounds: a plain `--no-deps` restart didn't
+   actually reload the new value (Compose didn't detect the `.env` *content* change as requiring
+   a container recreate — only `--force-recreate` guarantees a fresh environment load), and two
+   rounds of manual copy/paste into `nano` still didn't produce a matching value even after a
+   real recreate. Root-caused definitively via **SHA-256 hash comparison** — proves whether two
+   secrets are identical without either side ever being exposed or printed, which settled it
+   after a "manually confirmed, looks the same" visual check had already been wrong twice (easy
+   to miss a single differing character in a 43-char random string by eye). Fixed by generating
+   one fresh canonical value and setting it via `sed -i` in place on both sides, avoiding the
+   manual retyping in `nano` that was the likely actual source of drift.
+
+5. **Confirmed full end-to-end success**: `POST https://204-168-245-238.sslip.io/v1/webhooks/leads/new_lead`
+   returns `202 Accepted` over real HTTPS (valid Let's Encrypt cert, verified via Caddy's
+   `Via: 1.1 Caddy` response header) with matched-and-hash-verified secret auth. The GHL intake
+   endpoint built in the 2026-08-23 session is now deployed and confirmed working in production
+   — not just unit-tested against an in-memory DB.
+
+### Recommendation flagged to Ali: get the real domain (`cora.colaberry.com`) live
+
+The current TLS setup depends on `sslip.io`, a free third-party service that turns the server's
+raw IP into a hostname Let's Encrypt will issue a certificate for. It correctly unblocked testing
+today with zero registration or waiting, but it is **not** something to leave as the permanent
+setup once real GHL lead traffic depends on it continuously. Two concrete risks, explained to Kes
+in CEO-facing terms this session:
+1. **Not owned or controlled by Colaberry** — an external free service; if it goes down or
+   changes its policy, the integration breaks with no warning and no recourse.
+2. **Tied to this specific server's IP address** — if the server ever moves (migration, scaling,
+   disaster recovery), the address changes and every integration pointing at it (this one, and
+   anything built on it later) breaks and needs manual reconfiguration everywhere it's
+   referenced. A domain Colaberry owns can instead be repointed to a new IP in one place.
+
+The DNS A record `cora.colaberry.com → 204.168.245.238` has been pending on Ali since the 2026-07
+session (BC ticket
+[10084773637](https://app.basecamp.com/3945211/buckets/15139308/todos/10084773637)) — worth
+re-flagging now that there's a live, working dependency on the interim solution, not just a
+hypothetical future need.
+
+### Explicitly NOT done yet
+
+- **GHL has not been repointed.** Both New Lead and Cold Lead workflow actions in GHL still
+  trigger Synthflow directly — the new Cora endpoint is deployed and verified but nothing is
+  actually using it yet. Deliberate, separate decision for Kes.
+- `shadow_mode_enabled` / `outbound_campaigns_paused` current state was never rechecked this
+  session — still unknown whether they're on or off right now. Check before assuming a GHL
+  cutover would place real calls immediately versus silently no-op in shadow mode.
+- The permanent domain is still not live — `sslip.io` is a functioning bridge, not the answer.
+- Test `lead_state`/`scheduled_job` rows for the placeholder number `+15550001234` (created
+  during this session's verification calls) are still sitting in production — harmless, not
+  required to remove, but worth knowing they exist if anyone notices them while browsing the DB.
+
+### Next steps, in order
+
+1. Get Ali's DNS record live, then repoint the `Caddyfile` at the real domain (Caddy re-issues
+   the certificate automatically on the next request once the hostname changes).
+2. Check `shadow_mode_enabled`/`outbound_campaigns_paused` state before any GHL cutover.
+3. Kes repoints GHL's New Lead and Cold Lead actions to the new Cora endpoint (exact URLs/header
+   already given to him this session).
+4. Optional cleanup: remove the `+15550001234` test rows from `lead_state`/`scheduled_jobs`.
