@@ -235,6 +235,29 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Caddy reverse proxy (TLS termination) ─────────────────────────────────────
+  # Fronts the webhook API with automatic HTTPS (Let's Encrypt) so external
+  # callers (GHL, Synthflow) don't have to send secrets/lead PII over plain
+  # HTTP. Domain is a free sslip.io hostname (encodes the server IP, needs no
+  # account/registration) until the real cora.colaberry.com DNS record lands —
+  # see PROGRESS.md. Deliberately proxies only `api` for now and does not
+  # touch `api`'s existing 8000:8000 binding — this is purely additive so
+  # nothing currently depending on the plain-HTTP path can break. Locking that
+  # port down to 127.0.0.1 is a separate, later step once it's confirmed
+  # nothing external still needs it directly.
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
   # ── Adminer (DB browser + SQL runner, port 8080) ─────────────────────────────
   # Lightweight database UI. Reachable at http://server-ip:8080
   # Login: System=PostgreSQL, Server=postgres, Username/Password/Database from .env
@@ -253,3 +276,8 @@ volumes:
     # Named volume — persists across container restarts and image upgrades.
     # Data is stored on the host at /var/lib/docker/volumes/cora-recap-engine_postgres_data
     # Back this up before destructive operations.
+  caddy_data:
+    # Caddy's ACME account state + obtained TLS certificates. Must persist
+    # across restarts — without this, Caddy re-requests a cert from Let's
+    # Encrypt on every restart, which risks hitting Let's Encrypt's rate limits.
+  caddy_config:
