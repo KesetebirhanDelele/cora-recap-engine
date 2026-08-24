@@ -600,3 +600,54 @@ hypothetical future need.
 3. Kes repoints GHL's New Lead and Cold Lead actions to the new Cora endpoint (exact URLs/header
    already given to him this session).
 4. Optional cleanup: remove the `+15550001234` test rows from `lead_state`/`scheduled_jobs`.
+
+---
+
+## Session: 2026-08-24 (cont'd) — fixed voicemail-tier crash for contacts who also called inbound
+
+**Branch**: `fix/voicemail-tier-campaign-name-drift` (cut from `feat/ghl-call-conversation-sync`,
+merged and pushed same session, commit `85a6e32`, fast-forward, no conflicts).
+
+### What happened
+
+1. **Diagnosed a critical dashboard alert**: `process_voicemail_tier` failing with
+   `Unknown campaign type: 'Inbound'` for contact `+16822812224`, job 12 days old. Traced the
+   full path through the code and confirmed against real production data via SSH (`call_events`
+   and `lead_state` queried directly on Hetzner):
+   - The failing call itself was a completely ordinary **outbound New Lead** call (from Cora's
+     `+19729921028` caller ID, to `+16822812224`, `hangup_on_voicemail`, 2026-08-11) — not a
+     self-call, not an inbound misroute.
+   - The same real contact separately called **into** Cora's own inbound line on other occasions,
+     which set their `lead_state.campaign_name` to `"Inbound"`.
+   - `process_voicemail_tier` (`voicemail_jobs.py`) was reading `lead.campaign_name` off the row
+     in preference to the job's own payload, so by the time the outbound retry job ran, it read
+     the now-drifted `"Inbound"` value instead of `"New Lead"`, and `tier_policy.get_tier_policy`
+     correctly rejects `"Inbound"` (it's not a tier-retry campaign) — crashing the job every time
+     it fired.
+2. **Root cause**: a single `lead_state.campaign_name` field can't hold two independent facts at
+   once (last outbound campaign vs. "this contact also called our inbound line") — whichever
+   channel touches the row last silently overwrites the other's context.
+3. **Fix**: `voicemail_jobs.py` now resolves `campaign_name` by trusting the job payload's own
+   explicit value first (what the call was actually placed under), falling back to the row only
+   when the payload didn't carry one — unchanged behavior for that case (GHL-sync /
+   auto-created-row convenience the original fallback existed for).
+4. **Tests**: 2 new regression tests in `test_voicemail_jobs.py` — one reproduces the exact bug
+   (drifted row + explicit payload campaign → must not crash, must use the payload's campaign),
+   one locks in the preserved fallback behavior when the payload omits campaign_name entirely.
+   `test_voicemail_jobs.py`: 20/20 passing. Full suite: 1008 passed, 9 failed — confirmed via
+   `git stash` that all 9 failures reproduce identically on the base branch (unrelated
+   pre-existing flakiness in `channel_jobs`/`ghl_adapter`/`messaging`/`shadow_mode`/
+   `enrolled_intent`/`inbound_call_processing`, none touching `voicemail_jobs.py`) — zero
+   regressions from this change.
+5. **Deployed to Hetzner**: merged to `feat/ghl-call-conversation-sync`, pushed, then
+   `git pull && docker compose up -d --build` on the server. All 12 containers came up healthy;
+   `worker-retries`/`worker-default` logs confirmed clean startup with jobs processing normally.
+
+### Next steps
+
+- The original failed job for `+16822812224` is still sitting in the dashboard as an unresolved
+  critical alert from 12 days ago — safe to manually **Resolve** now that the underlying bug is
+  fixed; it will not self-clear.
+- Worth a quick scan for any *other* contacts with the same `lead_state.campaign_name = "Inbound"`
+  + a pending/stuck outbound voicemail-tier job, in case this bug produced more than one silent
+  failure historically.
