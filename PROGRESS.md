@@ -416,3 +416,100 @@ confirmed working. `cold_lead_campaign_paused=true` stays on until the webhook i
    slot-rebalancer timing tests in `test_outbound_jobs.py` (confirmed pre-existing on
    `feat/production-deployment-hardening` itself via a clean-checkout reproduction, not
    introduced by the branch merge).
+
+---
+
+## Session: 2026-08-23 — GHL→Cora call routing, New Lead priority, per-campaign dynamic prompts
+
+**Branch**: `feat/call-launch-priority-routing` (cut from `feat/ghl-call-conversation-sync`) —
+**merged and pushed to `feat/ghl-call-conversation-sync` this session** (commit `dcadd2e`,
+fast-forward, no conflicts). Full design/decision trail in `directives/spec/21_call_launch_priority_routing.md`.
+
+### What happened
+
+1. **Problem**: Cold Lead is about to go live sharing the same Synthflow voice agent as New
+   Lead. GHL currently triggers Synthflow's "Make Call" workflow *directly* for first-touch
+   calls, completely bypassing Cora — no `ScheduledJob`, no visibility, no way to prevent a
+   GHL-triggered call from colliding with anything Cora itself is scheduling at the same moment.
+   Separately, `enter_campaign()`'s first-touch call used `run_at=now` with no spacing at all,
+   unlike voicemail retries which were already on a shared 75s bucket grid.
+
+2. **Built** (all on the merged branch, 835 unit tests passing, zero regressions vs. base):
+   - `POST /v1/webhooks/leads/{campaign_type}` (`app/api/routes/call_intake.py`) — GHL will call
+     this instead of Synthflow directly. Shared-secret auth (`CORA_INBOUND_WEBHOOK_SECRET`, new
+     setting), find-or-create `lead_state` by phone, delegates everything else to
+     `enter_campaign()`.
+   - `enter_campaign()` now schedules via the same slot-aware helper voicemail retries use,
+     closing the no-spacing gap.
+   - `_compute_window_run_at()` gained priority/bump logic: a New Lead job can displace a
+     *pending* Cold Lead job from a contested slot (single bump, version-checked optimistic
+     concurrency, never touches claimed/running jobs) — New Lead is <2% of volume but
+     time-sensitive, Cold Lead is the overwhelming majority and isn't.
+   - Per-campaign dynamic prompt injection: `launch_new_lead_call()` now sends a full
+     campaign-specific system prompt (`docs/synthflow-warm-lead-prompt.md` /
+     `docs/synthflow-cold-lead-prompt.md`) as the outbound payload's `prompt` field.
+
+3. **Dynamic-prompt mechanism required real trial and error against Synthflow's actual
+   platform** (not just docs) — worth recording since it's non-obvious and easy to get wrong
+   silently:
+   - The standalone workflow-step `Prompt` field ("Pass the prompt for the Assistant") does
+     **not** work as a full override — tested with a real call, completely ignored.
+   - The working mechanism: a `Custom Variables` entry (`prompt` → `body.prompt`) on the
+     workflow's "Make Phone Call" step, **and** the assistant's own saved prompt set to literally
+     `{prompt}` (nothing else), **and** the assistant's Greeting Message field cleared (it
+     otherwise always speaks first with a stale, hardcoded line referencing the discontinued
+     Data Analytics bootcamp, which also biased the rest of the conversation even after the
+     `{prompt}` fix). All three together, confirmed via a real call opening immediately with the
+     injected test sentence.
+   - Both Make Call workflow objects — `NewLeads` (`p6ihFj7HmplXM2WiuVsaC`, **enabled**, the one
+     placing real calls today) and `ColdLeads` (`33J546NiXxUUIRCbywNVH`, **disabled** — Cold
+     Lead hasn't launched yet, which is the entire reason this work exists) — got the Custom
+     Variables mapping. The assistant-level fix (`{prompt}` + blank greeting) is shared
+     automatically since both workflows call the same underlying assistant
+     (`model_id 95fd0659-...`, "Cora - Outbound Admissions Agent - ColdL").
+   - `execution/test_scripts/test_prompt_override.py` — standalone verification spike, POSTs
+     directly to Synthflow bypassing Cora's job queue entirely. Kept in the repo as the
+     reference for retesting this mechanism if Synthflow's behavior ever changes.
+
+4. **GHL's actual current trigger payload confirmed** (captured from the live "Cora Outbound -
+   New Leads" action, not guessed): Custom Data = `phone` (via a GHL Number Formatter step),
+   `first_name`, `email`. No `campaign_name` field — the new intake endpoint infers campaign
+   identity from the URL path instead. GHL's webhook action does support custom headers
+   (confirmed via its `Headers` section), which is what makes the shared-secret auth viable.
+
+### Explicitly NOT done yet (do not assume otherwise)
+
+- **Hetzner has not been redeployed.** The merge/push above only updated the remote branch —
+  production is still running whatever was deployed before this session. Needs, on the server
+  (`/opt/cora-recap-engine`): `git pull && docker compose up -d --build` (a real rebuild, not
+  just a restart — actual code changed, not only an env value).
+- `CORA_INBOUND_WEBHOOK_SECRET` needs adding to the server's `.env` (separately from local —
+  confirm with Kes whether this happened yet) before the new endpoint will accept anything.
+- **GHL's cutover itself is deliberately deferred** — repointing GHL's New Lead and Cold Lead
+  actions from Synthflow's URL to Cora's new endpoint is a separate, explicitly gated step for
+  Kes to do once he's satisfied with testing; the direct-to-Synthflow trigger stays live as a
+  fallback until then. See spec/21's Out of Scope section.
+- **Unknown whether `shadow_mode_enabled` / `outbound_campaigns_paused` are still `true` on
+  production** — both were `true` as of the 2026-07 session logged just above this one. If
+  they're still set that way, the new endpoint will accept requests and schedule jobs correctly,
+  but `launch_outbound_call_job` will no-op in shadow mode rather than placing real calls (this
+  differs from this session's own prompt-override test calls, which bypassed the job queue
+  entirely via the standalone script and were never subject to these flags). Check current state
+  before assuming a live GHL cutover would actually dial anyone.
+- Bare-IP HTTPS (`https://204.168.245.238`, no domain yet) may present a self-signed/non-CA
+  certificate that GHL's outbound HTTP client could reject — untested. The DNS/reverse-proxy
+  plan from the session above (`cora.colaberry.com`, blocked on Ali/DNS as of that session) would
+  resolve this properly; worth checking whether that's landed since, before relying on the bare
+  IP for the real GHL cutover.
+
+### Next steps, in order
+
+1. Confirm `CORA_INBOUND_WEBHOOK_SECRET` is set on the Hetzner server's `.env`, then
+   `git pull && docker compose up -d --build`.
+2. Check current `shadow_mode_enabled` / `outbound_campaigns_paused` state on production —
+   decide deliberately whether the GHL cutover should happen before or after turning these off.
+3. `curl` the new endpoint directly (command in this session's chat log) to confirm it responds
+   correctly before touching any GHL config.
+4. Check whether the bare-IP TLS cert issue actually blocks GHL (or whether DNS/reverse-proxy
+   has landed since the 2026-07 session, making this moot).
+5. Only then: Kes repoints GHL's New Lead and Cold Lead actions to the new Cora endpoint.
