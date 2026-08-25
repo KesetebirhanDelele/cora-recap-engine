@@ -72,6 +72,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "write_internal_comment_note": "rq_callback_queue",
     "rebalance_call_slots":       "rq_default_queue",
     "auto_webhook_recovery":      "rq_default_queue",
+    "staff_call_quality_scan":    "rq_default_queue",
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -184,6 +185,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.nurture_scheduler import run_nurture_scheduler
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
     from app.worker.jobs.slot_rebalancer import rebalance_call_slots_job
+    from app.worker.jobs.staff_call_quality_jobs import staff_call_quality_scan_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
     from app.worker.jobs.webhook_recovery_jobs import auto_webhook_recovery_job
 
@@ -215,6 +217,8 @@ def get_job_registry() -> dict[str, object]:
         "rebalance_call_slots": rebalance_call_slots_job,
         # Auto webhook recovery
         "auto_webhook_recovery": auto_webhook_recovery_job,
+        # Staff (sales rep / support staff) call quality analysis (spec/23)
+        "staff_call_quality_scan": staff_call_quality_scan_job,
     }
 
 
@@ -286,6 +290,14 @@ def run() -> None:
             logger.info("Webhook recovery scheduler ensured on startup")
         except Exception as exc:
             logger.warning("Could not ensure webhook recovery scheduler on startup: %s", exc)
+
+        # Ensure the staff call quality scan is scheduled on startup (spec/23).
+        try:
+            from app.worker.jobs.staff_call_quality_jobs import start_staff_call_quality_scanner
+            start_staff_call_quality_scanner()
+            logger.info("Staff call quality scanner ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure staff call quality scanner on startup: %s", exc)
 
     try:
         import redis

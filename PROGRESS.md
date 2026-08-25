@@ -911,3 +911,166 @@ validation + a timezone step), not fixable in this repo; not addressed this sess
    tagging a contact directly in GHL, or an appointment with no associated Cora call — see
    spec/22 Out-of-scope), and separately whether to escalate the two Synthflow-hosted-action bugs
    (slot validation, 2 PM/3 PM timezone mismatch) to whoever owns that Synthflow config.
+
+## Session: 2026-08-25 — staff call quality analysis (branch `feat/call-quality-analysis`)
+
+### What prompted this
+
+Kes asked whether recordings between human sales reps/support staff and leads/students (placed
+through GHL's own native dialer, not Cora/Synthflow) could be pulled, transcribed, and quality-
+scored — something Cora had zero visibility into before this session. Built in explicit stages
+per this repo's spec-first rule, with live verification against real GHL/production data before
+writing permanent code at every step (see `directives/spec/23_staff_call_quality_analysis.md` for
+the full spec).
+
+### Key discoveries, in order
+
+1. **GHL exposes recording + transcription endpoints natively** — `GET .../recording` and
+   `GET .../transcription` — but the current `GHL_API_KEY` token has no Conversations scope at
+   all (confirmed live: 401 "not authorized for this scope"). There's already a second,
+   correctly-scoped key in `.env` (`GHL_CONVERSATIONS_API_KEY`, built for the 2026-07-16
+   InternalComment write path) that the read side had simply never used — not a missing scope,
+   a wrong-key bug in the first draft of the discovery test.
+2. **GHL is not transcribing calls on this account** — confirmed live against a real 4-month-old
+   completed call (`400 CONVERSATIONS_MSG_RECORDING_NOT_FOUND`), ruling out a processing-delay
+   explanation. Pivoted the "use GHL's transcript" plan (Kes's original preference) to Whisper —
+   confirmed working end-to-end live (real GHL recording, 731,884 bytes, → OpenAI transcription,
+   ~6s round trip).
+3. **Rep identity lives on the message (`userId`), not the conversation** — confirmed via a full
+   raw-object dump. Per Kes: no static rep roster needed, use whatever GHL reports per call.
+4. **Lead-vs-student routing field found, but ambiguous** — three near-duplicate GHL picklist
+   fields (`Who you are`, `Select an option that best describes you` ×2) share identical options
+   (`Potential Student`/`Current Student`/`Business or Partner`) — likely leftover form
+   duplicates; the one sample contact checked had none of them populated. Per Kes: check all
+   three, persist each one's raw value on every row, decide which is authoritative once real
+   data accumulates — do not consolidate now.
+5. **Compliance-disclosure content sourced, not invented** — pulled directly from
+   `docs/synthflow-warm-lead-prompt.md` / `docs/synthflow-cold-lead-prompt.md` §5 (identical in
+   both): dual pricing transparency, no guaranteed-job-placement language, consent before
+   SMS/booking, closed DA bootcamp, honest scholarship answer.
+6. **Support rubric judges each call against what was actually requested** — per Kes's explicit
+   direction. The scoring prompt has the model identify the caller's specific request from the
+   transcript itself first, then scores resolution against that — GHL's support-ticket fields
+   (`Support Issue`, `What is your issue related to?`, and the student's own post-call CSAT
+   survey answers, all discovered in the 85-field custom-field dump) are supporting context only,
+   since they can't be reliably tied to *this specific* call (no per-field timestamp, up to 4
+   stale numbered ticket slots).
+
+### What shipped
+
+1. **`app/adapters/ghl.py`** — `api_key_override` (use `GHL_CONVERSATIONS_API_KEY` instead of the
+   contacts-only `GHL_API_KEY`), `search_conversations()`, `get_message_recording()`,
+   `get_message_transcription()`. 15 new tests.
+2. **`app/adapters/openai_client.py`** — `transcribe_audio()`, same retry/error shape as
+   `chat_completion()`. 8 new tests.
+3. **`migrations/versions/0021_staff_call_quality.py`** + **`app/models/staff_call_quality.py`**
+   — new table, not yet applied to production (ships with this branch's deploy).
+4. **`app/core/call_classification.py`** — `classify_from_known_signals()` (GHL fields →
+   `enrollment_date` → Cora's own call history) and `classify_from_transcript_ai()` (last-resort
+   fallback). 26 tests — caught a real bug: the first draft of the AI-classification prompt had
+   unescaped `{ }` around a literal JSON example, which Python's `.format()` silently
+   misinterpreted as a template field and would have crashed every AI classification call in
+   production. Fixed before it ever ran for real.
+5. **`app/core/ghl_support_context.py`** — pulls issue category/description/CSAT fields from a
+   raw GHL contact. 8 tests.
+6. **`app/core/call_quality_scoring.py`** — sales + support rubric prompts and `score_call()`,
+   with a call-outcome gate (no score for non-connected or <20s calls). 15 tests.
+7. **`app/worker/jobs/staff_call_quality_jobs.py`** — periodic scan job, same
+   claim/run/reschedule shape as `webhook_recovery_jobs.py`; 15-minute interval, 24h lookback,
+   20-per-cycle cap, per-item error isolation. 19 tests.
+8. **Off-by-default safety gate**: `STAFF_CALL_QUALITY_SCAN_ENABLED` (new setting, defaults
+   `false`) — added after realizing the job as designed would otherwise auto-start scanning every
+   sales/support call location-wide the moment it's deployed, spending real OpenAI transcription/
+   scoring credits with no explicit opt-in. Gated inside `_run_scan_cycle()`; job still
+   self-reschedules on its normal cadence but no-ops (no GHL calls, no OpenAI calls, no rows)
+   until Kes flips it on.
+9. **`directives/spec/23_staff_call_quality_analysis.md`** (new) — full spec per this repo's Five
+   Primitives.
+10. **`.env.example`** — documented `GHL_CONVERSATIONS_API_KEY` (was previously undocumented
+    despite being live in production since 2026-07-16), `OPENAI_MODEL_CALL_TRANSCRIPTION`,
+    `STAFF_CALL_QUALITY_SCAN_ENABLED`.
+
+Tests: 94 new this session, full suite 1125 passed / 11 failed — same 11 pre-existing,
+unrelated local-environment failures confirmed via `git stash` comparison both before and after
+each major addition; zero regressions.
+
+### Explicitly NOT done yet
+
+- **Dashboard page** — no UI to review scored calls yet; data is queryable directly from
+  `staff_call_quality`.
+- **Historical backfill** — the scan job only picks up calls in its rolling 24h lookback window
+  going forward; `GET /conversations/search`'s `lastMessageType` filter reflects a conversation's
+  *most recent* message only, so it isn't reliable for a one-shot backfill (see spec/23).
+- **Live end-to-end test of the actual scan job** — every individual piece (GHL reads, Whisper
+  transcription, classification, scoring) was live-validated against real production data before
+  being written permanently, but the full job hasn't been run together outside of mocked unit
+  tests. Recommended before flipping `STAFF_CALL_QUALITY_SCAN_ENABLED` on.
+- Not yet committed, merged, or deployed — awaiting Kes's review per the Pre-Ship Debrief Rule.
+  Given the real dollar cost once enabled, this one especially should get a live test run before
+  `STAFF_CALL_QUALITY_SCAN_ENABLED=true` goes into production `.env`.
+- Which of the three duplicate GHL routing fields is actually authoritative — needs real
+  accumulated data to decide (that's the whole point of persisting all three).
+
+### Next steps
+
+1. Kes reviews the rubric prompts and routing logic before this goes live for real.
+2. Merge `feat/call-quality-analysis` → `feat/ghl-call-conversation-sync`, redeploy Hetzner (with
+   `STAFF_CALL_QUALITY_SCAN_ENABLED` left `false` initially).
+3. Once deployed, manually trigger one scan cycle against a small, known set of real calls to
+   sanity-check output before enabling the recurring schedule for real.
+4. After enough data accumulates, decide which of the three duplicate GHL picklist fields is
+   authoritative and consider consolidating (or confirm with Kes they're each genuinely used by
+   different forms and should stay separate) — now a secondary check behind GHL tags.
+
+## Session: 2026-08-25 (cont'd) — dashboard card, GHL-tags routing signal, do_not_call gate
+
+### Dashboard card
+
+Added a "Staff Call Quality" tile (dashboard home page, Analytics group) linking to a new
+`/staff-call-quality` page: 5 stat tiles (scanned/connected/analyzed/flagged/avg-score-by-type) +
+a recent-calls table (time, rep, type, score, summary, flag). Backend: `GET
+/dashboard/staff-call-quality` → `get_staff_call_quality_summary()` in `dashboard_metrics.py`.
+Shows an explicit empty-state banner (not just a blank table) explaining the scan is off by
+default, since the card is visible immediately on deploy but has nothing to show until
+`STAFF_CALL_QUALITY_SCAN_ENABLED` is turned on. Testing this against a real SQLite DB (not just
+mocks) caught a real bug: `call_time` came back as a plain string via raw SQL on SQLite, not a
+datetime object, crashing `.isoformat()` — fixed with the same defensive
+`hasattr(x, "isoformat")` pattern already used elsewhere in this file. Likely SQLite-only (Postgres
+returns real datetime objects for timestamp columns even via raw SQL), but worth having caught
+either way. 4 new backend tests (real SQLite data) + frontend `npm run build` verified clean
+(typecheck passes; `npm run lint` itself is broken pre-existing/unrelated — `next lint` errors on
+its own invocation).
+
+### GHL tags as the primary classification signal
+
+Kes reviewed three real GHL contacts and pointed out their `tags` array (a different field from
+the customFields picklists discussed earlier) — populated on all three samples, where the
+picklist fields were empty on every contact checked. Kes's rule, added as the *first* check in the
+priority chain (ahead of the picklist fields): any tag containing "student" or "enrolled" → student;
+tags present but none matching → lead (Colaberry explicitly tags the enrolled-student exception,
+not every lead) — but an empty tag list is treated differently and falls through rather than
+defaulting to "sales" on zero information. `app/core/call_classification.py` updated
+(`extract_classification_signals()` now pulls `contact["tags"]`; `classify_from_known_signals()`
+checks it first); `staff_call_quality` gained a `ghl_tags` column (audit trail, same pattern as the
+picklist-field snapshots) — folded directly into migration `0021` since it hadn't been applied to
+production yet, rather than adding a churny follow-up migration. 8 new tests in
+`test_call_classification.py`, 1 new job-level test confirming tags win over a contradicting
+picklist value.
+
+### `lead_state.do_not_call` gate
+
+Separate, smaller ask folded in alongside the above: close the previously-known, separately-tracked
+gap where `launch_outbound_call_job` never checked `lead_state.do_not_call` before dialing (open
+since the 2026-07-15 session). Implemented with the exact same belt-and-suspenders pattern as the
+urgent-escalation guard from earlier this session (spec/22): a check in `enter_campaign()` (direct
+attribute read — `lead` is already loaded) and a matching check in `launch_outbound_call_job()`
+(new `_is_do_not_call()` helper, DB lookup by `contact_id` since the job only has payload data) —
+both cancel + log an `outbound_suppressed_do_not_call` exception rather than silently dropping the
+lead. Adding this guard exposed an ordering issue in 4 existing tests: with the new check running
+before the escalation guard, `_is_do_not_call()`'s real implementation was hitting a `MagicMock`
+session and returning a truthy mock instead of `False`, incorrectly short-circuiting those tests —
+fixed by explicitly patching `_is_do_not_call` to `False` in every test that expects to proceed
+past it. 4 new tests (2 campaigns, 2 outbound_jobs) plus the 4 fixed.
+
+Full suite after all of the above: 1145 passed, same 11 pre-existing unrelated failures. Still not
+committed — awaiting Kes's review per the Pre-Ship Debrief Rule.

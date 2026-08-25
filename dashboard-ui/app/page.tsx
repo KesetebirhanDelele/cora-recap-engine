@@ -35,12 +35,16 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
   {
     label: "Analytics",
     category: "analytics",
-    cols: 2,
+    // 3 cols (not 2) — 5 items now fit in 2 rows (3+2) instead of 3, staying
+    // within the group's fixed-height budget (see the height:320 container
+    // in HomePage below) the same way Operations (4 cols / 8 items) does.
+    cols: 3,
     items: [
       { href: "/voice-performance-v2", title: "Voice Performance", icon: "🎙️", description: "Date-filtered trends, WoW & call efficiency.", category: "analytics" },
       { href: "/engagement-analysis",  title: "Engagement Analysis", icon: "🤖", description: "Intent, consent & engagement metrics.", category: "analytics" },
       { href: "/conversion-funnel",   title: "Sales Queue",         icon: "📞", description: "Priority-ranked calls with scoring, recording & outcome logging.", category: "analytics" },
       { href: "/campaign-overview",   title: "Scheduled Actions",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
+      { href: "/staff-call-quality",  title: "Staff Call Quality",  icon: "🎧", description: "Sales-rep & support-staff calls, transcribed & scored.", category: "analytics" },
     ],
   },
   {

@@ -120,6 +120,26 @@ def enter_campaign(
             )
             return
 
+    # ── Do-not-call guard ────────────────────────────────────────────────────
+    # lead_state.do_not_call is set by handle_intent() from live-call
+    # detection but was never checked before dialing — a previously-known,
+    # separately-tracked gap (see PROGRESS.md, 2026-07-15 session) closed here.
+    if getattr(lead, "do_not_call", False):
+        logger.info(
+            "enter_campaign: do_not_call set — skipping entry | contact_id=%s campaign=%s",
+            lead.contact_id, campaign_name,
+        )
+        from app.worker.exceptions import create_exception
+        create_exception(
+            session,
+            type="outbound_suppressed_do_not_call",
+            severity="warning",
+            context={"contact_id": lead.contact_id, "campaign_type": campaign_type},
+            entity_type="lead",
+            entity_id=lead.contact_id,
+        )
+        return
+
     # ── Urgent-escalation guard ──────────────────────────────────────────────
     # A lead who recently escalated to a human or had a callback/appointment
     # booked must not be re-entered into an unrelated cold-pitch campaign

@@ -36,6 +36,7 @@ import type {
   SalesOutcomeResponse,
   SaveSettingsRequest,
   SaveSettingsResponse,
+  StaffCallQualityResponse,
   VoicePerformanceResponse,
   WebhookFailuresResponse,
   WorkerActivityResponse,
@@ -361,6 +362,14 @@ export async function fetchRecentCalls(options?: {
   if (options?.voice_agent)  params.voice_agent  = options.voice_agent;
   if (options?.limit)        params.limit        = String(options.limit);
   return get<RecentCallsResponse>("/dashboard/recent-calls", params);
+}
+
+export async function fetchStaffCallQuality(options?: {
+  limit?: number;
+}): Promise<StaffCallQualityResponse> {
+  const params: Record<string, string> = {};
+  if (options?.limit) params.limit = String(options.limit);
+  return get<StaffCallQualityResponse>("/dashboard/staff-call-quality", params);
 }
 
 export async function fetchIntentCalls(options: {

@@ -20,6 +20,7 @@ Injectable _client for tests:
 """
 from __future__ import annotations
 
+import io
 import json
 import logging
 import time
@@ -173,4 +174,81 @@ class OpenAIClient:
 
         raise OpenAIError(
             f"OpenAI request exhausted {self.settings.openai_retry_max} retries"
+        )
+
+    def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        *,
+        filename: str = "recording.wav",
+        model: str | None = None,
+        _retry_delay: float = 1.0,
+    ) -> str:
+        """
+        Transcribe raw audio bytes (e.g. a GHL call recording) to text via
+        OpenAI's audio transcription API. Confirmed live against a real GHL
+        recording (2026-08-25 discovery spike) — ~6s round-trip for a 49s clip.
+
+        model: defaults to settings.openai_model_call_transcription ("whisper-1").
+        Same retry/error shape as chat_completion() — same SDK, same
+        exception hierarchy.
+
+        Returns: transcript text (str). Raises OpenAIError on auth failure
+        or exhausted retries.
+        """
+        self.settings.validate_for_openai()
+        clean_model = self._strip_prefix(model or self.settings.openai_model_call_transcription)
+
+        for attempt in range(self.settings.openai_retry_max + 1):
+            try:
+                audio_file = io.BytesIO(audio_bytes)
+                audio_file.name = filename
+                resp = self._oai.audio.transcriptions.create(model=clean_model, file=audio_file)
+                return resp.text
+
+            except openai.AuthenticationError as exc:
+                raise OpenAIError(
+                    f"OpenAI authentication failed — check OPENAI_API_KEY: {exc}"
+                ) from exc
+
+            except openai.RateLimitError as exc:
+                if attempt < self.settings.openai_retry_max:
+                    wait = max(60.0, _retry_delay * (2 ** attempt))
+                    logger.warning(
+                        "OpenAI transcription rate limit | attempt=%d/%d model=%s | retry_in=%.0fs",
+                        attempt + 1, self.settings.openai_retry_max, clean_model, wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                raise OpenAIError(
+                    f"OpenAI rate limit exhausted after {attempt + 1} attempts"
+                ) from exc
+
+            except openai.APITimeoutError as exc:
+                if attempt < self.settings.openai_retry_max:
+                    logger.warning(
+                        "OpenAI transcription timeout | attempt=%d/%d model=%s",
+                        attempt + 1, self.settings.openai_retry_max, clean_model,
+                    )
+                    time.sleep(_retry_delay * (2**attempt))
+                    continue
+                raise OpenAIError(
+                    f"OpenAI timeout after {attempt + 1} attempts: {exc}"
+                ) from exc
+
+            except openai.APIStatusError as exc:
+                if exc.status_code in _RETRYABLE_5XX:
+                    if attempt < self.settings.openai_retry_max:
+                        logger.warning(
+                            "OpenAI transcription server error | status=%d attempt=%d/%d",
+                            exc.status_code, attempt + 1, self.settings.openai_retry_max,
+                        )
+                        time.sleep(_retry_delay * (2**attempt))
+                        continue
+                raise OpenAIError(
+                    f"OpenAI API error: {exc.status_code}", status_code=exc.status_code
+                ) from exc
+
+        raise OpenAIError(
+            f"OpenAI transcription request exhausted {self.settings.openai_retry_max} retries"
         )

@@ -569,6 +569,32 @@ export interface RecentCallsResponse {
   calls: RecentCallRow[];
 }
 
+// ── Staff Call Quality (spec/23) ────────────────────────────────────────────
+
+export interface StaffCallQualityRow {
+  ghl_message_id: string;
+  ghl_contact_id: string;
+  rep_user_id: string | null;
+  conversation_type: "sales" | "support" | "other" | "unknown" | null;
+  conversation_type_source: string | null;
+  quality_score: number | null;
+  call_connected: boolean;
+  call_time: string | null;
+  duration_seconds: number | null;
+  summary: string | null;
+  flagged_reason: string | null;
+}
+
+export interface StaffCallQualityResponse {
+  total_scanned: number;
+  total_connected: number;
+  total_analyzed: number;
+  flagged_count: number;
+  avg_score_sales: number | null;
+  avg_score_support: number | null;
+  recent: StaffCallQualityRow[];
+}
+
 // ── Intent Calls Drill-Down ───────────────────────────────────────────────────
 
 export interface IntentCallRow {

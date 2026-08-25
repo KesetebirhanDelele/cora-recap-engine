@@ -689,3 +689,188 @@ def test_get_conversation_messages_requires_credentials():
     client, _ = _make_client(s)
     with pytest.raises(ConfigError):
         client.get_conversation_messages("conv-any")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# api_key_override — Conversations reads use a different Private Integration
+# token than ghl_api_key (spec/22-adjacent: contacts scope != conversations
+# scope, confirmed live 401 without the override).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_api_key_override_used_in_auth_header():
+    s = _settings(ghl_api_key="contacts-key")
+    client = GHLClient(settings=s, _http=MagicMock(spec=httpx.Client), api_key_override="conversations-key")
+    headers = client._headers()
+    assert headers["Authorization"] == "Bearer conversations-key"
+
+
+def test_no_override_falls_back_to_settings_api_key():
+    s = _settings(ghl_api_key="contacts-key")
+    client, _ = _make_client(s)
+    headers = client._headers()
+    assert headers["Authorization"] == "Bearer contacts-key"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# search_conversations — location-wide search, not tied to a known contact_id
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_search_conversations_builds_correct_params():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"conversations": [{"id": "conv-1"}]})
+
+    result = client.search_conversations(
+        assigned_to="user-1", last_message_type="TYPE_CALL", start_after_date=1700000000000, limit=5,
+    )
+
+    assert result == [{"id": "conv-1"}]
+    call_kwargs = mock_http.request.call_args
+    assert call_kwargs[0][0] == "GET"
+    assert "/conversations/search" in call_kwargs[0][1]
+    params = call_kwargs[1]["params"]
+    assert params["assignedTo"] == "user-1"
+    assert params["lastMessageType"] == "TYPE_CALL"
+    assert params["startAfterDate"] == 1700000000000
+    assert params["limit"] == 5
+    assert params["locationId"] == "loc-123"
+    assert "contactId" not in params
+
+
+def test_search_conversations_omits_unset_filters():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"conversations": []})
+
+    client.search_conversations()
+
+    params = mock_http.request.call_args[1]["params"]
+    assert "assignedTo" not in params
+    assert "lastMessageType" not in params
+    assert "startAfterDate" not in params
+    assert "contactId" not in params
+
+
+def test_search_conversations_returns_empty_list_when_key_missing():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {})
+    assert client.search_conversations() == []
+
+
+def test_search_conversations_requires_credentials():
+    s = Settings(_env_file=None)
+    client, _ = _make_client(s)
+    with pytest.raises(ConfigError):
+        client.search_conversations()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_message_recording — raw audio bytes, not JSON
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_message_recording_returns_raw_bytes():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.content = b"RIFF....WAVEfmt "
+    resp.raise_for_status = MagicMock()
+    mock_http.request.return_value = resp
+
+    result = client.get_message_recording("msg-1")
+
+    assert result == b"RIFF....WAVEfmt "
+    call_kwargs = mock_http.request.call_args
+    assert call_kwargs[0][0] == "GET"
+    assert "/conversations/messages/msg-1/locations/loc-123/recording" in call_kwargs[0][1]
+
+
+def test_get_message_recording_uses_location_override():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.content = b"data"
+    resp.raise_for_status = MagicMock()
+    mock_http.request.return_value = resp
+
+    client.get_message_recording("msg-1", location_id="loc-override")
+
+    assert "/locations/loc-override/recording" in mock_http.request.call_args[0][1]
+
+
+def test_get_message_recording_raises_on_no_recording():
+    """422 'Message does not have recording' (e.g. a busy/no-answer call) propagates — not swallowed."""
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(422, {"message": "Message does not have recording"})
+
+    with pytest.raises(GHLError) as exc_info:
+        client.get_message_recording("msg-1")
+    assert exc_info.value.status_code == 422
+
+
+def test_get_message_recording_requires_credentials():
+    s = Settings(_env_file=None)
+    client, _ = _make_client(s)
+    with pytest.raises(ConfigError):
+        client.get_message_recording("msg-any")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_message_transcription — GHL's own auto-generated transcript, when it exists
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_get_message_transcription_returns_sentences():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    sentences = [{"sentenceIndex": "1", "transcript": "Hello there.", "confidence": "0.9"}]
+    mock_http.request.return_value = _mock_response(200, sentences)
+
+    result = client.get_message_transcription("msg-1")
+
+    assert result == sentences
+    assert "/conversations/locations/loc-123/messages/msg-1/transcription" in mock_http.request.call_args[0][1]
+
+
+def test_get_message_transcription_returns_none_when_not_found():
+    """
+    Confirmed live: GHL returns 400 CONVERSATIONS_MSG_RECORDING_NOT_FOUND when
+    no transcript has been generated for this message (feature not enabled,
+    or the call predates it being enabled) — an expected, common outcome,
+    not an error condition worth raising on.
+    """
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(
+        400, {"message": "Transcription does not exist with id msg-1"}
+    )
+
+    assert client.get_message_transcription("msg-1") is None
+
+
+def test_get_message_transcription_reraises_non_400_errors():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(500, {"message": "server error"})
+
+    with pytest.raises(GHLError):
+        client.get_message_transcription("msg-1")
+
+
+def test_get_message_transcription_uses_location_override():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, [])
+
+    client.get_message_transcription("msg-1", location_id="loc-override")
+
+    assert "/conversations/locations/loc-override/messages/msg-1/transcription" in mock_http.request.call_args[0][1]
+
+
+def test_get_message_transcription_requires_credentials():
+    s = Settings(_env_file=None)
+    client, _ = _make_client(s)
+    with pytest.raises(ConfigError):
+        client.get_message_transcription("msg-any")

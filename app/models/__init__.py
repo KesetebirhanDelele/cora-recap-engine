@@ -18,6 +18,7 @@ Tables:
   GhlOAuthToken        — per-location OAuth token pair for GHL Marketplace app (spec/19, spec/20)
   GhlConversationLogEvent — GHL Conversations call-log write records (one success per call)
   GhlInternalCommentLogEvent — GHL InternalComment write records (one success per call)
+  StaffCallQuality     — quality analysis of human sales-rep/support-staff calls (spec/23)
 
 Reporting views are defined in migrations/versions/0002_reporting_views.py
 and not represented as ORM models (read via raw SQL / reporting queries).
@@ -34,6 +35,7 @@ from app.models.lead_state import LeadState
 from app.models.scheduled_job import ScheduledJob
 from app.models.shadow_action import ShadowAction
 from app.models.shadow_sheet import ShadowSheetRow
+from app.models.staff_call_quality import StaffCallQuality
 from app.models.summary import SummaryResult
 from app.models.task_event import TaskEvent
 
@@ -52,4 +54,5 @@ __all__ = [
     "GhlOAuthToken",
     "GhlConversationLogEvent",
     "GhlInternalCommentLogEvent",
+    "StaffCallQuality",
 ]

@@ -550,3 +550,102 @@ class TestGetRecentCallsSql:
         assert ":from_dt" in sql, "Expected :from_dt bound parameter"
         assert ":to_dt" in sql, "Expected :to_dt bound parameter"
         assert ":limit" in sql, "Expected :limit bound parameter"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# get_staff_call_quality_summary (spec/23)
+# ─────────────────────────────────────────────────────────────────────────────
+# SQLite (3.25+) supports the FILTER (WHERE ...) clause used here, so this
+# runs against a real in-memory DB rather than a SQL-text-capture mock.
+
+class TestGetStaffCallQualitySummary:
+    @pytest.fixture(scope="class")
+    def scq_engine(self):
+        from sqlalchemy.pool import StaticPool
+
+        import app.models.staff_call_quality  # noqa: F401
+
+        eng = create_engine(
+            "sqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        Base.metadata.create_all(eng)
+        yield eng
+        Base.metadata.drop_all(eng)
+        eng.dispose()
+
+    @pytest.fixture
+    def scq_session(self, scq_engine):
+        with Session(scq_engine) as sess:
+            yield sess
+            sess.rollback()
+
+    def _row(self, session, **overrides):
+        from app.models.staff_call_quality import StaffCallQuality
+
+        defaults = dict(
+            id=str(uuid.uuid4()),
+            ghl_message_id=str(uuid.uuid4()),
+            ghl_contact_id="contact-1",
+            call_time=datetime.now(tz=timezone.utc),
+            call_connected=False,
+        )
+        defaults.update(overrides)
+        row = StaffCallQuality(**defaults)
+        session.add(row)
+        return row
+
+    def test_empty_table_returns_zeroed_stats(self, scq_session):
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        result = get_staff_call_quality_summary(scq_session)
+
+        assert result["total_scanned"] == 0
+        assert result["total_analyzed"] == 0
+        assert result["flagged_count"] == 0
+        assert result["avg_score_sales"] is None
+        assert result["avg_score_support"] is None
+        assert result["recent"] == []
+
+    def test_counts_and_averages(self, scq_session):
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        self._row(scq_session, call_connected=False)  # not connected — scanned only
+        self._row(scq_session, call_connected=True, conversation_type="sales", quality_score=80)
+        self._row(scq_session, call_connected=True, conversation_type="sales", quality_score=90)
+        self._row(scq_session, call_connected=True, conversation_type="support", quality_score=60,
+                   flagged_reason="Gave incorrect refund policy info")
+        scq_session.flush()
+
+        result = get_staff_call_quality_summary(scq_session)
+
+        assert result["total_scanned"] == 4
+        assert result["total_connected"] == 3
+        assert result["total_analyzed"] == 3
+        assert result["flagged_count"] == 1
+        assert result["avg_score_sales"] == 85.0
+        assert result["avg_score_support"] == 60.0
+
+    def test_recent_list_ordered_newest_first(self, scq_session):
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        older = self._row(scq_session, call_time=datetime(2026, 1, 1, tzinfo=timezone.utc))
+        newer = self._row(scq_session, call_time=datetime(2026, 6, 1, tzinfo=timezone.utc))
+        scq_session.flush()
+
+        result = get_staff_call_quality_summary(scq_session, limit=10)
+
+        ids = [r["ghl_message_id"] for r in result["recent"]]
+        assert ids.index(newer.ghl_message_id) < ids.index(older.ghl_message_id)
+
+    def test_recent_list_respects_limit(self, scq_session):
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        for _ in range(5):
+            self._row(scq_session)
+        scq_session.flush()
+
+        result = get_staff_call_quality_summary(scq_session, limit=2)
+
+        assert len(result["recent"]) == 2

@@ -1871,3 +1871,61 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
         "window_hours": 24,
         "recorded_at":  datetime.now(tz=timezone.utc).isoformat(),
     }
+
+
+# ── Staff Call Quality (spec/23) ────────────────────────────────────────────
+
+def get_staff_call_quality_summary(session: Session, limit: int = 50) -> dict[str, Any]:
+    """
+    Summary stats + recent rows from staff_call_quality (human sales-rep /
+    support-staff calls pulled from GHL's native dialer — distinct from
+    Cora's own call_events).
+
+    Returns zeroed stats and an empty list when the table has no rows yet —
+    expected immediately after deploy, since STAFF_CALL_QUALITY_SCAN_ENABLED
+    defaults to false until explicitly turned on (see spec/23).
+    """
+    stats_row = session.execute(text("""
+        SELECT
+            COUNT(*)                                                    AS total_scanned,
+            COUNT(*) FILTER (WHERE call_connected)                      AS total_connected,
+            COUNT(*) FILTER (WHERE quality_score IS NOT NULL)           AS total_analyzed,
+            COUNT(*) FILTER (WHERE flagged_reason IS NOT NULL)          AS flagged_count,
+            AVG(quality_score) FILTER (WHERE conversation_type = 'sales')   AS avg_score_sales,
+            AVG(quality_score) FILTER (WHERE conversation_type = 'support') AS avg_score_support
+        FROM staff_call_quality
+    """)).fetchone()
+
+    recent_rows = session.execute(text("""
+        SELECT
+            ghl_message_id, ghl_contact_id, rep_user_id, conversation_type,
+            conversation_type_source, quality_score, call_connected,
+            call_time, duration_seconds, summary, flagged_reason
+        FROM staff_call_quality
+        ORDER BY call_time DESC
+        LIMIT :limit
+    """), {"limit": limit}).fetchall()
+
+    recent = [{
+        "ghl_message_id":           r[0],
+        "ghl_contact_id":           r[1],
+        "rep_user_id":              r[2],
+        "conversation_type":        r[3],
+        "conversation_type_source": r[4],
+        "quality_score":            r[5],
+        "call_connected":           r[6],
+        "call_time":                r[7].isoformat() if r[7] and hasattr(r[7], "isoformat") else r[7],
+        "duration_seconds":         r[8],
+        "summary":                  r[9],
+        "flagged_reason":           r[10],
+    } for r in recent_rows]
+
+    return {
+        "total_scanned":    int(stats_row[0]) if stats_row else 0,
+        "total_connected":  int(stats_row[1]) if stats_row else 0,
+        "total_analyzed":   int(stats_row[2]) if stats_row else 0,
+        "flagged_count":    int(stats_row[3]) if stats_row else 0,
+        "avg_score_sales":   round(float(stats_row[4]), 1) if stats_row and stats_row[4] is not None else None,
+        "avg_score_support": round(float(stats_row[5]), 1) if stats_row and stats_row[5] is not None else None,
+        "recent": recent,
+    }

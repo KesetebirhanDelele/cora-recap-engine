@@ -381,6 +381,33 @@ def test_enter_campaign_skips_when_urgent_escalation_unresolved(session):
     assert len(jobs) == 0
 
 
+def test_enter_campaign_skips_when_do_not_call_set(session):
+    """Regression guard for the previously-open lead_state.do_not_call gap (PROGRESS.md 2026-07-15)."""
+    lead = _make_lead(session, campaign_name=None)
+    lead.do_not_call = True
+    session.flush()
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+
+    assert lead.campaign_name is None
+    jobs = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_enter_campaign_proceeds_when_do_not_call_false(session):
+    lead = _make_lead(session, campaign_name=None)
+    lead.do_not_call = False
+    session.flush()
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+
+    assert lead.campaign_name == "Cold Lead"
+
+
 def test_enter_campaign_proceeds_when_escalation_already_resolved(session):
     lead = _make_lead(session, campaign_name=None)
     _make_urgent_call_event(session, lead.contact_id)

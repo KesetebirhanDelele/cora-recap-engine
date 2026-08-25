@@ -338,6 +338,7 @@ def test_blocked_phone_cancels_job_and_raises_exception(
     mock_session.commit.assert_called_once()
 
 
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
 @patch("app.worker.jobs.outbound_jobs.create_exception")
 @patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
 @patch("app.worker.jobs.outbound_jobs.get_settings")
@@ -347,7 +348,7 @@ def test_blocked_phone_cancels_job_and_raises_exception(
 @patch("app.worker.jobs.outbound_jobs.complete_job")
 def test_non_blocked_phone_passes_guard(
     mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
-    mock_worker_id, mock_create_exc,
+    mock_worker_id, mock_create_exc, mock_is_dnc,
 ):
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
@@ -401,6 +402,7 @@ def test_cold_lead_campaign_paused_releases_cold_lead_job(
     mock_session.commit.assert_called_once()
 
 
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
 @patch("app.worker.jobs.outbound_jobs.release_job_to_pending")
 @patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
 @patch("app.worker.jobs.outbound_jobs.get_settings")
@@ -410,7 +412,7 @@ def test_cold_lead_campaign_paused_releases_cold_lead_job(
 @patch("app.worker.jobs.outbound_jobs.complete_job")
 def test_cold_lead_campaign_paused_does_not_affect_new_lead_job(
     mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
-    mock_worker_id, mock_release,
+    mock_worker_id, mock_release, mock_is_dnc,
 ):
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
@@ -436,9 +438,76 @@ def test_cold_lead_campaign_paused_does_not_affect_new_lead_job(
     mock_mark_running.assert_called_once()
 
 
+# ── Do-not-call guard ────────────────────────────────────────────────────────
+
+@patch("app.worker.claim.cancel_job")
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=True)
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_do_not_call_cancels_job_and_raises_exception(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_is_dnc, mock_cancel,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
+        launch_outbound_call_job(mock_job.id)
+
+    mock_mark_running.assert_not_called()
+    mock_create_exc.assert_called_once()
+    exc_call = mock_create_exc.call_args
+    assert exc_call.kwargs["type"] == "outbound_suppressed_do_not_call"
+    assert exc_call.kwargs["severity"] == "warning"
+    mock_session.commit.assert_called_once()
+
+
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
+@patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+@patch("app.worker.jobs.outbound_jobs.complete_job")
+def test_not_do_not_call_passes_guard(
+    mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_urgent, mock_is_dnc,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags(shadow_mode=True)):
+        with patch("app.worker.shadow.log_shadow_action"):
+            launch_outbound_call_job(mock_job.id)
+
+    mock_create_exc.assert_not_called()
+    mock_mark_running.assert_called_once()
+
+
 # ── Urgent-escalation guard ─────────────────────────────────────────────────
 
 @patch("app.worker.claim.cancel_job")
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
 @patch("app.core.escalation_guard.check_urgent_unresolved")
 @patch("app.worker.jobs.outbound_jobs.create_exception")
 @patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
@@ -448,7 +517,7 @@ def test_cold_lead_campaign_paused_does_not_affect_new_lead_job(
 @patch("app.worker.jobs.outbound_jobs.mark_running")
 def test_unresolved_escalation_cancels_job_and_raises_exception(
     mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
-    mock_worker_id, mock_create_exc, mock_check_urgent, mock_cancel,
+    mock_worker_id, mock_create_exc, mock_check_urgent, mock_is_dnc, mock_cancel,
 ):
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
@@ -479,6 +548,7 @@ def test_unresolved_escalation_cancels_job_and_raises_exception(
     mock_session.commit.assert_called_once()
 
 
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
 @patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
 @patch("app.worker.jobs.outbound_jobs.create_exception")
 @patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
@@ -489,7 +559,7 @@ def test_unresolved_escalation_cancels_job_and_raises_exception(
 @patch("app.worker.jobs.outbound_jobs.complete_job")
 def test_no_escalation_passes_guard(
     mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
-    mock_worker_id, mock_create_exc, mock_check_urgent,
+    mock_worker_id, mock_create_exc, mock_check_urgent, mock_is_dnc,
 ):
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 

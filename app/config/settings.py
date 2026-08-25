@@ -199,8 +199,17 @@ class Settings(BaseSettings):
     openai_model_student_summary: str = "gpt-4o-mini"
     openai_model_consent_detector: str = "gpt-4o-mini"
     openai_model_vm_content: str = "gpt-4o-mini"
+    openai_model_call_transcription: str = "whisper-1"
     openai_timeout_seconds: int = 60
     openai_retry_max: int = 1
+
+    # ── Staff call quality analysis (spec/23) ───────────────────────────────
+    # Off by default — deploying this code must not silently start scanning
+    # every sales-rep/support-staff call location-wide and spending OpenAI
+    # transcription/scoring credits without an explicit opt-in. Flip to true
+    # in .env only once the rubric/routing has been reviewed against real
+    # output.
+    staff_call_quality_scan_enabled: bool = False
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"

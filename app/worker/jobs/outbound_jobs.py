@@ -205,6 +205,20 @@ def _compute_window_run_at(session, window_start: datetime, *, campaign_name: st
     return _bucket_start(end_bucket)
 
 
+def _is_do_not_call(session, contact_id: str) -> bool:
+    """True if lead_state.do_not_call is set for this contact. False if no row exists."""
+    from sqlalchemy import select
+
+    from app.models.lead_state import LeadState
+
+    if not contact_id:
+        return False
+    value = session.scalars(
+        select(LeadState.do_not_call).where(LeadState.contact_id == contact_id)
+    ).first()
+    return bool(value)
+
+
 def launch_outbound_call_job(job_id: str) -> None:
     """
     Worker job: invoke Synthflow Make Call workflow.
@@ -290,6 +304,31 @@ def launch_outbound_call_job(job_id: str) -> None:
                 type="blocked_dial_number",
                 severity="critical",
                 context={"phone": phone, "contact_id": contact_id, "job_id": job_id},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            session.commit()
+            return
+
+        # ── Do-not-call guard (belt-and-suspenders with enter_campaign) ────────
+        # lead_state.do_not_call was never checked before dialing — a
+        # previously-known, separately-tracked gap (see PROGRESS.md,
+        # 2026-07-15 session) closed here. Catches jobs already scheduled
+        # before do_not_call was set, or entered via a path other than
+        # enter_campaign().
+        if _is_do_not_call(session, contact_id):
+            logger.info(
+                "launch_outbound_call_job: do_not_call set — cancelling | "
+                "contact_id=%s job_id=%s",
+                contact_id, job_id,
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            create_exception(
+                session,
+                type="outbound_suppressed_do_not_call",
+                severity="warning",
+                context={"contact_id": contact_id, "job_id": job_id, "campaign_name": campaign_name},
                 entity_type="lead",
                 entity_id=contact_id,
             )

@@ -65,8 +65,21 @@ class GHLClient:
             contact = client.get_contact(contact_id)
     """
 
-    def __init__(self, settings: Settings | None = None, _http: httpx.Client | None = None):
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        _http: httpx.Client | None = None,
+        api_key_override: str | None = None,
+    ):
         self.settings = settings or get_settings()
+        # api_key_override: use a different Private Integration token than
+        # settings.ghl_api_key — e.g. settings.ghl_conversations_api_key, which
+        # is scoped for Conversations reads (contacts/tasks/fields scope on
+        # ghl_api_key does not cover Conversations — confirmed live, a
+        # conversations call against ghl_api_key returns 401 "not authorized
+        # for this scope"). See app/adapters/ghl_internal_comment.py for the
+        # existing write-side use of this same conversations key.
+        self._api_key_override = api_key_override
         # _http injected in tests to avoid real network calls
         self._http = _http or httpx.Client(
             base_url=self.settings.ghl_base_url,
@@ -77,7 +90,7 @@ class GHLClient:
 
     def _headers(self) -> dict[str, str]:
         return {
-            "Authorization": f"Bearer {self.settings.ghl_api_key}",
+            "Authorization": f"Bearer {self._api_key_override or self.settings.ghl_api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Version": _VERSION_HEADER,
@@ -91,17 +104,31 @@ class GHLClient:
         path: str,
         *,
         _retry_delay: float = 1.0,
+        parse_json: bool = True,
+        version_override: str | None = None,
         **kwargs: Any,
-    ) -> dict:
+    ) -> Any:
         """
         Execute an HTTP request with bounded retry on transient failures.
 
         _retry_delay: base delay seconds (doubles per attempt).
                       Pass 0.0 in tests to skip real sleeps.
+        parse_json: when False, returns raw response bytes instead of a
+                    parsed dict — used for binary endpoints (e.g. call
+                    recording audio).
+        version_override: use a different Version header than the module
+                    default for this one call — some newer Conversations
+                    endpoints were tested live against both the legacy
+                    header and "v3" with identical results, so this exists
+                    for forward compatibility, not because it's currently
+                    required.
         """
+        headers = self._headers()
+        if version_override:
+            headers["Version"] = version_override
         for attempt in range(self.settings.ghl_retry_max + 1):
             try:
-                resp = self._http.request(method, path, headers=self._headers(), **kwargs)
+                resp = self._http.request(method, path, headers=headers, **kwargs)
 
                 if resp.status_code in _RETRYABLE_STATUS:
                     if attempt < self.settings.ghl_retry_max:
@@ -121,6 +148,8 @@ class GHLClient:
                     )
 
                 resp.raise_for_status()
+                if not parse_json:
+                    return resp.content
                 return resp.json() if resp.content else {}
 
             except httpx.TimeoutException as exc:
@@ -206,6 +235,87 @@ class GHLClient:
             params={"limit": limit},
         )
         return result.get("messages", [])
+
+    def search_conversations(
+        self,
+        *,
+        contact_id: str | None = None,
+        assigned_to: str | None = None,
+        last_message_type: str | None = None,
+        start_after_date: int | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """
+        Search conversations location-wide (not tied to a known contact_id).
+
+        assigned_to: GHL user ID — scope to a specific rep's conversations.
+        last_message_type: e.g. "TYPE_CALL" — GHL's actual message-type value
+            for calls (confirmed live; "CALL" alone is not the wire value).
+        start_after_date: epoch milliseconds.
+
+        Note: last_message_type filters on the conversation's *most recent*
+        message, not "contains a message of this type anywhere in the
+        thread" — a call conversation that gets a follow-up text before this
+        runs will no longer match. Fine for a frequently-polled discovery
+        job; not reliable for a one-shot historical backfill.
+
+        Requires ghl_conversations_api_key (contacts.readonly on
+        ghl_api_key does not cover this — see __init__ note).
+        """
+        self.settings.validate_for_ghl_reads()
+        params: dict[str, Any] = {"locationId": self.settings.ghl_location_id, "limit": limit}
+        if contact_id:
+            params["contactId"] = contact_id
+        if assigned_to:
+            params["assignedTo"] = assigned_to
+        if last_message_type:
+            params["lastMessageType"] = last_message_type
+        if start_after_date is not None:
+            params["startAfterDate"] = start_after_date
+        result = self._request("GET", "/conversations/search", params=params)
+        return result.get("conversations", [])
+
+    def get_message_recording(self, message_id: str, location_id: str | None = None) -> bytes:
+        """
+        Fetch the raw call recording audio for a message (audio/x-wav).
+
+        Raises GHLError (status_code=422) if the message has no recording —
+        confirmed live, e.g. a call that never connected (busy/no-answer).
+        Callers should catch this and skip, not treat it as a hard failure.
+        """
+        self.settings.validate_for_ghl_reads()
+        loc_id = location_id or self.settings.ghl_location_id
+        return self._request(
+            "GET",
+            f"/conversations/messages/{message_id}/locations/{loc_id}/recording",
+            parse_json=False,
+        )
+
+    def get_message_transcription(self, message_id: str, location_id: str | None = None) -> list[dict] | None:
+        """
+        Fetch GHL's own auto-generated transcription for a message, if one
+        exists. Returns a list of {mediaChannel, sentenceIndex, startTime,
+        endTime, transcript, confidence} sentence entries, or None if GHL
+        has not generated a transcript for this message (confirmed live:
+        GHL returns 400 CONVERSATIONS_MSG_RECORDING_NOT_FOUND for a call
+        that was never transcribed — e.g. transcription feature not enabled
+        on the account, or the call predates it being enabled. This is a
+        normal, expected outcome, not an error — callers needing a
+        transcript should fall back to pulling the recording and
+        transcribing independently when this returns None).
+        """
+        self.settings.validate_for_ghl_reads()
+        loc_id = location_id or self.settings.ghl_location_id
+        try:
+            result = self._request(
+                "GET",
+                f"/conversations/locations/{loc_id}/messages/{message_id}/transcription",
+            )
+        except GHLError as exc:
+            if exc.status_code == 400:
+                return None
+            raise
+        return result if isinstance(result, list) else result.get("transcriptions")
 
     def get_contact(self, contact_id: str) -> dict:
         """
