@@ -296,6 +296,37 @@ def launch_outbound_call_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Urgent-escalation guard (belt-and-suspenders with enter_campaign) ──
+        # Catches jobs that were already scheduled before an escalation
+        # happened, or jobs from paths other than enter_campaign() (nurture
+        # scheduler, voicemail-tier retries).
+        from app.core.escalation_guard import check_urgent_unresolved
+        escalation = check_urgent_unresolved(session, contact_id)
+        if escalation is not None:
+            logger.info(
+                "launch_outbound_call_job: urgent unresolved escalation — cancelling | "
+                "contact_id=%s job_id=%s detected_intent=%s call_time=%s",
+                contact_id, job_id,
+                escalation["detected_intent"], escalation["call_time"],
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            create_exception(
+                session,
+                type="outbound_suppressed_urgent_escalation",
+                severity="warning",
+                context={
+                    "contact_id": contact_id,
+                    "job_id": job_id,
+                    "campaign_name": campaign_name,
+                    **escalation,
+                },
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            session.commit()
+            return
+
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
         # is nothing to defer.

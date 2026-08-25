@@ -832,3 +832,79 @@ or actioned.
 2. Investigate the GHL workflow responsible for writing Cora's own numbers into new contacts'
    `normalized_phone` field (both the Inbound and now-confirmed Outbound variants).
 3. Deploy this session's changes to Hetzner (code + the `BLOCKED_DIAL_NUMBERS` env update).
+
+## Session: 2026-08-24 (cont'd 4) — urgent-escalation guard (branch `feat/lead-escalation-suppression`)
+
+### What prompted this
+
+Kes pasted a real call log for one lead (Deborah): a human rep (RS) called and left a voicemail
+at 2:40 PM; at 2:54 PM an inbound Synthflow call ("Cora - Inbound Admissions Agent") booked her a
+callback with an Admissions Advisor after she asked to speak with a human; at 3:12 PM an unrelated
+outbound campaign trigger cold-pitched her the AI Systems Architect Accelerator as if none of that
+had happened. Separately, the transcript also showed the bot accepting "Two PM" as a booking time
+though it had only offered 10:30/11:30/12:30, and the GHL record shows the appointment landed at
+3:00 PM, not the 2:00 PM confirmed verbally — both are Synthflow-hosted-action bugs (slot
+validation + a timezone step), not fixable in this repo; not addressed this session.
+
+### Investigation
+
+- Confirmed via code read: neither `app/core/campaigns.py::enter_campaign()` nor
+  `app/worker/jobs/outbound_jobs.py::launch_outbound_call_job()` — nor
+  `POST /v1/webhooks/leads/{campaign_type}` (`call_intake.py`), which calls `enter_campaign()`
+  unconditionally — ever checked whether a lead had a recent escalation before dialing. This
+  wasn't a regression; the check never existed (`directives/spec/dashboard/12_open_questions.md`
+  OQ-07 explicitly deferred any GHL appointment integration in v1).
+- Initially scoped this as "poll GHL for appointment/tag data" (Kes's original ask), but a live
+  Synthflow trace Kes pasted mid-session (a `GET /contacts/search/duplicate` call from an agent
+  literally named "Cora - Inbound Admissions Agent") showed the 2:54 PM escalation call is Cora's
+  own inbound Synthflow call, not an external GHL-native bot. That means the escalation is already
+  captured in `call_events.detected_intent` and already scores "urgent" in the existing Sales
+  Queue (`dashboard_metrics.py::_INTENT_SCORES`) — no new GHL integration needed for the confirmed
+  bug. Re-scoped with Kes's sign-off to ship only the pre-call gate this session; GHL-native
+  (non-Cora-call) escalation polling deferred as a separate ticket — see
+  `directives/spec/22_urgent_escalation_guard.md` Out-of-scope, which also flags that GHL's public
+  docs list an inconsistent `Version: v3` header for the appointments endpoint (vs. `2021-07-28`
+  used everywhere else in this integration) that would need live verification before shipping.
+
+### What shipped
+
+1. **`app/core/escalation_guard.py`** (new) — `check_urgent_unresolved(session, contact_id)`.
+   Blocks when the most recent `call_events` row for a contact in the last 30 days has
+   `detected_intent` in `{human_transfer_request, callback_request, callback_with_time, enrolled}`
+   and `lead_state.sales_outcome` is not yet set (i.e. no rep has triaged it via the Sales Queue).
+   Deliberately narrower than `_INTENT_SCORES`'s "urgent" tier — that tier also includes
+   `re_engaged`, which means "call this lead more," not "a human already took over." No schema
+   change — reads existing `call_events`/`lead_state` columns only.
+2. **`enter_campaign()` gate** — checked right after the existing pause-flag checks; skips entry
+   entirely and logs a `warning`-severity `outbound_suppressed_urgent_escalation` exception.
+3. **`launch_outbound_call_job()` gate** — belt-and-suspenders, checked right after the existing
+   blocked-dial-number guard; cancels the job + same exception type. Catches jobs already
+   scheduled before the escalation, or entered via nurture scheduler / voicemail-tier retries
+   (neither goes through `enter_campaign()`).
+4. **Tests**: `tests/unit/test_escalation_guard.py` (10 new), plus 2 new tests each in
+   `test_campaigns.py` and `test_outbound_jobs.py`. Full suite: 1004 passed (up from 1000),
+   41 pre-existing failures unchanged (confirmed via `git stash` — all `ModuleNotFoundError:
+   openai`-cascade, local-env-only, present on the base branch too; zero regressions).
+5. **`directives/spec/22_urgent_escalation_guard.md`** (new) — full spec per this repo's Five
+   Primitives (problem statement, acceptance criteria, constraints, out-of-scope, eval design).
+
+### Explicitly NOT done yet
+
+- GHL-native escalation ingestion (a human rep tagging a contact directly in GHL, or an
+  appointment with no associated Cora call) — needs Kes to confirm/grant calendar+tag scopes on
+  the GHL Private Integration token and a live test of the (currently unverified) appointments
+  endpoint before it's safe to build against.
+- The two Synthflow-hosted-action bugs from the original transcript (slot validation accepting an
+  unoffered time; the 2 PM confirmed vs. 3 PM created timezone mismatch) — live in Synthflow's
+  custom-action config, not this repo.
+- The separately-tracked, still-open `lead_state.do_not_call` gap in `launch_outbound_call_job`
+  (not touched by this change).
+- Not yet merged into `feat/ghl-call-conversation-sync` or deployed to Hetzner — awaiting Kes's
+  test confirmation per the Pre-Ship Debrief Rule.
+
+### Next steps
+
+1. Kes verifies the golden path (see debrief below), confirms go-ahead.
+2. Merge `feat/lead-escalation-suppression` → `feat/ghl-call-conversation-sync`, redeploy Hetzner.
+3. Decide whether to open a follow-up ticket for GHL-native escalation polling, and separately
+   whether to escalate the two Synthflow-hosted-action bugs to whoever owns that config.

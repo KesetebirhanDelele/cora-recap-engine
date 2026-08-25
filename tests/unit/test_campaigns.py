@@ -342,6 +342,58 @@ def test_enter_campaign_new_lead_unaffected_by_cold_lead_campaign_pause(session)
 
 
 # ---------------------------------------------------------------------------
+# Urgent-escalation guard — a lead that recently escalated to a human or had
+# a callback/appointment booked must not be re-entered into a cold-pitch
+# campaign until a sales rep has triaged it. Regression guard for the
+# 2026-08-24 double-contact incident (Deborah: booked a callback at 2:54 PM,
+# got a cold outbound pitch at 3:12 PM).
+# ---------------------------------------------------------------------------
+
+def _make_urgent_call_event(session, contact_id, detected_intent="human_transfer_request"):
+    from app.models.call_event import CallEvent
+
+    now = datetime.now(tz=timezone.utc)
+    ce = CallEvent(
+        id=str(uuid.uuid4()),
+        call_id=str(uuid.uuid4()),
+        contact_id=contact_id,
+        dedupe_key=str(uuid.uuid4()),
+        detected_intent=detected_intent,
+        created_at=now,
+        start_time_utc=now,
+    )
+    session.add(ce)
+    session.flush()
+    return ce
+
+
+def test_enter_campaign_skips_when_urgent_escalation_unresolved(session):
+    lead = _make_lead(session, campaign_name=None)
+    _make_urgent_call_event(session, lead.contact_id)
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+
+    assert lead.campaign_name is None
+    jobs = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_enter_campaign_proceeds_when_escalation_already_resolved(session):
+    lead = _make_lead(session, campaign_name=None)
+    _make_urgent_call_event(session, lead.contact_id)
+    lead.sales_outcome = "booked"
+    session.flush()
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+
+    assert lead.campaign_name == "Cold Lead"
+
+
+# ---------------------------------------------------------------------------
 # Slot-aware run_at (spec/21) — regression guard for the "run_at=now, no
 # grid" gap that let same-moment campaign entries collide with no spacing.
 # ---------------------------------------------------------------------------

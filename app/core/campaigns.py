@@ -120,6 +120,34 @@ def enter_campaign(
             )
             return
 
+    # ── Urgent-escalation guard ──────────────────────────────────────────────
+    # A lead who recently escalated to a human or had a callback/appointment
+    # booked must not be re-entered into an unrelated cold-pitch campaign
+    # until a sales rep has triaged it. See app.core.escalation_guard.
+    from app.core.escalation_guard import check_urgent_unresolved
+    escalation = check_urgent_unresolved(session, lead.contact_id)
+    if escalation is not None:
+        logger.info(
+            "enter_campaign: urgent unresolved escalation — skipping entry | "
+            "contact_id=%s campaign=%s detected_intent=%s call_time=%s",
+            lead.contact_id, campaign_name,
+            escalation["detected_intent"], escalation["call_time"],
+        )
+        from app.worker.exceptions import create_exception
+        create_exception(
+            session,
+            type="outbound_suppressed_urgent_escalation",
+            severity="warning",
+            context={
+                "contact_id": lead.contact_id,
+                "campaign_type": campaign_type,
+                **escalation,
+            },
+            entity_type="lead",
+            entity_id=lead.contact_id,
+        )
+        return
+
     # 1. Cancel existing pending jobs (clean slate for the new campaign)
     cancelled = _cancel_pending_jobs(session, lead.contact_id)
     if cancelled:

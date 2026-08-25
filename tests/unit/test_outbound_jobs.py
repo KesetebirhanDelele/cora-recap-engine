@@ -17,6 +17,11 @@ _compute_window_run_at (bucket-occupancy search, not count-based):
 launch_outbound_call_job blocked-number guard:
   9. Phone on BLOCKED_DIAL_NUMBERS → job cancelled + exception created, no Synthflow call
   10. Phone not on blocklist → guard passes, normal flow continues
+
+launch_outbound_call_job urgent-escalation guard:
+  11. check_urgent_unresolved() finds an unresolved escalation → job cancelled +
+      exception created, no Synthflow call
+  12. check_urgent_unresolved() returns None → guard passes, normal flow continues
 """
 from __future__ import annotations
 
@@ -428,4 +433,77 @@ def test_cold_lead_campaign_paused_does_not_affect_new_lead_job(
 
     # Cold-Lead-only pause must not hold a New Lead job
     mock_release.assert_not_called()
+    mock_mark_running.assert_called_once()
+
+
+# ── Urgent-escalation guard ─────────────────────────────────────────────────
+
+@patch("app.worker.claim.cancel_job")
+@patch("app.core.escalation_guard.check_urgent_unresolved")
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_unresolved_escalation_cancels_job_and_raises_exception(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_urgent, mock_cancel,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+    mock_check_urgent.return_value = {
+        "call_event_id": "ce-1",
+        "call_id": "call-1",
+        "detected_intent": "callback_with_time",
+        "call_time": "2026-08-24T14:54:00+00:00",
+    }
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
+        launch_outbound_call_job(mock_job.id)
+
+    # Guard fired: job cancelled, exception created, Synthflow never reached
+    mock_mark_running.assert_not_called()
+    mock_create_exc.assert_called_once()
+    exc_call = mock_create_exc.call_args
+    assert exc_call.kwargs["type"] == "outbound_suppressed_urgent_escalation"
+    assert exc_call.kwargs["severity"] == "warning"
+    assert exc_call.kwargs["context"]["detected_intent"] == "callback_with_time"
+    mock_session.commit.assert_called_once()
+
+
+@patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+@patch("app.worker.jobs.outbound_jobs.complete_job")
+def test_no_escalation_passes_guard(
+    mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_urgent,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags(shadow_mode=True)):
+        with patch("app.worker.shadow.log_shadow_action"):
+            launch_outbound_call_job(mock_job.id)
+
+    mock_create_exc.assert_not_called()
     mock_mark_running.assert_called_once()
