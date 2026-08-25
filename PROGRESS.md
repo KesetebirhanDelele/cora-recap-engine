@@ -1072,5 +1072,14 @@ session and returning a truthy mock instead of `False`, incorrectly short-circui
 fixed by explicitly patching `_is_do_not_call` to `False` in every test that expects to proceed
 past it. 4 new tests (2 campaigns, 2 outbound_jobs) plus the 4 fixed.
 
-Full suite after all of the above: 1145 passed, same 11 pre-existing unrelated failures. Still not
-committed — awaiting Kes's review per the Pre-Ship Debrief Rule.
+Full suite after all of the above: 1145 passed, same 11 pre-existing unrelated failures.
+
+### Merged + deployed — 2026-08-25
+
+Kes confirmed the debrief, merged `feat/call-quality-analysis` → `feat/ghl-call-conversation-sync`
+(fast-forward, `764b4ee..6da5480`), pushed, and redeployed Hetzner. `migrate` applied `0020 -> 0021`
+(new `staff_call_quality` table) cleanly; all 11 services `Up`; frontend build includes
+`/staff-call-quality`. Live-verified `GET /dashboard/staff-call-quality` against production —
+returns the expected zeroed state (`total_scanned: 0`, etc.) since `STAFF_CALL_QUALITY_SCAN_ENABLED`
+is still `false`. Everything from this session (spec/22's escalation guard, spec/23's call-quality
+pipeline + dashboard card + GHL-tags routing + the do_not_call gate) is now live in production.
