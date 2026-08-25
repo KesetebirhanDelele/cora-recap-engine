@@ -899,12 +899,15 @@ validation + a timezone step), not fixable in this repo; not addressed this sess
   custom-action config, not this repo.
 - The separately-tracked, still-open `lead_state.do_not_call` gap in `launch_outbound_call_job`
   (not touched by this change).
-- Not yet merged into `feat/ghl-call-conversation-sync` or deployed to Hetzner — awaiting Kes's
-  test confirmation per the Pre-Ship Debrief Rule.
+- ~~Not yet merged into `feat/ghl-call-conversation-sync` or deployed to Hetzner~~ — **done
+  2026-08-25**: Kes confirmed the debrief, merged `feat/lead-escalation-suppression` →
+  `feat/ghl-call-conversation-sync` (fast-forward, `9702521..764b4ee`), pushed, and redeployed
+  Hetzner (`docker compose up -d --build`). `migrate` ran clean (no schema change in this
+  release), `pgbouncer`/`postgres` healthy, all 11 services `Up` post-rebuild. Live in production.
 
 ### Next steps
 
-1. Kes verifies the golden path (see debrief below), confirms go-ahead.
-2. Merge `feat/lead-escalation-suppression` → `feat/ghl-call-conversation-sync`, redeploy Hetzner.
-3. Decide whether to open a follow-up ticket for GHL-native escalation polling, and separately
-   whether to escalate the two Synthflow-hosted-action bugs to whoever owns that config.
+1. Decide whether to open a follow-up ticket for GHL-native escalation polling (a human rep
+   tagging a contact directly in GHL, or an appointment with no associated Cora call — see
+   spec/22 Out-of-scope), and separately whether to escalate the two Synthflow-hosted-action bugs
+   (slot validation, 2 PM/3 PM timezone mismatch) to whoever owns that Synthflow config.
