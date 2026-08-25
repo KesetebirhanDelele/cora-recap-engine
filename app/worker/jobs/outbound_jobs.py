@@ -219,6 +219,43 @@ def _is_do_not_call(session, contact_id: str) -> bool:
     return bool(value)
 
 
+_SPAM_LIKELY_TAG = "spam likely"
+
+
+def _has_spam_likely_tag(contact_id: str, settings) -> bool:
+    """
+    True if the contact's live GHL record carries a "spam likely" tag.
+
+    Reads GHL directly (this signal only lives in GHL, not lead_state).
+    Fails open — any lookup problem (non-GHL contact_id, GHL outage, bad
+    response shape) logs a warning and returns False rather than blocking
+    outbound calling on a GHL read. Matches the non-fatal GHL-read pattern
+    used elsewhere (e.g. create_crm_task's contact fetch).
+    """
+    if not contact_id:
+        return False
+
+    stripped = contact_id.replace(" ", "").replace("-", "").replace("+", "")
+    if stripped.isdigit():
+        # Phone-derived contact_id, not a real GHL contact ID — nothing to look up.
+        return False
+
+    try:
+        from app.adapters.ghl import GHLClient
+
+        ghl = GHLClient(settings=settings)
+        record = ghl.get_contact(contact_id)
+        tags = record.get("contact", {}).get("tags", []) or []
+        return any(str(t).strip().lower() == _SPAM_LIKELY_TAG for t in tags)
+    except Exception as exc:
+        logger.warning(
+            "_has_spam_likely_tag: GHL contact fetch failed (failing open) | "
+            "contact_id=%s: %s",
+            contact_id, exc,
+        )
+        return False
+
+
 def launch_outbound_call_job(job_id: str) -> None:
     """
     Worker job: invoke Synthflow Make Call workflow.
@@ -327,6 +364,30 @@ def launch_outbound_call_job(job_id: str) -> None:
             create_exception(
                 session,
                 type="outbound_suppressed_do_not_call",
+                severity="warning",
+                context={"contact_id": contact_id, "job_id": job_id, "campaign_name": campaign_name},
+                entity_type="lead",
+                entity_id=contact_id,
+            )
+            session.commit()
+            return
+
+        # ── "spam likely" GHL tag guard ─────────────────────────────────────────
+        # lead_state has no concept of GHL's own tags — this reads GHL live at
+        # dial time to catch contacts GHL (or a carrier-side spam flag synced
+        # into GHL) has already tagged, independent of Cora's own do_not_call
+        # state. See PROGRESS.md 2026-07-17 finding #3.
+        if _has_spam_likely_tag(contact_id, settings):
+            logger.info(
+                "launch_outbound_call_job: 'spam likely' GHL tag — cancelling | "
+                "contact_id=%s job_id=%s",
+                contact_id, job_id,
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            create_exception(
+                session,
+                type="outbound_suppressed_spam_likely_tag",
                 severity="warning",
                 context={"contact_id": contact_id, "job_id": job_id, "campaign_name": campaign_name},
                 entity_type="lead",

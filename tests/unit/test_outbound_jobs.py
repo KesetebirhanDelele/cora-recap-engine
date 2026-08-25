@@ -504,6 +504,109 @@ def test_not_do_not_call_passes_guard(
     mock_mark_running.assert_called_once()
 
 
+# ── "spam likely" GHL tag guard ─────────────────────────────────────────────
+
+@patch("app.worker.claim.cancel_job")
+@patch("app.worker.jobs.outbound_jobs._has_spam_likely_tag", return_value=True)
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_spam_likely_tag_cancels_job_and_raises_exception(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_is_dnc, mock_has_spam, mock_cancel,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
+        launch_outbound_call_job(mock_job.id)
+
+    mock_mark_running.assert_not_called()
+    mock_create_exc.assert_called_once()
+    exc_call = mock_create_exc.call_args
+    assert exc_call.kwargs["type"] == "outbound_suppressed_spam_likely_tag"
+    assert exc_call.kwargs["severity"] == "warning"
+    mock_session.commit.assert_called_once()
+
+
+@patch("app.worker.jobs.outbound_jobs._has_spam_likely_tag", return_value=False)
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
+@patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+@patch("app.worker.jobs.outbound_jobs.complete_job")
+def test_not_spam_likely_tag_passes_guard(
+    mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_urgent, mock_is_dnc, mock_has_spam,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags(shadow_mode=True)):
+        with patch("app.worker.shadow.log_shadow_action"):
+            launch_outbound_call_job(mock_job.id)
+
+    mock_create_exc.assert_not_called()
+    mock_mark_running.assert_called_once()
+
+
+def test_has_spam_likely_tag_matches_case_insensitive():
+    from app.worker.jobs.outbound_jobs import _has_spam_likely_tag
+
+    mock_ghl = MagicMock()
+    mock_ghl.get_contact.return_value = {"contact": {"tags": ["Enrolled", "SPAM Likely"]}}
+    with patch("app.adapters.ghl.GHLClient", return_value=mock_ghl):
+        assert _has_spam_likely_tag("real-ghl-contact-id", _make_settings()) is True
+
+
+def test_has_spam_likely_tag_false_when_no_matching_tag():
+    from app.worker.jobs.outbound_jobs import _has_spam_likely_tag
+
+    mock_ghl = MagicMock()
+    mock_ghl.get_contact.return_value = {"contact": {"tags": ["enrolled", "student"]}}
+    with patch("app.adapters.ghl.GHLClient", return_value=mock_ghl):
+        assert _has_spam_likely_tag("real-ghl-contact-id", _make_settings()) is False
+
+
+def test_has_spam_likely_tag_short_circuits_on_phone_contact_id():
+    from app.worker.jobs.outbound_jobs import _has_spam_likely_tag
+
+    with patch("app.adapters.ghl.GHLClient") as mock_ghl_cls:
+        assert _has_spam_likely_tag("+19592022210", _make_settings()) is False
+        mock_ghl_cls.assert_not_called()
+
+
+def test_has_spam_likely_tag_fails_open_on_ghl_error():
+    from app.worker.jobs.outbound_jobs import _has_spam_likely_tag
+
+    mock_ghl = MagicMock()
+    mock_ghl.get_contact.side_effect = RuntimeError("GHL unavailable")
+    with patch("app.adapters.ghl.GHLClient", return_value=mock_ghl):
+        assert _has_spam_likely_tag("real-ghl-contact-id", _make_settings()) is False
+
+
 # ── Urgent-escalation guard ─────────────────────────────────────────────────
 
 @patch("app.worker.claim.cancel_job")
