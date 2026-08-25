@@ -1083,3 +1083,33 @@ Kes confirmed the debrief, merged `feat/call-quality-analysis` → `feat/ghl-cal
 returns the expected zeroed state (`total_scanned: 0`, etc.) since `STAFF_CALL_QUALITY_SCAN_ENABLED`
 is still `false`. Everything from this session (spec/22's escalation guard, spec/23's call-quality
 pipeline + dashboard card + GHL-tags routing + the do_not_call gate) is now live in production.
+
+## Session: 2026-08-25 — "spam likely" GHL tag guard on outbound dialing
+
+Closes the "spam likely" part of finding #3 from the 2026-07-17 session (a contact GHL had tagged
+do-not-contact/"spam likely" from a stale prior interaction got a full re-engagement pitch anyway,
+because nothing at dial time reads GHL's own tags). Scoped down to just this one tag rather than
+the full DNC-tag-ingestion project that finding also raised — that still needs its own spec.
+
+Branch `feat/spam-likely-tag-guard` (cut from `feat/ghl-call-conversation-sync`). Added
+`_has_spam_likely_tag(contact_id, settings)` to `app/worker/jobs/outbound_jobs.py`: live
+`GHLClient.get_contact()` lookup, case-insensitive match against the contact's GHL `tags` for
+`"spam likely"`. Wired into `launch_outbound_call_job` at the same belt-and-suspenders checkpoint
+as the existing `do_not_call` guard — on a match, cancels the job and raises
+`outbound_suppressed_spam_likely_tag` (warning). Short-circuits (no GHL call) when `contact_id` is
+actually a bare phone number rather than a real GHL ID, and fails open (logs + allows the call) on
+any GHL read error, matching the non-fatal GHL-read pattern used elsewhere in this codebase —
+deliberately not fail-closed, since a GHL outage blocking all outbound dialing would be a worse
+failure mode than occasionally missing this one tag.
+
+7 new tests in `test_outbound_jobs.py` (guard fires/passes, case-insensitivity, no-match, phone
+short-circuit, GHL-error fail-open). Full suite: 1177 passed, same 7 pre-existing unrelated
+failures (confirmed via `git stash` — identical failures with this change removed).
+
+Merged `feat/spam-likely-tag-guard` → `feat/ghl-call-conversation-sync` (fast-forward,
+`e06a514..a5c3d25`), pushed, redeployed Hetzner via `scripts/deploy.sh`. No new migration in this
+change. Both health checks (`API`, `Dashboard`) returned `ok` post-deploy; all 12 services `Up`.
+Not yet live-verified against a real GHL contact carrying the tag (the manual test-call route only
+ever passes a phone number as `contact_id`, which this guard short-circuits on) — would need a
+real sandbox contact tagged `spam likely` run through the actual campaign-enrollment flow to
+confirm end-to-end; flagged to Kes as an open gap, not yet done.
