@@ -1195,7 +1195,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
       active_alerts              — alert_events WHERE status='active'
       lookup_rate                — call_events in last hour (system activity proxy)
       config_health              — "healthy" | "warning" | "error"
-      pickup_rate                — completed / total calls
+      pickup_rate                — completed / total calls since midnight CST (matches calls_today's window)
       meaningful_engagement_rate — strong-intent calls / total calls
       booking_rate               — enrolled / unique contacts
       active_leads               — lead_state not closed/dnc
@@ -1315,14 +1315,16 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         f"   AND COALESCE(call_started_at, created_at) < {_midnight_cst}"
     ) or 0)
 
-    # ── pickup_rate ───────────────────────────────────────────────────────────
+    # ── pickup_rate (same calendar-day-so-far window as calls_today, so the
+    #    tile's "N calls · X% pickup" describes one consistent period) ────────
     pickup_curr = _r(_scalar(
-        "SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at >= :s",
-        {"s": w24_start},
+        f"SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0)"
+        f" FROM call_events WHERE COALESCE(call_started_at, created_at) >= {_midnight_cst}"
     ))
     pickup_prev = _r(_scalar(
-        "SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0) FROM call_events WHERE created_at BETWEEN :a AND :b",
-        {"a": w48_start, "b": w24_start},
+        f"SELECT COUNT(*) FILTER (WHERE status = 'completed')::float / NULLIF(COUNT(*), 0)"
+        f" FROM call_events WHERE COALESCE(call_started_at, created_at) >= {_yesterday_start}"
+        f"   AND COALESCE(call_started_at, created_at) < {_midnight_cst}"
     ))
 
     # ── meaningful_engagement_rate ────────────────────────────────────────────
