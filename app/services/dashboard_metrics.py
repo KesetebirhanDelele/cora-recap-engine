@@ -1203,7 +1203,9 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
       finalized_today            — leads finalized since midnight CST (closed/terminal/dnc)
       sync_success_rate          — task_events created / total
       anomaly_count              — exception types with spike (≥3 occurrences) in 24h
-      urgent_leads_count         — calls in last 7 days with high-intent detected_intent
+      urgent_leads_today         — distinct unresolved leads whose latest urgent call was today (midnight CST)
+      urgent_leads_count         — distinct unresolved leads whose latest urgent call was in the last 7 days
+                                    ("unresolved" = no sales_outcome logged and no connected staff callback since)
     """
     from app.config import get_settings
 
@@ -1454,27 +1456,55 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         ) t
     """, {"a": w48_start, "b": w24_start}) or 0
 
-    # ── urgent_leads_count ────────────────────────────────────────────────────
-    _URGENT_INTENTS = (
+    # ── urgent_leads (distinct leads needing urgent contact, unresolved) ──────
+    # Counts distinct contacts whose most recent urgent-intent call falls in
+    # the given window, excluding contacts already resolved via either:
+    #   - a rep-logged sales_outcome (manual triage, existing mechanism), or
+    #   - a connected staff phone call after the urgent call (automatic trace
+    #     via spec/23's staff_call_quality table — a no-op exclusion until
+    #     STAFF_CALL_QUALITY_SCAN_ENABLED is turned on, since that table is
+    #     empty until then).
+    _URGENT_LEAD_INTENTS = (
         "'enrolled','callback_request','callback_with_time',"
         "'re_engaged','human_transfer_request'"
     )
-    urgent_curr = _scalar(f"""
-        SELECT COUNT(*) FROM call_events
-        WHERE created_at >= :w
-          AND detected_intent IN ({_URGENT_INTENTS})
-          AND COALESCE(duration_seconds, 0) >= 30
-          AND transcript IS NOT NULL AND transcript != ''
-          AND recording_url IS NOT NULL AND recording_url != ''
-    """, {"w": w7d_start}) or 0
-    urgent_prev = _scalar(f"""
-        SELECT COUNT(*) FROM call_events
-        WHERE created_at BETWEEN :a AND :b
-          AND detected_intent IN ({_URGENT_INTENTS})
-          AND COALESCE(duration_seconds, 0) >= 30
-          AND transcript IS NOT NULL AND transcript != ''
-          AND recording_url IS NOT NULL AND recording_url != ''
-    """, {"a": w14d_start, "b": w7d_start}) or 0
+    _urgent_scan_start = now - timedelta(days=30)
+
+    def _urgent_leads_count(window_clause: str, extra_params: dict[str, Any] | None = None) -> int:
+        params = {"scan_start": _urgent_scan_start, **(extra_params or {})}
+        return int(_scalar(f"""
+            WITH latest_urgent AS (
+                SELECT DISTINCT ON (ce.contact_id)
+                    ce.contact_id,
+                    COALESCE(ce.start_time_utc, ce.created_at) AS call_time
+                FROM call_events ce
+                WHERE ce.detected_intent IN ({_URGENT_LEAD_INTENTS})
+                  AND COALESCE(ce.duration_seconds, 0) >= 30
+                  AND ce.transcript IS NOT NULL AND ce.transcript != ''
+                  AND ce.recording_url IS NOT NULL AND ce.recording_url != ''
+                  AND COALESCE(ce.start_time_utc, ce.created_at) >= :scan_start
+                ORDER BY ce.contact_id, COALESCE(ce.start_time_utc, ce.created_at) DESC
+            )
+            SELECT COUNT(*) FROM latest_urgent lu
+            LEFT JOIN lead_state ls ON ls.contact_id = lu.contact_id
+            WHERE {window_clause}
+              AND ls.sales_outcome IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM staff_call_quality scq
+                  WHERE scq.ghl_contact_id = lu.contact_id
+                    AND scq.call_connected IS TRUE
+                    AND scq.call_time > lu.call_time
+              )
+        """, params) or 0)
+
+    urgent_today = _urgent_leads_count(f"lu.call_time >= {_midnight_cst}")
+    urgent_yesterday = _urgent_leads_count(
+        f"lu.call_time >= {_yesterday_start} AND lu.call_time < {_midnight_cst}"
+    )
+    urgent_curr = _urgent_leads_count("lu.call_time >= :w7d", {"w7d": w7d_start})
+    urgent_prev = _urgent_leads_count(
+        "lu.call_time BETWEEN :w14d AND :w7d", {"w14d": w14d_start, "w7d": w7d_start}
+    )
 
     def _pt(val: Any, prev: Any) -> dict[str, Any]:
         return {"value": val, "previous_value": prev}
@@ -1497,6 +1527,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "finalized_today":            _pt(finalized_today,         finalized_yesterday),
         "sync_success_rate":          _pt(sync_curr,               sync_prev),
         "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
+        "urgent_leads_today":         _pt(urgent_today,            urgent_yesterday),
         "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),
         "computed_at":                now.isoformat(),
     }
@@ -1560,6 +1591,10 @@ def get_recent_calls(
       sales_score          — 0-100
       last_call_minutes_ago — integer minutes since the call
       recommended_action   — "Call Now" | "Review" | "Log & Move On"
+      sales_outcome         — lead_state.sales_outcome if a rep has logged one, else None
+      reached_by_staff      — True if a connected staff call (staff_call_quality,
+                               spec/23) reached this contact after this call — signals
+                               the lead can be taken out of the active queue
 
     voice_agent filter: "ColdLead" | "NewLead" | "Inbound" — matches ce.voice_agent.
     """
@@ -1618,7 +1653,14 @@ def get_recent_calls(
                 WHERE ce2.contact_id = ce.contact_id
                   AND ce2.created_at BETWEEN :from_dt AND :to_dt
             ) AS attempts,
-            LEFT(ce.transcript, 120) AS transcript_preview
+            LEFT(ce.transcript, 120) AS transcript_preview,
+            ls.sales_outcome,
+            EXISTS (
+                SELECT 1 FROM staff_call_quality scq
+                WHERE scq.ghl_contact_id = ce.contact_id
+                  AND scq.call_connected IS TRUE
+                  AND scq.call_time > COALESCE(ce.start_time_utc, ce.created_at)
+            ) AS reached_by_staff
         FROM call_events ce
         LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
         WHERE ce.created_at BETWEEN :from_dt AND :to_dt
@@ -1658,6 +1700,8 @@ def get_recent_calls(
             "sales_priority": priority,
             "sales_score": score,
             "recommended_action": recommended,
+            "sales_outcome": r[14],
+            "reached_by_staff": bool(r[15]),
         })
 
     return {

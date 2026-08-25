@@ -502,6 +502,18 @@ export default function SalesQueuePage() {
       });
       setAllCalls(sortCalls(data.calls));
       setTotal(data.total);
+      // Seed completed state from server-side resolution signals — a rep-logged
+      // terminal outcome, or a connected staff callback since this call — so
+      // already-resolved leads stay out of the active queue across reloads and
+      // browser sessions, not just within the current one.
+      setCompletedIds((prev) => {
+        const next = new Set(prev);
+        for (const c of data.calls) {
+          if (c.sales_outcome && TERMINAL_OUTCOMES.has(c.sales_outcome)) next.add(c.contact_id);
+          if (c.reached_by_staff) next.add(c.contact_id);
+        }
+        return next;
+      });
     } catch (e) {
       setError(String(e));
     } finally {

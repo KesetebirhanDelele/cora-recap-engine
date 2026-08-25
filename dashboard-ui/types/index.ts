@@ -536,6 +536,7 @@ export interface CardMetricsResponse {
   finalized_today:            MetricPoint;
   sync_success_rate:          MetricPoint;
   anomaly_count:              MetricPoint;
+  urgent_leads_today:         MetricPoint;
   urgent_leads_count:         MetricPoint;
   computed_at:                string;
 }
@@ -560,6 +561,8 @@ export interface RecentCallRow {
   attempts: number;
   last_call_minutes_ago: number | null;
   recommended_action: string;
+  sales_outcome: string | null;
+  reached_by_staff: boolean;
 }
 
 export interface RecentCallsResponse {
