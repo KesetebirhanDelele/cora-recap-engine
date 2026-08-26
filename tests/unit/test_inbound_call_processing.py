@@ -362,6 +362,103 @@ def test_inbound_new_caller_creates_lead_state_stub(session):
     assert stub.normalized_phone == phone
 
 
+def test_inbound_new_caller_prefers_phone_number_to_over_agent_line(session):
+    """
+    Regression (spec/24): when both phone_number_from and phone_number_to are
+    present on an inbound call's payload, phone_number_from is Synthflow's own
+    agent line, not the caller's number — verified against prod call_events
+    (phone_number_to matches contact_id ~80% of the time vs <2% for
+    phone_number_from). normalized_phone must be set from phone_number_to,
+    not phone_number_from, or outbound re-engagement later dials the agent's
+    own line instead of the lead (this exact scenario corrupted 35 prod
+    lead_state rows and tripped the blocked_dial_number guard once by luck).
+    """
+    agent_line = "+16822812224"
+    lead_phone = "+15559990002"
+    call_id = _call_id()
+    contact_id = lead_phone
+
+    job = ScheduledJob(
+        id=str(uuid.uuid4()),
+        job_type="run_call_analysis",
+        entity_type="call",
+        entity_id=call_id,
+        status="claimed",
+        run_at=datetime.now(tz=timezone.utc),
+        payload_json={
+            "call_id": call_id,
+            "contact_id": contact_id,
+            "call_event_id": None,
+            "campaign_name": "Inbound",
+        },
+        created_at=datetime.now(tz=timezone.utc),
+        version=0,
+    )
+    session.add(job)
+
+    call_event = CallEvent(
+        id=str(uuid.uuid4()),
+        call_id=call_id,
+        contact_id=contact_id,
+        status="completed",
+        direction="inbound",
+        voice_agent="Inbound",
+        transcript="Hi, I'm interested in enrolling.",
+        raw_payload_json={
+            "phone_number_from": agent_line,
+            "phone_number_to": lead_phone,
+            "campaign_name": "Inbound",
+            "Agent": "Cora Inbound - Completed Call",
+        },
+        dedupe_key=f"{call_id}:process_call_event",
+        created_at=datetime.now(tz=timezone.utc),
+    )
+    session.add(call_event)
+    session.flush()
+
+    job.payload_json = {**job.payload_json, "call_event_id": call_event.id}
+    session.flush()
+
+    with (
+        patch("app.worker.jobs.ai_jobs.claim_job", return_value=job),
+        patch("app.worker.jobs.ai_jobs.mark_running"),
+        patch("app.worker.jobs.ai_jobs.complete_job"),
+        patch("app.worker.jobs.ai_jobs.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.ai_jobs.get_settings", return_value=MagicMock(
+            task_create_on_completed_call=False,
+            enable_student_summary_writeback=False,
+        )),
+        patch("app.adapters.openai_client.OpenAIClient"),
+        patch("app.services.ai.generate_call_analysis", return_value=MagicMock(
+            model_used="gpt-4o-mini", prompt_family="test", prompt_version="v1", raw={},
+        )),
+        patch("app.services.ai.generate_student_summary", return_value=MagicMock(
+            student_summary="summary", summary_offered=True,
+            model_used="gpt-4o-mini", prompt_family="test", prompt_version="v1",
+        )),
+        patch("app.services.ai.detect_consent", return_value=MagicMock(consent="NO")),
+        patch("app.core.intent_detection.detect_intent", return_value={
+            "intent": "interested_not_now",
+            "confidence": 0.9,
+            "entities": {},
+        }),
+        patch("app.core.intent_actions.handle_intent"),
+        patch("app.core.campaigns.evaluate_campaign_switch", return_value=None),
+        patch("app.worker.jobs.ai_jobs._schedule_update_lead_state"),
+        patch("app.worker.jobs.ai_jobs.get_sync_session") as mock_ctx,
+    ):
+        mock_ctx.return_value.__enter__ = lambda _: session
+        mock_ctx.return_value.__exit__ = MagicMock(return_value=False)
+
+        from app.worker.jobs.ai_jobs import run_call_analysis
+        run_call_analysis(job.id)
+
+    stub = session.query(LeadState).filter_by(contact_id=contact_id).first()
+    assert stub is not None
+    assert stub.normalized_phone == lead_phone
+    assert stub.normalized_phone != agent_line
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Chunk 5 — update_lead_state sets campaign_name on new row
 # ─────────────────────────────────────────────────────────────────────────────

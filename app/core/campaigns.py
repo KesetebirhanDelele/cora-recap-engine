@@ -202,7 +202,14 @@ def enter_campaign(
     session.refresh(lead)
 
     # 4. Schedule first outbound call (idempotent)
-    phone = lead.normalized_phone or ""
+    # Prefer normalized_phone, but fall back to contact_id when it's
+    # phone-shaped — contact_id is the one field in this data model with a
+    # guaranteed dialable-number invariant (see call_intake.py's
+    # phone-derived-contact_id convention). normalized_phone can be missing
+    # or, historically, corrupted by an inbound-call fallback bug (spec/24).
+    phone = lead.normalized_phone or (
+        lead.contact_id if lead.contact_id and lead.contact_id.startswith("+") else ""
+    )
     if not phone:
         logger.warning(
             "enter_campaign: no phone number — outbound call not scheduled | "

@@ -142,12 +142,19 @@ def update_lead_state(job_id: str) -> None:
             else:
                 # No existing row — create one.
                 # Derive normalized_phone so Lead Journey phone-number lookup works.
-                # Priority: raw payload phone fields → contact_id itself (if it looks
-                # like a phone number, i.e. starts with '+').
+                # phone_number_to first, regardless of direction: in Synthflow's
+                # payload schema this is consistently the external/lead number
+                # on both inbound and outbound calls (verified against prod
+                # call_events — pto matches contact_id ~80% of the time vs <2%
+                # for pfrom). phone_number_from is almost always Synthflow's own
+                # line; prioritizing it corrupted normalized_phone on 35 prod
+                # rows (spec/24). Falls back further to the generic phone
+                # fields, then contact_id itself if it looks like a phone
+                # number (i.e. starts with '+').
                 raw_payload = call_event.raw_payload_json or {} if call_event else {}
                 derived_phone = (
-                    raw_payload.get("phone_number_from")
-                    or raw_payload.get("phone_number_to")
+                    raw_payload.get("phone_number_to")
+                    or raw_payload.get("phone_number_from")
                     or raw_payload.get("phone_number")
                     or raw_payload.get("phone")
                     or (resolved_contact_id if resolved_contact_id.startswith("+") else None)

@@ -219,6 +219,75 @@ def test_enter_campaign_no_phone_skips_outbound(session):
     assert len(jobs) == 0
 
 
+def test_enter_campaign_phone_shaped_contact_id_falls_back_to_contact_id(session):
+    """
+    Regression (spec/24): normalized_phone can be missing or corrupted (e.g.
+    by the derived_phone bug fixed in ai_jobs.py/lifecycle_jobs.py, which
+    once wrote Synthflow's own agent line into normalized_phone). When
+    contact_id itself is phone-shaped (the phone-derived-contact_id
+    convention documented in call_intake.py), enter_campaign must still
+    schedule the outbound call using contact_id rather than skipping.
+    """
+    now = datetime.now(tz=timezone.utc)
+    lead = LeadState(
+        id=str(uuid.uuid4()),
+        contact_id="+15550009999",
+        normalized_phone=None,
+        status="nurture",
+        campaign_name=None,
+        ai_campaign_value="2",
+        version=0,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(lead)
+    session.flush()
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+
+    jobs = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == lead.contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.status == "pending",
+        )
+    ).all()
+    assert len(jobs) == 1
+    assert jobs[0].payload_json["phone_number"] == "+15550009999"
+
+
+def test_enter_campaign_non_phone_contact_id_still_skips_without_normalized_phone(session):
+    """
+    Regression guard: when contact_id is a GHL-style ID (not phone-shaped)
+    and normalized_phone is missing, there is no dialable number anywhere on
+    the row — must still skip outbound, unchanged from pre-fix behavior.
+    """
+    now = datetime.now(tz=timezone.utc)
+    lead = LeadState(
+        id=str(uuid.uuid4()),
+        contact_id=str(uuid.uuid4()),
+        normalized_phone=None,
+        status="nurture",
+        campaign_name=None,
+        ai_campaign_value="2",
+        version=0,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(lead)
+    session.flush()
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+
+    jobs = session.scalars(
+        select(ScheduledJob).where(
+            ScheduledJob.entity_id == lead.contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+        )
+    ).all()
+    assert len(jobs) == 0
+
+
 # ---------------------------------------------------------------------------
 # Idempotency — no duplicate outbound if pending already exists
 # ---------------------------------------------------------------------------

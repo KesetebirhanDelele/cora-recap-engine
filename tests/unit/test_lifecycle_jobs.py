@@ -364,3 +364,50 @@ def test_creates_lead_state_with_normalized_phone_from_contact_id(session):
     ).first()
     assert lead is not None
     assert lead.normalized_phone == phone_as_contact_id
+
+
+def test_normalized_phone_prefers_phone_number_to_over_agent_line(session):
+    """
+    Regression (spec/24): when both phone_number_from and phone_number_to are
+    present, phone_number_from is Synthflow's own agent line (verified against
+    prod call_events — phone_number_to matches contact_id ~80% of the time vs
+    <2% for phone_number_from, regardless of direction). normalized_phone must
+    be set from phone_number_to, or outbound re-engagement later dials the
+    agent's own line instead of the lead.
+    """
+    agent_line = "+16822812224"
+    lead_phone = "+15550007777"
+    contact_id = lead_phone
+
+    ev = CallEvent(
+        id=str(uuid.uuid4()),
+        call_id=f"call-agentline-{uuid.uuid4().hex[:6]}",
+        contact_id=contact_id,
+        direction="inbound",
+        status="completed",
+        dedupe_key=f"call-agentline-test:{uuid.uuid4().hex}",
+        raw_payload_json={
+            "phone_number_from": agent_line,
+            "phone_number_to": lead_phone,
+            "campaign_name": "Inbound",
+        },
+        created_at=datetime.now(tz=timezone.utc),
+    )
+    session.add(ev)
+    session.flush()
+    _make_classification(session, ev.id, {"lead_stage": "New Lead"})
+
+    job = _run(session, {
+        "call_id": ev.call_id,
+        "call_event_id": ev.id,
+        "contact_id": contact_id,
+    })
+    assert job.status == "completed"
+
+    from sqlalchemy import select
+    lead = session.scalars(
+        select(LeadState).where(LeadState.contact_id == contact_id)
+    ).first()
+    assert lead is not None
+    assert lead.normalized_phone == lead_phone
+    assert lead.normalized_phone != agent_line
