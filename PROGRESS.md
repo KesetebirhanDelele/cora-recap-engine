@@ -1113,3 +1113,53 @@ Not yet live-verified against a real GHL contact carrying the tag (the manual te
 ever passes a phone number as `contact_id`, which this guard short-circuits on) — would need a
 real sandbox contact tagged `spam likely` run through the actual campaign-enrollment flow to
 confirm end-to-end; flagged to Kes as an open gap, not yet done.
+
+## Session: 2026-08-26 — Portfolio walkthrough video of the ops dashboard (no code changes)
+
+**Not a feature-development session** — no branch cut, `git status` on
+`feat/ghl-call-conversation-sync` confirmed clean before and after. Recorded here only because
+it changed local-machine/session state that a future session might otherwise be confused by.
+
+Kes asked for a walkthrough video of the app, following an external "Walkthrough Video Production
+Skill" package (`C:\Users\keset\Downloads\Walkthrough Video Production Skill - Desktop Test`, not
+part of this repo). Ran in **Mode 1 (Automated Production)** — Claude Code operated the real local
+app via Playwright, generated narration via Kokoro TTS, and assembled the final video via ffmpeg,
+all already installed/cached on this machine from prior use (no new installs needed except
+Kokoro's ~120MB model weights, downloaded to `~/.cache/kokoro/` with Kes's approval).
+
+**What got built, and where (all outside this repo — `C:\Users\keset\cora-walkthrough-output\`):**
+- `final/cora_walkthrough_final.mp4` — 1:35, 1440×900, 5-scene tour (Operator Console → Sales
+  Queue → Voice Performance → Staff Call Quality → System Controls) with narration and a
+  synthetic cursor overlay (Playwright doesn't capture the real OS pointer).
+- `storyboard.md`, `narration-script.md`, `transcript.md`, `revision-log.md` — full production
+  paper trail, evidence-tier-tagged per claim (spec-only vs. actually-observed).
+
+**Local dev stack stood up for this, using this repo's own `docker-compose.yml` unmodified:**
+Postgres/Redis/PgBouncer/API/dashboard-api/worker-default/frontend brought up locally
+(`DATABASE_URL=postgresql://...@localhost:5433/cora`, a fresh volume — no real data was ever in
+it). Seeded with clearly-fake data only: 10 `demo-*` contact_id rows in `call_events`/`lead_state`,
+6 in `staff_call_quality`, 3 `alert_events` tagged `[DEMO]` in their message text — all fictional
+names/transcripts, safe to leave or wipe. **As of this session's end, this local stack was left
+running and this seed data was left in place** — Kes had not yet said whether to tear it down when
+the session wrapped; a future session finding unfamiliar `demo-*` rows in the local dev DB or
+Docker containers up that nobody remembers starting should check here first before assuming
+they're a bug.
+
+**One real bug found and fixed for the recording, in a way that didn't touch the repo:** the
+frontend's Next.js rewrite proxies to `DASHBOARD_API_URL`, which `.env` correctly sets to
+`http://localhost:8001` for non-Docker local dev — but that's wrong for the frontend *container*
+talking to a sibling `dashboard-api` container, which needs the Docker-internal hostname. Fixed by
+passing `DASHBOARD_API_URL=http://dashboard-api:8001` as a shell-level env var into
+`docker compose build frontend` (overrides the `.env` value for that one build only) rather than
+editing `.env` or `docker-compose.yml`. This is the same class of issue already documented in
+memory/architecture notes elsewhere ("Docker internal hostname vs. localhost") — if it recurs,
+the fix is that build-arg override, not a `.env` change.
+
+**Still open, needs Kes:**
+- Final watch-through/approval of the assembled cut — not yet given as of this entry.
+- Video duration (1:35) came in short of the "3-5 min" target Kes gave at intake; flagged rather
+  than silently padded. Kes's call: extend, or accept as a tighter highlight reel.
+- Minor, accepted issue: the System Controls scene briefly (~0.5s, during a silent pre-narration
+  beat) flashes a real local-dev-only config warning (`GHL_FIELD_MARK_AS_LEAD` not set in this
+  `.env`) before it's hidden — logged in the revision log, not blocking.
+- Whether to tear down the local Docker stack / demo data described above.
