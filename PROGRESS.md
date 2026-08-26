@@ -1203,18 +1203,40 @@ confirmed on the new commit with all containers healthy.
 (not via this session). Verified after: 35 → 1 remaining row with
 `normalized_phone = '+16822812224'`.
 
+### Follow-up, same session: `+16822812224` ghost-contact investigation + spec/25
+
+**Investigation of the `+16822812224` lead_state row**: not a real lead.
+`call_events` targeting it go back to 2026-04-22 (64 rows, several
+`completed`) — long before its `lead_state` row existed (created
+2026-08-07). `app/adapters/synthflow.py::launch_new_lead_call()` never sends
+a `contact_id` to Synthflow, only `phone`; Synthflow's completion webhook has
+no real identity to echo back, so the normalizer falls back to the dialed
+number itself. Each of the pre-08-07 calls was almost certainly a different
+real lead whose `normalized_phone` (or job payload) had already been
+corrupted to the agent line by the same bug class spec/24 fixed — Cora just
+has no way to trace which leads now, since the corruption erased that link
+before the call was placed. The `lead_state` row itself was created on
+2026-08-07 when an inbound call event where both `phone_number_from` and
+`phone_number_to` were `+16822812224` (Synthflow calling its own line, likely
+a self-test ping) resolved `contact_id` to the agent line via `ai_jobs.py`'s
+new-inbound-caller stub path. Once it existed, it re-entered New
+Lead/Cold Lead campaigns normally (Aug 13/18/24 outbound rows) — Cora dialing
+its own agent line "as a lead." Kes labeled it not-a-contact directly rather
+than a DB deletion.
+
+**spec/25 — `conversation_context.py::_fetch_ghl_messages()` fix**: this
+function had the exact bug the spec/24 investigation predicted but didn't
+touch — direction-aware phone selection (`inbound` → `phone_number_from`,
+else → `phone_number_to`), same disproven assumption. Fixed to match spec/24:
+always prefer `phone_number_to`, fall back to `phone_number_from` only when
+absent. One test rewritten (`test_fetch_inbound_uses_phone_from` →
+`test_fetch_inbound_prefers_phone_to_over_agent_line`, asserting the
+corrected behavior), one new fallback test added. Full suite: 1160 passed,
+same 7 pre-existing baseline failures. Merged to `feat/ghl-call-conversation-sync`
+(a7f6c94), pushed, Hetzner redeployed and confirmed on the new commit with
+all containers healthy.
+
 ### Still open, needs Kes
 
-- **New, separate data-quality finding, not yet actioned**: one `lead_state`
-  row has `contact_id = normalized_phone = '+16822812224'` — the agent's own
-  line got enrolled as a lead's `contact_id` itself, not just its
-  `normalized_phone`. The backfill correctly left it alone (different
-  problem: fixing `normalized_phone` from `contact_id` does nothing when
-  they're already equal). Needs a decision on how this contact_id got
-  created and whether/how to clean it up — not investigated this session.
-- **Related, unconfirmed suspicion, flagged not fixed**: `conversation_context.py::_fetch_ghl_messages()`
-  uses `phone_number_from` for inbound calls when looking up the GHL contact
-  for conversation-history fetch — the same pattern the prod-data check
-  disproved for the `normalized_phone` bug. Different code path, own tests
-  (`test_conversation_context_ghl.py`) asserting current behavior as
-  intentional. Deserves its own verification pass before touching.
+- None from this session — both follow-up items (ghost contact, GHL
+  conversation-context phone lookup) are resolved as of this entry.
