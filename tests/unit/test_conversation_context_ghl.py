@@ -12,7 +12,7 @@ Covers:
   8. Activity messages are filtered out; SMS/Email messages are kept
   9. Messages are normalised to {direction, type, body, date}
   10. GHLError during fetch is caught and returns empty list (non-fatal)
-  11. Inbound calls use phone_number_from; outbound use phone_number_to
+  11. phone_number_to preferred regardless of direction (falls back to phone_number_from)
   12. _format_ghl_thread: empty list returns placeholder string
   13. _format_ghl_thread: messages formatted with LEAD/US tags, newest-last
   14. _format_ghl_thread: body truncated at 200 chars, date trimmed to YYYY-MM-DD
@@ -204,10 +204,18 @@ def test_fetch_ghl_error_returns_empty():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 11. Inbound calls use phone_number_from; outbound use phone_number_to
+# 11. Both inbound and outbound calls prefer phone_number_to (spec/24:
+#     phone_number_from is Synthflow's own agent line, not the lead's number,
+#     regardless of call direction — verified against prod call_events).
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_fetch_inbound_uses_phone_from():
+def test_fetch_inbound_prefers_phone_to_over_agent_line():
+    """
+    Regression (spec/24): phone_number_from on an inbound call is Synthflow's
+    own agent line (e.g. the number that answered), not the caller's number.
+    phone_number_to must be used instead, or the GHL contact lookup resolves
+    to the wrong (or no) contact.
+    """
     evt = _mock_call_event(direction="inbound", phone_from="+15559990000", phone_to="+18001234567")
     session = _mock_session(call_event=evt)
     with patch("app.adapters.ghl.GHLClient") as MockClient:
@@ -215,7 +223,7 @@ def test_fetch_inbound_uses_phone_from():
         instance.search_contact_by_phone.return_value = None  # just checking which phone is passed
         _fetch_ghl_messages(session, "cid-1")
         called_phone = instance.search_contact_by_phone.call_args[0][0]
-    assert called_phone == "+15559990000"
+    assert called_phone == "+18001234567"
 
 
 def test_fetch_outbound_uses_phone_to():
@@ -227,6 +235,19 @@ def test_fetch_outbound_uses_phone_to():
         _fetch_ghl_messages(session, "cid-1")
         called_phone = instance.search_contact_by_phone.call_args[0][0]
     assert called_phone == "+15551112222"
+
+
+def test_fetch_falls_back_to_phone_from_when_phone_to_absent():
+    """phone_number_from is still used as a last resort when phone_number_to is missing."""
+    evt = _mock_call_event(direction="inbound", phone_from="+15559990000", phone_to="")
+    evt.raw_payload_json = {"phone_number_from": "+15559990000"}
+    session = _mock_session(call_event=evt)
+    with patch("app.adapters.ghl.GHLClient") as MockClient:
+        instance = MockClient.return_value
+        instance.search_contact_by_phone.return_value = None
+        _fetch_ghl_messages(session, "cid-1")
+        called_phone = instance.search_contact_by_phone.call_args[0][0]
+    assert called_phone == "+15559990000"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

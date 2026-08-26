@@ -6,10 +6,12 @@ Includes recent call transcripts, lead state, outbound message history, and
 optionally the full two-way GHL conversation thread (SMS + email replies).
 
 GHL conversation history is fetched when settings.ghl_fetch_conversation_history
-is True.  The lookup uses the lead's phone number (direction-aware: inbound calls
-use phone_number_from, outbound use phone_number_to) to find the GHL contact, then
-fetches the most recent conversation and its messages.  The fetch is non-fatal —
-any GHL error leaves ghl_messages empty so generation proceeds without history.
+is True.  The lookup uses the lead's phone number (phone_number_to, regardless of
+call direction — see spec/24: phone_number_from is Synthflow's own agent line,
+not the lead's number, on both inbound and outbound calls) to find the GHL
+contact, then fetches the most recent conversation and its messages.  The fetch
+is non-fatal — any GHL error leaves ghl_messages empty so generation proceeds
+without history.
 
 Transcript limit: 5 most recent call events (newest first).
 Outbound message limit: last 10 outbound messages.
@@ -121,8 +123,8 @@ def get_conversation_context(
 
         # ── GHL conversation history (opt-in, non-fatal) ──────────────────────
         # Requires settings.ghl_fetch_conversation_history = True.
-        # Uses the lead's phone from the most recent call_event (direction-aware)
-        # to locate the GHL contact and pull the active conversation thread.
+        # Uses the lead's phone from the most recent call_event to locate the
+        # GHL contact and pull the active conversation thread.
         from app.config import get_settings
         settings = get_settings()
         if settings.ghl_fetch_conversation_history:
@@ -150,9 +152,9 @@ def _fetch_ghl_messages(
     Fetch the lead's GHL conversation history using phone number lookup.
 
     Flow:
-      1. Resolve the lead's phone from the most recent call_event.
-         Inbound calls: phone_number_from (the caller's number).
-         Outbound calls: phone_number_to (the number we dialled).
+      1. Resolve the lead's phone from the most recent call_event:
+         phone_number_to, regardless of direction — phone_number_from is
+         Synthflow's own agent line, not the lead's number (spec/24).
       2. Search GHL for a contact matching that phone → get GHL contact_id.
       3. Fetch the most recent conversation for that contact.
       4. Return up to `limit` messages, normalised to
@@ -182,17 +184,13 @@ def _fetch_ghl_messages(
             )
             return []
 
-        direction = (most_recent.direction or "").lower()
         payload = most_recent.raw_payload_json
-        if direction == "inbound":
-            phone = payload.get("phone_number_from")
-        else:
-            phone = payload.get("phone_number_to")
+        phone = payload.get("phone_number_to") or payload.get("phone_number_from")
 
         if not phone:
             logger.debug(
-                "_fetch_ghl_messages: no phone resolved | contact_id=%s direction=%s",
-                contact_id, direction,
+                "_fetch_ghl_messages: no phone resolved | contact_id=%s",
+                contact_id,
             )
             return []
 
