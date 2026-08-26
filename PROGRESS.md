@@ -1240,3 +1240,39 @@ all containers healthy.
 
 - None from this session — both follow-up items (ghost contact, GHL
   conversation-context phone lookup) are resolved as of this entry.
+
+---
+
+## Session: 2026-08-26 (cont'd) — Shveta→Roselen GHL contact reassignment investigation (spec/26)
+
+**No code changes — investigation + live read/write mechanism verification only.**
+
+Kes asked about a manual GHL workflow Shveta used to run (reviewing a
+view/pipeline and reassigning qualifying leads to Roselen as part of
+maintaining the Cold Lead definition), which stopped when she was let go.
+Confirmed nothing in this codebase represents that workflow — no
+`assignedTo` (contact-owner) tracking anywhere; the only existing
+`assignedTo` usage is unrelated CRM task assignment.
+
+**Cold Lead definition, per Kes**: anyone who signs up via a form and
+doesn't enroll in a class. Unchanged, still live in GHL (Kes's answer taken
+as authoritative, not independently re-verified against GHL config).
+
+**Verified live against GHL with the current Private Integration token**
+(full writeup: `directives/spec/26_ghl_contact_owner_reassignment.md`):
+- Read: `POST /contacts/search` filtering by `assignedTo` works under the
+  existing `contacts.readonly` scope. Counts as of 2026-08-26: Shveta
+  (`mW2OSEYWWGDSB9JcKBcr`, ID supplied by Kes) = **2,189 contacts** (mixed
+  tags — not Cold-Lead-only); Roselen (`0swBv9tBNeXeYXPYFBSx`) = **695**.
+- Write: `PUT /contacts/{id}` with a top-level `assignedTo` field works
+  under the existing `contacts.write` scope — confirmed via a deliberate
+  no-op (wrote a contact's owner back to its own current value, re-fetched
+  to confirm unchanged). No new GHL scope needed for either direction.
+- Gap found: `GET /users/` (would let Cora resolve staff GHL IDs itself) is
+  **not available** — 401, missing `users.readonly` scope. Staff IDs must be
+  supplied manually until that scope is granted.
+
+**Not built**: the actual bulk reassignment script. Blocked on Kes's
+decision — reassign all 2,189, or filter to Cold-Lead-tagged/staged only —
+and whether this should also get an ongoing safeguard (alert if a new lead
+lands on a departed staff member) beyond a one-time backfill.

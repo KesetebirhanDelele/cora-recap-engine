@@ -26,6 +26,9 @@
 | Field ID resolution at write time (`_resolve_to_field_ids`) | IMPLEMENTED |
 | GHL task API v2 payload fix (completed:false, no status/description) | IMPLEMENTED |
 | AI lead classification write (`AI Lead Classification` field) | IMPLEMENTED |
+| Contact owner (`assignedTo`) read via `/contacts/search` filter | VERIFIED LIVE 2026-08-26 — not wrapped in a `GHLClient` method yet, called via `client._request()` directly. See spec/26. |
+| Contact owner (`assignedTo`) write via `PUT /contacts/{id}` | VERIFIED LIVE 2026-08-26 (no-op round-trip test) — not wrapped in a `GHLClient` method yet. See spec/26. |
+| `GET /users/` (location staff list) | **NOT AVAILABLE** — 401 "token is not authorized for this scope" as of 2026-08-26. Current Private Integration token lacks `users.readonly`. Staff GHL user IDs must be supplied manually (e.g. by Kes) until this scope is added. |
 
 ---
 
@@ -62,6 +65,8 @@ Accept: application/json
 | `locations/customFields.readonly` | `get_location_fields` (field label→UUID resolution) |
 
 Missing scopes cause 401 on the specific operation. The `locations/customFields.readonly` scope is required for any live write to succeed, because field UUIDs are resolved from location definitions at runtime.
+
+**Confirmed 2026-08-26**: `contacts.readonly` covers `POST /contacts/search` filtering by `assignedTo`, and `contacts.write` covers `PUT /contacts/{id}` with a top-level `assignedTo` body (contact-owner reassignment) — no additional scope needed beyond what's already granted, unlike `GET /users/` which needs `users.readonly` (not currently granted — 401).
 
 Read operations require `validate_for_ghl_reads()` (checks `ghl_api_key` and `ghl_location_id`). **Reads are always active regardless of write-mode settings.**
 Write operations require `validate_for_ghl_writes()` — only reachable when `ghl_writes_enabled=True`.
