@@ -234,7 +234,16 @@ class GHLClient:
             f"/conversations/{conversation_id}/messages",
             params={"limit": limit},
         )
-        return result.get("messages", [])
+        # GHL double-nests this response: {"messages": {"lastMessageId": ...,
+        # "nextPage": ..., "messages": [...]}} — confirmed live 2026-08-27.
+        # A single .get("messages", []) returns the inner metadata dict, not
+        # the message list; iterating it yields its string keys, which then
+        # crash on the first .get() call downstream. Unwrap both shapes
+        # defensively in case some accounts/responses are single-nested.
+        outer = result.get("messages", [])
+        if isinstance(outer, dict):
+            return outer.get("messages", [])
+        return outer
 
     def search_conversations(
         self,

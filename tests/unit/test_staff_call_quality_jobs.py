@@ -92,6 +92,27 @@ def test_scan_cycle_proceeds_when_enabled(session):
         MockGHL.assert_called()
 
 
+def test_scan_cycle_isolates_malformed_message_shape_per_conversation(session):
+    """
+    Regression (2026-08-27): a malformed/unexpected get_conversation_messages
+    result (e.g. GHL's double-nested response, before the adapter fix, would
+    surface as non-dict entries here) must not crash the whole cycle — one
+    bad conversation should be skipped, not fail every scan indefinitely.
+    """
+    settings = MagicMock()
+    settings.staff_call_quality_scan_enabled = True
+
+    with patch("app.adapters.ghl.GHLClient") as MockGHL:
+        mock_client = MagicMock()
+        mock_client.search_conversations.return_value = [
+            {"id": "conv-1", "contactId": "contact-1", "phone": "+15550001111"}
+        ]
+        mock_client.get_conversation_messages.return_value = ["not-a-dict"]
+        MockGHL.return_value = mock_client
+
+        _run_scan_cycle(session, settings)  # must not raise
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _discover_conversations — pagination direction + no last_message_type filter
 # (spec/23: fixes the note-masking gap and the backward-pagination bug)

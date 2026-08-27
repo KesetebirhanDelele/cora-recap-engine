@@ -642,10 +642,21 @@ def test_get_conversations_by_contact_missing_key_returns_empty():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_get_conversation_messages_returns_list():
+    """
+    Regression (2026-08-27): GHL double-nests this response —
+    {"messages": {"lastMessageId": ..., "nextPage": ..., "messages": [...]}}
+    — confirmed live. A single-level unwrap returns the inner metadata dict,
+    not the message list; iterating it yields string keys, which then crash
+    on the first .get() call downstream (this exact bug would have failed
+    every staff_call_quality_scan cycle on its first conversation — see
+    spec/23).
+    """
     s = _settings()
     client, mock_http = _make_client(s)
     msg = {"id": "msg-1", "direction": "inbound", "body": "Hi"}
-    mock_http.request.return_value = _mock_response(200, {"messages": [msg]})
+    mock_http.request.return_value = _mock_response(
+        200, {"messages": {"lastMessageId": "msg-1", "nextPage": False, "messages": [msg]}},
+    )
 
     result = client.get_conversation_messages("conv-1", limit=15)
 
@@ -654,6 +665,18 @@ def test_get_conversation_messages_returns_list():
     assert call_kwargs[0][0] == "GET"
     assert "/conversations/conv-1/messages" in call_kwargs[0][1]
     assert call_kwargs[1]["params"]["limit"] == 15
+
+
+def test_get_conversation_messages_handles_single_nested_shape():
+    """Defensive fallback if some account/response is single-nested instead."""
+    s = _settings()
+    client, mock_http = _make_client(s)
+    msg = {"id": "msg-1", "direction": "inbound", "body": "Hi"}
+    mock_http.request.return_value = _mock_response(200, {"messages": [msg]})
+
+    result = client.get_conversation_messages("conv-1")
+
+    assert result == [msg]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

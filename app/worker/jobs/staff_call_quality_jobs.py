@@ -128,12 +128,16 @@ def _run_scan_cycle(session: Session, settings: Any) -> None:
 
         try:
             messages = conv_client.get_conversation_messages(conv_id, limit=50)
+            # Isolated with the fetch: an unexpected response shape (e.g. the
+            # double-nested 'messages' quirk fixed 2026-08-27 — see spec/23)
+            # must not crash the whole cycle over one conversation's worth of
+            # per-item work — matches the module's "per-item failures are
+            # isolated" contract.
+            call_messages = [m for m in messages if isinstance(m, dict) and (m.get("messageType") or m.get("type")) == "TYPE_CALL"]
+            new_messages = _filter_unprocessed(session, [m.get("id") for m in call_messages if m.get("id")])
         except Exception as exc:
-            logger.warning("staff_call_quality_scan: could not fetch messages for conv=%s: %s", conv_id, exc)
+            logger.warning("staff_call_quality_scan: could not process messages for conv=%s: %s", conv_id, exc)
             continue
-
-        call_messages = [m for m in messages if (m.get("messageType") or m.get("type")) == "TYPE_CALL"]
-        new_messages = _filter_unprocessed(session, [m.get("id") for m in call_messages if m.get("id")])
 
         for message in call_messages:
             if message.get("id") not in new_messages:
