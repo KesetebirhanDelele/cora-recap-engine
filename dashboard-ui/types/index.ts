@@ -538,6 +538,8 @@ export interface CardMetricsResponse {
   anomaly_count:              MetricPoint;
   urgent_leads_today:         MetricPoint;
   urgent_leads_count:         MetricPoint;
+  scq_calls_24h:              MetricPoint;
+  scq_flagged_pct:            MetricPoint;
   computed_at:                string;
 }
 

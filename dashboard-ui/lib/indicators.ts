@@ -100,6 +100,7 @@ const CARD_METRIC_MAP: Record<string, CardMetricConfig> = {
   "/campaign-overview":  { key: "active_leads",               format: (v) => `${fmtK(v as number | null)} leads`,      colorType: "neutral"  },
   "/crm-health":         { key: "sync_success_rate",          format: (v) => `${pct(v as number | null)} sync`,        colorType: "positive" },
   "/system-anomalies":   { key: "anomaly_count",              format: (v) => `${v ?? "—"} anomalies`,     colorType: "negative" },
+  "/staff-call-quality": { key: "scq_calls_24h", secondaryKey: "scq_flagged_pct", format: (v, v2) => `${v ?? "—"} calls · ${v2 ?? "—"}% flagged`, colorType: "negative" },
 };
 
 /** Compute the full indicator (text + trend + color) for a nav card href. */

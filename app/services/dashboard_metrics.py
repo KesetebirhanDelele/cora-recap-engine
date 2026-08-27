@@ -1206,6 +1206,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
       urgent_leads_today         — distinct unresolved leads whose latest urgent call was today (midnight CST)
       urgent_leads_count         — distinct unresolved leads whose latest urgent call was in the last 7 days
                                     ("unresolved" = no sales_outcome logged and no connected staff callback since)
+      scq_calls_24h              — staff_call_quality rows scanned, rolling 24h
+      scq_flagged_pct            — % of those flagged (0-100), same window
     """
     from app.config import get_settings
 
@@ -1506,6 +1508,19 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "lu.call_time BETWEEN :w14d AND :w7d", {"w14d": w14d_start, "w7d": w7d_start}
     )
 
+    # ── staff_call_quality: calls scanned + flagged % (rolling 24h) ──────────
+    scq_row = session.execute(text("""
+        SELECT
+            COUNT(*) FILTER (WHERE call_time >= :w24)                                AS curr_scanned,
+            COUNT(*) FILTER (WHERE call_time BETWEEN :w48 AND :w24)                  AS prev_scanned,
+            COUNT(*) FILTER (WHERE call_time >= :w24 AND flagged_reason IS NOT NULL) AS curr_flagged
+        FROM staff_call_quality
+    """), {"w24": w24_start, "w48": w48_start}).fetchone()
+    scq_scanned = scq_row[0] or 0
+    scq_scanned_prev = scq_row[1] or 0
+    scq_flagged = scq_row[2] or 0
+    scq_flagged_pct = round(scq_flagged / scq_scanned * 100, 1) if scq_scanned else None
+
     def _pt(val: Any, prev: Any) -> dict[str, Any]:
         return {"value": val, "previous_value": prev}
 
@@ -1529,6 +1544,8 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "anomaly_count":              _pt(anomaly_curr,            anomaly_prev),
         "urgent_leads_today":         _pt(urgent_today,            urgent_yesterday),
         "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),
+        "scq_calls_24h":              _pt(scq_scanned,             scq_scanned_prev),
+        "scq_flagged_pct":            _pt(scq_flagged_pct,         None),
         "computed_at":                now.isoformat(),
     }
 
