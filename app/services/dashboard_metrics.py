@@ -1921,17 +1921,36 @@ def get_webhook_failures(session: Session) -> dict[str, Any]:
 
 # ── Staff Call Quality (spec/23) ────────────────────────────────────────────
 
-def get_staff_call_quality_summary(session: Session, limit: int = 50) -> dict[str, Any]:
+def get_staff_call_quality_summary(
+    session: Session,
+    limit: int = 50,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> dict[str, Any]:
     """
     Summary stats + recent rows from staff_call_quality (human sales-rep /
     support-staff calls pulled from GHL's native dialer — distinct from
     Cora's own call_events).
 
+    from_date/to_date filter both the stats and the row list by call_time
+    (inclusive). Rows are always ordered call_time DESC, regardless of
+    filter — most recent first, never client-controlled.
+
     Returns zeroed stats and an empty list when the table has no rows yet —
     expected immediately after deploy, since STAFF_CALL_QUALITY_SCAN_ENABLED
     defaults to false until explicitly turned on (see spec/23).
     """
-    stats_row = session.execute(text("""
+    where_clauses = []
+    params: dict[str, Any] = {"limit": limit}
+    if from_date is not None:
+        where_clauses.append("call_time >= :from_date")
+        params["from_date"] = from_date
+    if to_date is not None:
+        where_clauses.append("call_time <= :to_date")
+        params["to_date"] = to_date
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+    stats_row = session.execute(text(f"""
         SELECT
             COUNT(*)                                                    AS total_scanned,
             COUNT(*) FILTER (WHERE call_connected)                      AS total_connected,
@@ -1940,30 +1959,34 @@ def get_staff_call_quality_summary(session: Session, limit: int = 50) -> dict[st
             AVG(quality_score) FILTER (WHERE conversation_type = 'sales')   AS avg_score_sales,
             AVG(quality_score) FILTER (WHERE conversation_type = 'support') AS avg_score_support
         FROM staff_call_quality
-    """)).fetchone()
+        {where_sql}
+    """), params).fetchone()
 
-    recent_rows = session.execute(text("""
+    recent_rows = session.execute(text(f"""
         SELECT
-            ghl_message_id, ghl_contact_id, rep_user_id, conversation_type,
-            conversation_type_source, quality_score, call_connected,
+            ghl_message_id, ghl_contact_id, lead_name, lead_phone, rep_user_id,
+            conversation_type, conversation_type_source, quality_score, call_connected,
             call_time, duration_seconds, summary, flagged_reason
         FROM staff_call_quality
+        {where_sql}
         ORDER BY call_time DESC
         LIMIT :limit
-    """), {"limit": limit}).fetchall()
+    """), params).fetchall()
 
     recent = [{
         "ghl_message_id":           r[0],
         "ghl_contact_id":           r[1],
-        "rep_user_id":              r[2],
-        "conversation_type":        r[3],
-        "conversation_type_source": r[4],
-        "quality_score":            r[5],
-        "call_connected":           r[6],
-        "call_time":                r[7].isoformat() if r[7] and hasattr(r[7], "isoformat") else r[7],
-        "duration_seconds":         r[8],
-        "summary":                  r[9],
-        "flagged_reason":           r[10],
+        "lead_name":                r[2],
+        "lead_phone":               r[3],
+        "rep_user_id":              r[4],
+        "conversation_type":        r[5],
+        "conversation_type_source": r[6],
+        "quality_score":            r[7],
+        "call_connected":           r[8],
+        "call_time":                r[9].isoformat() if r[9] and hasattr(r[9], "isoformat") else r[9],
+        "duration_seconds":         r[10],
+        "summary":                  r[11],
+        "flagged_reason":           r[12],
     } for r in recent_rows]
 
     return {

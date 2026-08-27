@@ -649,3 +649,51 @@ class TestGetStaffCallQualitySummary:
         result = get_staff_call_quality_summary(scq_session, limit=2)
 
         assert len(result["recent"]) == 2
+
+    def test_recent_list_includes_lead_name_and_phone(self, scq_session):
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        self._row(scq_session, lead_name="Jane Prospect", lead_phone="+15550001234")
+        scq_session.flush()
+
+        result = get_staff_call_quality_summary(scq_session, limit=10)
+
+        assert result["recent"][0]["lead_name"] == "Jane Prospect"
+        assert result["recent"][0]["lead_phone"] == "+15550001234"
+
+    def test_date_range_filters_stats_and_recent(self, scq_session):
+        """from_date/to_date narrow both the aggregate stats and the row list."""
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        in_range = self._row(scq_session, call_time=datetime(2026, 6, 15, tzinfo=timezone.utc), call_connected=True)
+        before_range = self._row(scq_session, call_time=datetime(2026, 5, 1, tzinfo=timezone.utc), call_connected=True)
+        after_range = self._row(scq_session, call_time=datetime(2026, 7, 1, tzinfo=timezone.utc), call_connected=True)
+        scq_session.flush()
+
+        result = get_staff_call_quality_summary(
+            scq_session,
+            from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
+        )
+
+        assert result["total_scanned"] == 1
+        ids = [r["ghl_message_id"] for r in result["recent"]]
+        assert ids == [in_range.ghl_message_id]
+        assert before_range.ghl_message_id not in ids
+        assert after_range.ghl_message_id not in ids
+
+    def test_date_range_still_sorts_newest_first(self, scq_session):
+        """Sort order is never client-controlled — always call_time DESC, filtered or not."""
+        from app.services.dashboard_metrics import get_staff_call_quality_summary
+
+        older = self._row(scq_session, call_time=datetime(2026, 6, 5, tzinfo=timezone.utc))
+        newer = self._row(scq_session, call_time=datetime(2026, 6, 20, tzinfo=timezone.utc))
+        scq_session.flush()
+
+        result = get_staff_call_quality_summary(
+            scq_session,
+            from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        )
+
+        ids = [r["ghl_message_id"] for r in result["recent"]]
+        assert ids.index(newer.ghl_message_id) < ids.index(older.ghl_message_id)

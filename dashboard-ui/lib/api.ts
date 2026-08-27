@@ -366,9 +366,13 @@ export async function fetchRecentCalls(options?: {
 
 export async function fetchStaffCallQuality(options?: {
   limit?: number;
+  from_date?: string;
+  to_date?: string;
 }): Promise<StaffCallQualityResponse> {
   const params: Record<string, string> = {};
-  if (options?.limit) params.limit = String(options.limit);
+  if (options?.limit)     params.limit     = String(options.limit);
+  if (options?.from_date) params.from_date = options.from_date;
+  if (options?.to_date)   params.to_date   = options.to_date;
   return get<StaffCallQualityResponse>("/dashboard/staff-call-quality", params);
 }
 

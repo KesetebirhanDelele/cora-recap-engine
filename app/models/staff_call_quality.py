@@ -39,6 +39,11 @@ class StaffCallQuality(Base):
     ghl_message_id: Mapped[str] = mapped_column(String(255), nullable=False)
     ghl_conversation_id: Mapped[Optional[str]] = mapped_column(String(255))
     ghl_contact_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    # lead_name/lead_phone: snapshotted from the GHL contact record at analysis
+    # time (same fetch already used for classification signals — no extra API
+    # call). NULL on rows written before this column existed (migration 0022).
+    lead_name: Mapped[Optional[str]] = mapped_column(String(255))
+    lead_phone: Mapped[Optional[str]] = mapped_column(String(20))
     # rep_user_id: GHL user ID from the message's assignedTo/userId — whichever
     # rep placed or is assigned to this call. No pre-configured rep list; we
     # take whatever GHL reports (per Kes: "use assigned to for now").

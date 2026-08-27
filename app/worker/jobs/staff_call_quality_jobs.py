@@ -276,6 +276,7 @@ def _process_call_message(
         ghl_message_id=message_id,
         ghl_conversation_id=conv_id,
         ghl_contact_id=contact_id,
+        lead_phone=phone,  # from the conversation object; refined below if the contact fetch succeeds
         rep_user_id=message.get("userId"),
         call_time=call_time or datetime.now(tz=timezone.utc),
         duration_seconds=duration,
@@ -320,10 +321,26 @@ def _process_call_message(
 
     # ── Classification ──────────────────────────────────────────────────────
     try:
-        contact = contact_client.get_contact(contact_id)
+        # GHL wraps this response ({"contact": {...}}) — every other caller
+        # in this codebase unwraps immediately after fetching; this one
+        # didn't, so extract_classification_signals/resolve_field_id/
+        # extract_support_context (which all expect the unwrapped shape)
+        # were silently reading tags/customFields as always-empty. Confirmed
+        # live 2026-08-27: 0 of 136 classified rows used ghl_tags or any
+        # other known-signal source — every one fell through to the AI
+        # transcript fallback. See spec/23.
+        contact = contact_client.get_contact(contact_id).get("contact", {})
     except Exception as exc:
         logger.warning("staff_call_quality_scan: could not fetch contact=%s: %s", contact_id, exc)
         contact = {}
+
+    lead_first = contact.get("firstName") or ""
+    lead_last = contact.get("lastName") or ""
+    lead_name = f"{lead_first} {lead_last}".strip() or contact.get("contactName") or None
+    if lead_name:
+        row.lead_name = lead_name
+    if contact.get("phone"):
+        row.lead_phone = contact["phone"]
 
     signals = extract_classification_signals(contact)
     has_history = _has_enrolled_call_history(session, phone) if phone else False

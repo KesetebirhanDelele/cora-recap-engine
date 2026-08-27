@@ -577,6 +577,8 @@ export interface RecentCallsResponse {
 export interface StaffCallQualityRow {
   ghl_message_id: string;
   ghl_contact_id: string;
+  lead_name: string | null;
+  lead_phone: string | null;
   rep_user_id: string | null;
   conversation_type: "sales" | "support" | "other" | "unknown" | null;
   conversation_type_source: string | null;

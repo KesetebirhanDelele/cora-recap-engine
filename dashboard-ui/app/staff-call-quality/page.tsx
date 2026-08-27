@@ -57,6 +57,12 @@ function CallRow({ row }: { row: StaffCallQualityRow }) {
       <td style={{ padding: "0.55rem 0.75rem", fontSize: "0.8rem", color: "#334155", whiteSpace: "nowrap" }}>
         {fmtTs(row.call_time)}
       </td>
+      <td style={{ padding: "0.55rem 0.75rem", fontSize: "0.8rem", color: "#334155", whiteSpace: "nowrap" }}>
+        {row.lead_name ?? "—"}
+      </td>
+      <td style={{ padding: "0.55rem 0.75rem", fontSize: "0.8rem", color: "#334155", whiteSpace: "nowrap" }}>
+        {row.lead_phone ?? "—"}
+      </td>
       <td style={{ padding: "0.55rem 0.75rem", fontSize: "0.8rem", color: "#334155" }}>
         {row.rep_user_id ?? "—"}
       </td>
@@ -99,11 +105,65 @@ function CallRow({ row }: { row: StaffCallQualityRow }) {
   );
 }
 
-export default async function StaffCallQualityPage() {
+const INPUT_STYLE: React.CSSProperties = {
+  border: "1px solid #e2e8f0", borderRadius: 6, padding: "0.4rem 0.6rem",
+  fontSize: "0.82rem", color: "#334155", background: "#fff",
+};
+
+function DateFilterForm({ from, to }: { from?: string; to?: string }) {
+  const hasFilter = Boolean(from || to);
+  return (
+    <form
+      method="GET"
+      style={{
+        display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "1rem",
+        padding: "0.6rem 0.85rem", background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 8,
+      }}
+    >
+      <label style={{ fontSize: "0.78rem", fontWeight: 600, color: "#64748b" }}>From</label>
+      <input type="date" name="from" defaultValue={from} style={INPUT_STYLE} />
+      <label style={{ fontSize: "0.78rem", fontWeight: 600, color: "#64748b" }}>To</label>
+      <input type="date" name="to" defaultValue={to} style={INPUT_STYLE} />
+      <button
+        type="submit"
+        style={{
+          border: "1px solid #3b82f6", background: "#3b82f6", color: "#fff",
+          borderRadius: 6, padding: "0.4rem 0.9rem", fontSize: "0.8rem", fontWeight: 700, cursor: "pointer",
+        }}
+      >
+        Filter
+      </button>
+      {hasFilter && (
+        <a
+          href="/staff-call-quality"
+          style={{ fontSize: "0.78rem", color: "#64748b", textDecoration: "underline", marginLeft: "0.25rem" }}
+        >
+          Clear
+        </a>
+      )}
+      <span style={{ marginLeft: "auto", fontSize: "0.72rem", color: "#94a3b8" }}>
+        Always sorted newest first
+      </span>
+    </form>
+  );
+}
+
+export default async function StaffCallQualityPage({
+  searchParams,
+}: {
+  searchParams?: { from?: string; to?: string };
+}) {
+  const from = searchParams?.from || undefined;
+  const to = searchParams?.to || undefined;
+
   let data: StaffCallQualityResponse | null = null;
   let error: string | null = null;
   try {
-    data = await fetchStaffCallQuality({ limit: 100 });
+    data = await fetchStaffCallQuality({
+      limit: 100,
+      from_date: from ? `${from}T00:00:00Z` : undefined,
+      to_date: to ? `${to}T23:59:59Z` : undefined,
+    });
   } catch (e) {
     error = String(e);
   }
@@ -113,6 +173,8 @@ export default async function StaffCallQualityPage() {
       title="Staff Call Quality"
       subtitle="Sales-rep and support-staff calls pulled from GHL's native dialer, transcribed and scored (spec/23)."
     >
+      <DateFilterForm from={from} to={to} />
+
       {error && (
         <div style={{ marginBottom: "1rem", padding: "0.75rem 1rem", background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, color: "#dc2626", fontSize: "0.85rem" }}>
           Failed to load: {error}
@@ -121,8 +183,10 @@ export default async function StaffCallQualityPage() {
 
       {data && data.total_scanned === 0 && (
         <div style={{ marginBottom: "1.25rem", padding: "0.75rem 1rem", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 8, color: "#92400e", fontSize: "0.85rem" }}>
-          No calls analyzed yet. This scan is off by default (<code>STAFF_CALL_QUALITY_SCAN_ENABLED=false</code>) —
-          nothing will appear here until it's turned on and has had time to run.
+          {from || to
+            ? "No calls in this date range."
+            : <>No calls analyzed yet. This scan is off by default (<code>STAFF_CALL_QUALITY_SCAN_ENABLED=false</code>) —
+              nothing will appear here until it's turned on and has had time to run.</>}
         </div>
       )}
 
@@ -141,28 +205,35 @@ export default async function StaffCallQualityPage() {
           </div>
 
           <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 8, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
-                  {["Call Time", "Rep", "Type", "Score", "Summary", "Flag"].map((h) => (
-                    <th key={h} style={{ textAlign: "left", padding: "0.5rem 0.75rem", fontSize: "0.72rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                      {h}
-                    </th>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc", borderBottom: "1px solid #e2e8f0" }}>
+                    {["Call Time", "Lead Name", "Lead Phone", "Rep", "Type", "Score", "Summary", "Flag"].map((h) => (
+                      <th key={h} style={{ textAlign: "left", padding: "0.5rem 0.75rem", fontSize: "0.72rem", fontWeight: 700, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+                        {h}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.recent.map((row) => (
+                    <CallRow key={row.ghl_message_id} row={row} />
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {data.recent.map((row) => (
-                  <CallRow key={row.ghl_message_id} row={row} />
-                ))}
-              </tbody>
-            </table>
+                </tbody>
+              </table>
+            </div>
             {data.recent.length === 0 && (
               <div style={{ padding: "1.5rem", textAlign: "center", color: "#94a3b8", fontSize: "0.85rem" }}>
                 Nothing to show yet.
               </div>
             )}
           </div>
+          {data.recent.length >= 100 && (
+            <div style={{ marginTop: "0.6rem", fontSize: "0.75rem", color: "#94a3b8" }}>
+              Showing the 100 most recent{from || to ? " in this date range" : ""}. Narrow the date range above to see more of a specific period.
+            </div>
+          )}
         </>
       )}
     </PageShell>

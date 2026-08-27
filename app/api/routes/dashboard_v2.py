@@ -267,18 +267,23 @@ def get_recent_calls(
 @router.get("/staff-call-quality")
 def get_staff_call_quality(
     limit: int = Query(default=50, le=200),
+    from_date: datetime | None = Query(default=None),
+    to_date: datetime | None = Query(default=None),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """
     Summary stats + recent rows from staff_call_quality (spec/23) — human
     sales-rep/support-staff calls pulled from GHL's native dialer.
 
+    from_date/to_date filter by call_time (inclusive). Rows are always
+    ordered call_time DESC regardless of filter.
+
     Returns zeroed stats and an empty list when the scan job hasn't
     processed anything yet (expected right after deploy — the scan is off
     by default until STAFF_CALL_QUALITY_SCAN_ENABLED is turned on).
     """
     from app.services.dashboard_metrics import get_staff_call_quality_summary as _get_scq
-    return _get_scq(session, limit=limit)
+    return _get_scq(session, limit=limit, from_date=from_date, to_date=to_date)
 
 
 @router.get("/intent-calls")

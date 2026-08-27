@@ -344,7 +344,7 @@ def test_uses_ghl_native_transcript_when_available(mock_score, session):
         {"transcript": "Hello there."}, {"transcript": "How can I help?"},
     ]
     contact_client = MagicMock()
-    contact_client.get_contact.return_value = {"customFields": []}
+    contact_client.get_contact.return_value = {"contact": {"customFields": []}}
     message = _connected_call_message(id="msg-native")
 
     with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
@@ -369,7 +369,7 @@ def test_falls_back_to_whisper_when_no_ghl_transcript(session):
     conv_client.get_message_transcription.return_value = None
     conv_client.get_message_recording.return_value = b"fake-audio"
     contact_client = MagicMock()
-    contact_client.get_contact.return_value = {"customFields": []}
+    contact_client.get_contact.return_value = {"contact": {"customFields": []}}
     message = _connected_call_message(id="msg-whisper")
 
     with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
@@ -420,7 +420,7 @@ def test_full_pipeline_persists_classification_and_score(session):
     conv_client.get_message_transcription.return_value = [{"transcript": "Let's talk pricing."}]
     contact_client = MagicMock()
     contact_client.get_contact.return_value = {
-        "customFields": [{"name": "Who you are", "value": "Potential Student"}]
+        "contact": {"customFields": [{"name": "Who you are", "value": "Potential Student"}]}
     }
     message = _connected_call_message(id="msg-full")
 
@@ -444,6 +444,91 @@ def test_full_pipeline_persists_classification_and_score(session):
     assert row.summary == "Solid call."
 
 
+def test_get_contact_response_is_unwrapped_before_use(session):
+    """
+    Regression (2026-08-27): GHL wraps get_contact()'s response as
+    {"contact": {...}}, matching every other caller in this codebase (see
+    outbound_jobs.py, crm_jobs.py, etc., which all unwrap immediately).
+    This call site didn't, so extract_classification_signals/resolve_field_id
+    silently read tags/customFields as always-empty — confirmed live: 0 of
+    136 real classified rows ever used a known signal, all fell through to
+    the AI fallback. This mock uses the real wrapped shape; if the unwrap
+    regresses, "warm lead" never reaches classify_from_known_signals and
+    this test fails on conversation_type_source.
+    """
+    settings = MagicMock()
+    conv_client = MagicMock()
+    conv_client.get_message_transcription.return_value = [{"transcript": "Checking in."}]
+    contact_client = MagicMock()
+    contact_client.get_contact.return_value = {
+        "contact": {"tags": ["warm lead"], "customFields": []},
+        "traceId": "abc",
+    }
+    message = _connected_call_message(id="msg-unwrap")
+
+    with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
+        mock_oai_instance = MagicMock()
+        mock_oai_instance.chat_completion.return_value = {"overall_score": 60, "summary": "ok"}
+        MockOAI.return_value = mock_oai_instance
+
+        _process_call_message(
+            session, conv_client, contact_client, settings,
+            conv_id="conv-1", contact_id="ghl-c-1", phone=None, message=message,
+        )
+
+    row = session.scalars(select(StaffCallQuality).where(StaffCallQuality.ghl_message_id == "msg-unwrap")).one()
+    assert row.conversation_type_source == "ghl_tags"
+    assert row.ghl_tags == ["warm lead"]
+
+
+def test_lead_name_and_phone_populated_from_contact(session):
+    settings = MagicMock()
+    conv_client = MagicMock()
+    conv_client.get_message_transcription.return_value = [{"transcript": "Hi there."}]
+    contact_client = MagicMock()
+    contact_client.get_contact.return_value = {
+        "contact": {
+            "firstName": "Jane", "lastName": "Prospect", "phone": "+15559998888",
+            "customFields": [],
+        }
+    }
+    message = _connected_call_message(id="msg-lead-info")
+
+    with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
+        mock_oai_instance = MagicMock()
+        mock_oai_instance.chat_completion.side_effect = [
+            {"conversation_type": "support"}, {"overall_score": 70, "summary": "ok"},
+        ]
+        MockOAI.return_value = mock_oai_instance
+
+        _process_call_message(
+            session, conv_client, contact_client, settings,
+            conv_id="conv-1", contact_id="ghl-c-1", phone="+15550001111", message=message,
+        )
+
+    row = session.scalars(select(StaffCallQuality).where(StaffCallQuality.ghl_message_id == "msg-lead-info")).one()
+    assert row.lead_name == "Jane Prospect"
+    assert row.lead_phone == "+15559998888"  # contact's own phone refines the conversation-level one
+
+
+def test_lead_phone_falls_back_to_conversation_phone_when_contact_fetch_fails(session):
+    """A non-connected call never reaches the contact fetch — lead_phone still comes from the conversation."""
+    settings = MagicMock()
+    conv_client = MagicMock()
+    contact_client = MagicMock()
+    message = _connected_call_message(id="msg-no-fetch", meta={"call": {"duration": None, "status": "busy"}})
+
+    _process_call_message(
+        session, conv_client, contact_client, settings,
+        conv_id="conv-1", contact_id="ghl-c-1", phone="+15550002222", message=message,
+    )
+
+    row = session.scalars(select(StaffCallQuality).where(StaffCallQuality.ghl_message_id == "msg-no-fetch")).one()
+    assert row.lead_phone == "+15550002222"
+    assert row.lead_name is None
+    contact_client.get_contact.assert_not_called()
+
+
 def test_ghl_tags_take_priority_over_picklist_fields(session):
     """Real data (2026-08-25): tags were populated when the picklist fields never were."""
     settings = MagicMock()
@@ -451,8 +536,10 @@ def test_ghl_tags_take_priority_over_picklist_fields(session):
     conv_client.get_message_transcription.return_value = [{"transcript": "Checking in on your program interest."}]
     contact_client = MagicMock()
     contact_client.get_contact.return_value = {
-        "tags": ["warm lead"],
-        "customFields": [{"name": "Who you are", "value": "Current Student"}],
+        "contact": {
+            "tags": ["warm lead"],
+            "customFields": [{"name": "Who you are", "value": "Current Student"}],
+        }
     }
     message = _connected_call_message(id="msg-tags")
 
@@ -479,7 +566,7 @@ def test_ai_fallback_classification_used_when_no_known_signals(session):
     conv_client = MagicMock()
     conv_client.get_message_transcription.return_value = [{"transcript": "Student billing question."}]
     contact_client = MagicMock()
-    contact_client.get_contact.return_value = {"customFields": []}  # nothing populated
+    contact_client.get_contact.return_value = {"contact": {"customFields": []}}  # nothing populated
     message = _connected_call_message(id="msg-ai-fallback")
 
     with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
@@ -508,7 +595,7 @@ def test_other_conversation_type_not_scored(session):
     conv_client.get_message_transcription.return_value = [{"transcript": "Partnership inquiry."}]
     contact_client = MagicMock()
     contact_client.get_contact.return_value = {
-        "customFields": [{"name": "Who you are", "value": "Business or Partner"}]
+        "contact": {"customFields": [{"name": "Who you are", "value": "Business or Partner"}]}
     }
     message = _connected_call_message(id="msg-other")
 
