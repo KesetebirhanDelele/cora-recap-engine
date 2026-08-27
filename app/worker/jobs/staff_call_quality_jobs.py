@@ -6,12 +6,20 @@ Distinct from Cora's own outbound/inbound calls (CallEvent, Synthflow) —
 this covers calls Cora has no other visibility into.
 
 Runs every _SCAN_INTERVAL_SECONDS. Each cycle:
-1. search_conversations(last_message_type="TYPE_CALL", start_after_date=<lookback>)
-   — location-wide, using ghl_conversations_api_key (see GHLClient.api_key_override).
-   Note: this only reflects conversations whose *most recent* message is a
-   call — a call followed by a text before the next scan won't match. Fine
-   for a frequently-polled discovery job; see spec/23 for the historical-
-   backfill caveat.
+1. Page forward through search_conversations(sort_by="last_message_date",
+   sort="asc", start_after_date=<lookback cursor>) — location-wide, using
+   ghl_conversations_api_key (see GHLClient.api_key_override), until a page
+   comes back short of the page size (caught up to "now") or a safety page
+   cap is hit. No last_message_type filter: a call immediately followed by
+   a rep's note (common — reps summarize right after hanging up) still
+   surfaces, since we're not filtering on what the *most recent* message
+   type is. See spec/23 — an earlier version filtered on
+   last_message_type="TYPE_CALL" and a single unpaginated page, which
+   (confirmed live, never having run in prod — feature is off by default)
+   both silently missed note-masked calls AND, independently, walked
+   *backward* into a stale ~24-66h-old window instead of "since 24h ago,
+   forward to now" (GHL's start_after_date is a pagination cursor, not a
+   "since this time" filter, and its default sort is descending).
 2. For each matching conversation, walk its messages for TYPE_CALL entries
    not yet in staff_call_quality (dedupe by ghl_message_id — unique
    constraint is the backstop; a pre-check query avoids redundant work).
@@ -48,6 +56,8 @@ _LOOKBACK_HOURS = 24
 _SCHEDULE_INTERVAL_SECONDS = 900  # 15 minutes
 _MIN_CONNECTED_DURATION_SECONDS = 20
 _OPERATOR_ID = "staff_call_quality_scan"
+_DISCOVERY_PAGE_SIZE = 100  # GHL's documented hard max for /conversations/search
+_MAX_DISCOVERY_PAGES = 20  # safety cap — up to 2,000 conversations/cycle; see _discover_conversations
 
 
 def staff_call_quality_scan_job(job_id: str) -> None:
@@ -100,12 +110,7 @@ def _run_scan_cycle(session: Session, settings: Any) -> None:
     conv_client = GHLClient(settings=settings, api_key_override=settings.ghl_conversations_api_key)
     contact_client = GHLClient(settings=settings)  # ghl_api_key — contacts scope
 
-    lookback_start = datetime.now(tz=timezone.utc) - timedelta(hours=_LOOKBACK_HOURS)
-    start_after_ms = int(lookback_start.timestamp() * 1000)
-
-    conversations = conv_client.search_conversations(
-        last_message_type="TYPE_CALL", start_after_date=start_after_ms, limit=50,
-    )
+    conversations = _discover_conversations(conv_client)
     logger.info("staff_call_quality_scan: %d candidate conversation(s)", len(conversations))
 
     processed = skipped = 0
@@ -151,6 +156,70 @@ def _run_scan_cycle(session: Session, settings: Any) -> None:
                 skipped += 1
 
     logger.info("staff_call_quality_scan: cycle done | processed=%d skipped=%d", processed, skipped)
+
+
+def _discover_conversations(conv_client: Any) -> list[dict]:
+    """
+    Page forward through /conversations/search, ascending by last_message_date,
+    starting from _LOOKBACK_HOURS ago, until a page comes back short (caught
+    up to "now") or _MAX_DISCOVERY_PAGES is hit (safety cap on GHL read
+    volume per cycle — not a limit on how many calls get *scored*, which
+    _PER_CYCLE_CAP in _run_scan_cycle already bounds separately).
+
+    No last_message_type filter — see module docstring and spec/23 for why
+    (a call immediately followed by a rep's note must still surface).
+
+    GHL's start_after_date is a pagination cursor ("the sort value of the
+    last document"), not a "since this time" filter, and its default sort
+    is descending by recency — so this explicitly requests ascending sort
+    and treats the lookback timestamp as the *starting* cursor, paginating
+    forward toward "now" rather than backward into history. Confirmed live
+    2026-08-27 that the naive descending-default usage silently walks
+    backward into a stale window instead.
+    """
+    lookback_start = datetime.now(tz=timezone.utc) - timedelta(hours=_LOOKBACK_HOURS)
+    cursor: int | None = int(lookback_start.timestamp() * 1000)
+
+    # GHL's start_after_date cursor is inclusive of an exact-match boundary
+    # item (confirmed live: re-using the last item's date returns that same
+    # item again as the next page's first result) — dedupe by conversation
+    # id defensively rather than assuming exactly one boundary duplicate.
+    conversations: list[dict] = []
+    seen_ids: set[str] = set()
+    for _ in range(_MAX_DISCOVERY_PAGES):
+        page = conv_client.search_conversations(
+            start_after_date=cursor,
+            sort_by="last_message_date",
+            sort="asc",
+            limit=_DISCOVERY_PAGE_SIZE,
+        )
+        if not page:
+            break
+        for conv in page:
+            conv_id = conv.get("id")
+            if conv_id and conv_id in seen_ids:
+                continue
+            if conv_id:
+                seen_ids.add(conv_id)
+            conversations.append(conv)
+        if len(page) < _DISCOVERY_PAGE_SIZE:
+            break  # short page — caught up to "now", no more pages to fetch
+        cursor = page[-1].get("lastMessageDate")
+        if cursor is None:
+            logger.warning(
+                "staff_call_quality_scan: last page item missing lastMessageDate — "
+                "cannot continue pagination, stopping discovery early"
+            )
+            break
+    else:
+        logger.warning(
+            "staff_call_quality_scan: hit _MAX_DISCOVERY_PAGES=%d — more conversations "
+            "may exist in the lookback window than this cycle covered; remainder picked "
+            "up on a later cycle since the lookback window is rolling",
+            _MAX_DISCOVERY_PAGES,
+        )
+
+    return conversations
 
 
 def _filter_unprocessed(session: Session, message_ids: list[str]) -> set[str]:

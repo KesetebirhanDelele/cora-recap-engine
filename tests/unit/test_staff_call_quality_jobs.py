@@ -24,6 +24,7 @@ from app.models.call_event import CallEvent
 from app.models.lead_state import LeadState
 from app.models.staff_call_quality import StaffCallQuality
 from app.worker.jobs.staff_call_quality_jobs import (
+    _discover_conversations,
     _filter_unprocessed,
     _has_enrolled_call_history,
     _parse_ghl_datetime,
@@ -89,6 +90,110 @@ def test_scan_cycle_proceeds_when_enabled(session):
         _run_scan_cycle(session, settings)
 
         MockGHL.assert_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _discover_conversations — pagination direction + no last_message_type filter
+# (spec/23: fixes the note-masking gap and the backward-pagination bug)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _conv(conv_id: str, last_message_date: int) -> dict:
+    return {"id": conv_id, "contactId": f"contact-{conv_id}", "lastMessageDate": last_message_date}
+
+
+def test_discover_stops_on_short_page():
+    """A page shorter than the page size means we've caught up to 'now' — no second call."""
+    mock_client = MagicMock()
+    mock_client.search_conversations.return_value = [_conv("c1", 1000), _conv("c2", 2000)]
+
+    result = _discover_conversations(mock_client)
+
+    assert [c["id"] for c in result] == ["c1", "c2"]
+    assert mock_client.search_conversations.call_count == 1
+
+
+def test_discover_does_not_filter_by_last_message_type():
+    """The old filter dropped a call the moment a rep's note became the most recent message."""
+    mock_client = MagicMock()
+    mock_client.search_conversations.return_value = []
+
+    _discover_conversations(mock_client)
+
+    call_kwargs = mock_client.search_conversations.call_args[1]
+    assert "last_message_type" not in call_kwargs
+
+
+def test_discover_pages_forward_ascending():
+    """Pagination must request ascending sort — GHL's default (descending) walks backward in time."""
+    mock_client = MagicMock()
+    mock_client.search_conversations.return_value = []
+
+    _discover_conversations(mock_client)
+
+    call_kwargs = mock_client.search_conversations.call_args[1]
+    assert call_kwargs["sort_by"] == "last_message_date"
+    assert call_kwargs["sort"] == "asc"
+
+
+def test_discover_advances_cursor_using_last_item_date():
+    """A full page (== page size) means there may be more — next call's cursor is the last item's date."""
+    from app.worker.jobs import staff_call_quality_jobs as m
+
+    full_page = [_conv(f"c{i}", 1000 + i) for i in range(m._DISCOVERY_PAGE_SIZE)]
+    short_page = [_conv("last", 99999)]
+    mock_client = MagicMock()
+    mock_client.search_conversations.side_effect = [full_page, short_page]
+
+    result = _discover_conversations(mock_client)
+
+    assert mock_client.search_conversations.call_count == 2
+    second_call_kwargs = mock_client.search_conversations.call_args_list[1][1]
+    assert second_call_kwargs["start_after_date"] == full_page[-1]["lastMessageDate"]
+    assert len(result) == m._DISCOVERY_PAGE_SIZE + 1
+
+
+def test_discover_dedupes_boundary_item_across_pages():
+    """GHL's cursor is inclusive — the last item of page N reappears as the first item of page N+1."""
+    from app.worker.jobs import staff_call_quality_jobs as m
+
+    full_page = [_conv(f"c{i}", 1000 + i) for i in range(m._DISCOVERY_PAGE_SIZE)]
+    boundary_dup = full_page[-1]
+    short_page = [boundary_dup, _conv("new", 99999)]
+    mock_client = MagicMock()
+    mock_client.search_conversations.side_effect = [full_page, short_page]
+
+    result = _discover_conversations(mock_client)
+
+    ids = [c["id"] for c in result]
+    assert ids.count(boundary_dup["id"]) == 1
+    assert len(result) == m._DISCOVERY_PAGE_SIZE + 1  # full_page + only the genuinely-new item
+
+
+def test_discover_respects_max_page_safety_cap():
+    """A location with continuous full pages must not loop forever."""
+    from app.worker.jobs import staff_call_quality_jobs as m
+
+    full_page = [_conv(f"c{i}", 1000 + i) for i in range(m._DISCOVERY_PAGE_SIZE)]
+    mock_client = MagicMock()
+    mock_client.search_conversations.return_value = full_page
+
+    _discover_conversations(mock_client)
+
+    assert mock_client.search_conversations.call_count == m._MAX_DISCOVERY_PAGES
+
+
+def test_discover_stops_when_cursor_field_missing():
+    """A malformed last item (no lastMessageDate) must stop pagination, not crash or loop with None."""
+    mock_client = MagicMock()
+    from app.worker.jobs import staff_call_quality_jobs as m
+
+    full_page = [{"id": f"c{i}", "contactId": f"contact-{i}"} for i in range(m._DISCOVERY_PAGE_SIZE)]
+    mock_client.search_conversations.return_value = full_page
+
+    result = _discover_conversations(mock_client)
+
+    assert mock_client.search_conversations.call_count == 1
+    assert len(result) == m._DISCOVERY_PAGE_SIZE
 
 
 # ─────────────────────────────────────────────────────────────────────────────

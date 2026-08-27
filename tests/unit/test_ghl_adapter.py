@@ -749,6 +749,22 @@ def test_search_conversations_omits_unset_filters():
     assert "lastMessageType" not in params
     assert "startAfterDate" not in params
     assert "contactId" not in params
+    assert "sortBy" not in params
+    assert "sort" not in params
+
+
+def test_search_conversations_sort_params_included_when_set():
+    """spec/23: correct pagination direction requires explicit sort_by/sort."""
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"conversations": []})
+
+    client.search_conversations(sort_by="last_message_date", sort="asc", start_after_date=123)
+
+    params = mock_http.request.call_args[1]["params"]
+    assert params["sortBy"] == "last_message_date"
+    assert params["sort"] == "asc"
+    assert params["startAfterDate"] == 123
 
 
 def test_search_conversations_returns_empty_list_when_key_missing():

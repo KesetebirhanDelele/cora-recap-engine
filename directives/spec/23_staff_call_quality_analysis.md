@@ -10,6 +10,7 @@
 | Support-ticket context: `app/core/ghl_support_context.py` | **DONE.** 8 unit tests. |
 | Rubrics + scoring: `app/core/call_quality_scoring.py` | **DONE.** Sales rubric compliance dimension sourced from `docs/synthflow-{warm,cold}-lead-prompt.md` §5, not invented. Support rubric judges each call against the student's actual request (identified from the transcript), not a fixed checklist. 15 unit tests. |
 | Discovery/scan job: `app/worker/jobs/staff_call_quality_jobs.py` | **DONE**, gated **off by default** (`STAFF_CALL_QUALITY_SCAN_ENABLED=false`) — see Constraints. 19 unit tests. |
+| Discovery redesign: drop `lastMessageType` filter, correct pagination direction | **DONE, 2026-08-27.** See "Discovery redesign" below — fixes the note-masking gap Kes reported, plus a second bug found while verifying it (backward pagination) that had never run live. 7 new unit tests in `_discover_conversations`. |
 | Dashboard page | **NOT STARTED** — deferred, see Out-of-scope. |
 | GHL-native escalation ingestion (unrelated prior work, spec/22) | Out of scope here — see spec/22. |
 
@@ -77,11 +78,12 @@ attention.
   can't be reliably matched to *this specific* call — used as supporting
   context only; the transcript is the primary source for "what was
   requested."
-- **`lastMessageType` search limitation**: `GET /conversations/search`
-  filters on a conversation's *most recent* message — a call followed by a
-  text before the next scan drops out of the filter. Acceptable for a
-  15-minute-interval discovery job; not reliable for a one-shot historical
-  backfill (not attempted here).
+- **`lastMessageType` search limitation — FIXED 2026-08-27, see "Discovery
+  redesign" below.** Originally: `GET /conversations/search` filters on a
+  conversation's *most recent* message — a call followed by a text (or, in
+  practice, a rep's note written immediately after hanging up — the common
+  case Kes reported) before the next scan drops out of the filter and is
+  never picked up again. No longer filtered on at all; superseded below.
 - **Non-connected calls** (busy/no-answer/voicemail, or connected but
   under 20s): recorded with `call_connected=false`, no transcript pulled,
   no score — nothing to judge conversation quality on.
@@ -90,6 +92,67 @@ attention.
   no recording would be unexpected): row persisted with
   `flagged_reason` set, no score, so it's still visible rather than silently
   dropped.
+
+### Discovery redesign (2026-08-27)
+
+**Reported by Kes**: sales reps write a summary note in GHL immediately
+after a call ends. Since `search_conversations(last_message_type="TYPE_CALL")`
+filters on a conversation's *most recent* message, the note becomes that
+most-recent message before the job's next 15-minute cycle runs, and the
+call permanently drops out of the filter — never picked up again (not just
+delayed; there's no re-scan of history once a conversation ages out).
+
+**Second bug found while verifying the fix, independent of the above,
+confirmed live 2026-08-27 against production GHL** (this account, `contacts`
+scope): the job's `start_after_date` parameter is **not** a "since this
+timestamp" filter — per GHL's own docs it's a pagination cursor ("should
+contain the sort value of the last document"), and this location's default
+sort (when `sortBy`/`sort` are omitted, as the old code did) is **descending**
+by recency. Passing `now - 24h` as that cursor with no explicit sort
+direction returns the *next* page after that point in the descending
+sequence — i.e., conversations **older than 24 hours ago**, continuing
+backward in time — not "the last 24 hours." Verified with a live three-way
+comparison (5-minute window vs. 24-hour window vs. 90-day window, and an
+explicit-sort test confirming ascending order + a cursor works correctly).
+This bug had never affected production — `STAFF_CALL_QUALITY_SCAN_ENABLED`
+defaults to `false` and has never been flipped on — but would have meant
+the scan, once enabled, perpetually scored a rolling ~24-66-hour-old stale
+window and never the genuinely recent activity it was built to watch,
+regardless of the `lastMessageType` fix.
+
+**Fix**: `_discover_conversations()` (`app/worker/jobs/staff_call_quality_jobs.py`)
+now:
+1. Drops `last_message_type` entirely — every conversation with any
+   activity in the lookback window is walked for `TYPE_CALL` messages
+   (unchanged logic), not just ones whose *last* message is a call.
+2. Explicitly requests `sort_by="last_message_date", sort="asc"` and treats
+   the lookback timestamp as the *starting* cursor, paginating forward
+   (each page's last item's `lastMessageDate` becomes the next page's
+   cursor) until a page comes back shorter than the page size (100 — GHL's
+   documented hard max; confirmed live, `limit>100` returns `422`) — meaning
+   caught up to "now" — or a `_MAX_DISCOVERY_PAGES=20` safety cap is hit
+   (logged as a warning; the rolling window means anything missed this
+   cycle is still in-window next cycle).
+3. Dedupes conversations by id across the page boundary — GHL's cursor is
+   inclusive, so the last item of one page reappears as the first item of
+   the next (confirmed live).
+
+`GHLClient.search_conversations()` gained `sort_by`/`sort` params to support
+this (`app/adapters/ghl.py`).
+
+## Constraint architecture — additions (2026-08-27)
+- **Must** request `sort_by="last_message_date", sort="asc"` explicitly on
+  every discovery call — relying on GHL's default sort silently inverts the
+  lookback window's direction (see above).
+- **Must** page until a short page is returned, not stop after one page —
+  a single unpaginated call silently truncates whenever a lookback window
+  contains more than the page size, which this location's real traffic
+  volume already exceeds even within a 5-minute window in testing (likely
+  including Cora's own automated GHL writes, not just human activity).
+- **Must** cap total pages fetched per cycle (`_MAX_DISCOVERY_PAGES`) — the
+  lookback window is rolling, so anything not covered this cycle is still
+  in-window next cycle; an uncapped loop risks an unbounded cycle if this
+  location's conversation volume keeps growing.
 
 ### Out of scope
 - **Dashboard page** — not built this session. Data is queryable directly

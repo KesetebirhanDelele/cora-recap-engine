@@ -243,6 +243,8 @@ class GHLClient:
         assigned_to: str | None = None,
         last_message_type: str | None = None,
         start_after_date: int | None = None,
+        sort_by: str | None = None,
+        sort: str | None = None,
         limit: int = 20,
     ) -> list[dict]:
         """
@@ -251,13 +253,27 @@ class GHLClient:
         assigned_to: GHL user ID — scope to a specific rep's conversations.
         last_message_type: e.g. "TYPE_CALL" — GHL's actual message-type value
             for calls (confirmed live; "CALL" alone is not the wire value).
-        start_after_date: epoch milliseconds.
+        sort_by: e.g. "last_message_date" (GHL's documented values).
+        sort: "asc" or "desc".
+        start_after_date: a *pagination cursor*, not a "since this time"
+            filter — per GHL's own docs, "should contain the sort value of
+            the last document" (i.e. `lastMessageDate` from the previous
+            page's last item, when paginating in the direction `sort_by` +
+            `sort` establish). GHL's default sort (when `sort_by`/`sort` are
+            omitted) is descending by recency — passing a fixed lookback
+            timestamp with no explicit sort direction silently walks
+            *backward* into an old, stale window rather than "since then to
+            now" (confirmed live 2026-08-27 — see spec/23). Callers wanting
+            "everything since time X" should pass `sort_by="last_message_date",
+            sort="asc"` and treat this as the starting cursor, paginating
+            forward from there — see `_run_scan_cycle`'s discovery loop.
 
         Note: last_message_type filters on the conversation's *most recent*
         message, not "contains a message of this type anywhere in the
-        thread" — a call conversation that gets a follow-up text before this
-        runs will no longer match. Fine for a frequently-polled discovery
-        job; not reliable for a one-shot historical backfill.
+        thread" — a call conversation that gets a follow-up text/note before
+        this runs will no longer match. Prefer omitting this filter for
+        discovery (walk each returned conversation's messages instead) —
+        see spec/23.
 
         Requires ghl_conversations_api_key (contacts.readonly on
         ghl_api_key does not cover this — see __init__ note).
@@ -270,6 +286,10 @@ class GHLClient:
             params["assignedTo"] = assigned_to
         if last_message_type:
             params["lastMessageType"] = last_message_type
+        if sort_by:
+            params["sortBy"] = sort_by
+        if sort:
+            params["sort"] = sort
         if start_after_date is not None:
             params["startAfterDate"] = start_after_date
         result = self._request("GET", "/conversations/search", params=params)
