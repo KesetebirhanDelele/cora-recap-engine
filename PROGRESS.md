@@ -1276,3 +1276,43 @@ as authoritative, not independently re-verified against GHL config).
 decision — reassign all 2,189, or filter to Cold-Lead-tagged/staged only —
 and whether this should also get an ongoing safeguard (alert if a new lead
 lands on a departed staff member) beyond a one-time backfill.
+
+---
+
+## Session: 2026-08-27 — staff-call-quality discovery fix (spec/23 redesign)
+
+**Branch**: `fix/staff-call-quality-discovery-window` (cut from
+`feat/ghl-call-conversation-sync`), merged and deployed same session.
+
+Kes reported: sales reps write a summary note in GHL right after a call
+ends, which breaks the staff-call-quality scan's discovery — it uses
+`search_conversations(last_message_type="TYPE_CALL")`, which filters on a
+conversation's *most recent* message, so the note masks the call and it's
+never picked up again.
+
+**While verifying that fix, found a second, independent bug**: GHL's
+`start_after_date` is a pagination cursor ("sort value of the last
+document"), not a "since this time" filter, and this location's default
+sort is descending by recency. The old code passed `now - 24h` with no
+explicit sort direction, which — confirmed live against prod GHL with a
+three-way comparison (5-min vs. 24h vs. 90-day windows, plus an explicit
+ascending-sort test) — walks *backward* into a stale ~24-66-hour-old window,
+never the actual last 24 hours. Never affected production —
+`STAFF_CALL_QUALITY_SCAN_ENABLED` defaults to `false` and has never been
+enabled — but would have broken the scan silently the moment it was turned
+on, independent of the note-masking issue.
+
+**Fixed**: `_discover_conversations()` (new function,
+`app/worker/jobs/staff_call_quality_jobs.py`) drops the `last_message_type`
+filter, explicitly requests `sort_by="last_message_date", sort="asc"`, and
+pages forward from the lookback cursor (deduping GHL's inclusive cursor
+boundary) until a short page or a `_MAX_DISCOVERY_PAGES=20` safety cap.
+`GHLClient.search_conversations()` gained `sort_by`/`sort` params. 9 new
+unit tests. Full suite: 1168 passed, same 7 pre-existing baseline failures.
+Full writeup: `directives/spec/23_staff_call_quality_analysis.md` →
+"Discovery redesign" section. Merged to `feat/ghl-call-conversation-sync`
+(c6be755), pushed, Hetzner redeployed and confirmed on the new commit with
+all containers healthy.
+
+Feature remains off by default (`STAFF_CALL_QUALITY_SCAN_ENABLED=false`) —
+this is pre-launch hardening, not a live-production fix.
