@@ -22,6 +22,11 @@ launch_outbound_call_job urgent-escalation guard:
   11. check_urgent_unresolved() finds an unresolved escalation → job cancelled +
       exception created, no Synthflow call
   12. check_urgent_unresolved() returns None → guard passes, normal flow continues
+
+launch_outbound_call_job enrolled-student guard (spec/27):
+  13. check_is_student() flags the contact → job cancelled, logged, NO exception
+      (expected GHL list churn — same treatment as the do_not_call guard)
+  14. check_is_student() returns None → guard passes, normal flow continues
 """
 from __future__ import annotations
 
@@ -64,6 +69,17 @@ def session(engine):
     with Session(engine) as sess:
         yield sess
         sess.rollback()
+
+
+@pytest.fixture(autouse=True)
+def _no_student_lookup():
+    """
+    launch_outbound_call_job() calls student_guard.check_is_student(), which
+    reaches GHL live. Default it to "not a student" for every test; the
+    enrolled-student guard tests below override this with their own patch.
+    """
+    with patch("app.core.student_guard.check_is_student", return_value=None):
+        yield
 
 
 def _aware(dt: datetime) -> datetime:
@@ -664,6 +680,81 @@ def test_unresolved_escalation_cancels_job_and_raises_exception(
 def test_no_escalation_passes_guard(
     mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
     mock_worker_id, mock_create_exc, mock_check_urgent, mock_is_dnc,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags(shadow_mode=True)):
+        with patch("app.worker.shadow.log_shadow_action"):
+            launch_outbound_call_job(mock_job.id)
+
+    mock_create_exc.assert_not_called()
+    mock_mark_running.assert_called_once()
+
+
+# ── Enrolled-student guard (spec/27) ────────────────────────────────────────
+
+@patch("app.worker.claim.cancel_job")
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
+@patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
+@patch("app.core.student_guard.check_is_student")
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_student_contact_cancels_job_without_raising_exception(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_student, mock_check_urgent,
+    mock_is_dnc, mock_cancel,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+    mock_check_student.return_value = {
+        "ghl_contact_id": "ghl-9",
+        "classification_source": "ghl_tags",
+        "matched_tags": ["enrolled student"],
+    }
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
+        launch_outbound_call_job(mock_job.id)
+
+    # Job cancelled + committed, but no dashboard exception — a student
+    # suppression is expected GHL list churn, not an operator-actionable event.
+    mock_mark_running.assert_not_called()
+    mock_cancel.assert_called_once()
+    mock_create_exc.assert_not_called()
+    mock_session.commit.assert_called_once()
+
+
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
+@patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
+@patch("app.core.student_guard.check_is_student", return_value=None)
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+@patch("app.worker.jobs.outbound_jobs.complete_job")
+def test_non_student_contact_passes_guard(
+    mock_complete, mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_student, mock_check_urgent, mock_is_dnc,
 ):
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 

@@ -1522,3 +1522,46 @@ renamed/updated in `test_outbound_jobs.py`; full suite 1186 passed / 7 pre-exist
 
 **Bigger fix, GHL-side (not done):** exclude already-worked / exhausted contacts from the Cold
 Lead workflow trigger so GHL stops re-triggering dead leads at all.
+
+### Follow-up — 2026-09-09: enrolled students being cold-called (spec/27, branch `feat/enrolled-student-guard`)
+
+**Trigger:** Kes flagged that `+18179402651` (Megan, enrolled data-analytics student) was in the
+Cold Lead campaign. She was *not* dialed — the spec/22 urgent-escalation guard happened to block
+her — but that was luck, not policy.
+
+**Audit (server-side, GHL lookups over the day's batch):** of 176 contacts GHL enrolled into an
+outbound campaign on 2026-09-09, **7 classified as students.** Actually dialed:
+`+12067427323` (enrolled student / `customer`, 2 calls → VM), `+13132885957` (ipbc student,
+**connected — got the cold pitch**), `+19198026833` (ipbc student, 3 calls → VM), `+13477346630`
++ `+12522595783` (dropped-out students, ~2 calls each). Root cause is **GHL-side**: the Cold/New
+Lead workflows trigger on the stale `AI Campaign = Yes` / `AI Campaign Name` custom fields, which
+are never cleared when a lead converts to a student, so GHL keeps re-enrolling current students.
+
+**Cancelled (pending forward jobs):** 5 `launch_outbound_call` jobs for 4 confirmed students —
+`4b153e19…` (`+13477346630`, was due 09-09 22:32 UTC), `14ba5617…` + `a188f71b…`
+(`+19198026833`), `8c16c027…` (`+12522595783`), `7f52b227…` (`+12067427323`). `+19409779004`
+("registered - not enrolled") was correctly *excluded* by the negation carve-out.
+
+**Cora-side backstop shipped (spec/27):**
+- `app/core/student_guard.py` (new) — `check_is_student(phone, settings)`. Resolves the GHL
+  contact by phone, reuses spec/23's `call_classification` classifier (`"support"` ⇒ student),
+  adds a `"not enrolled"` negation carve-out. **Fails open** on any GHL error.
+- `enter_campaign()` gate — after the urgent-escalation guard; skips entry, logs an `info` line
+  with `reason=` + `matched_tags=`. Skipped entirely when `settings is None`.
+- `launch_outbound_call_job()` gate — belt-and-suspenders; cancels the job, logs a `warning` line.
+- **No dashboard exception / alert.** Per Kes: until the GHL-side fix lands GHL re-enrolls every
+  student on each workflow re-eval, so a suppression is expected list churn — nothing to action.
+  Log line only (same as the `do_not_call` guard, a3824ee). Server log is the audit trail.
+- Tests: `test_student_guard.py` (10 new) + 4 in `test_campaigns.py` + 2 in `test_outbound_jobs.py`.
+  Full unit suite: 1224 passed / 7 pre-existing failures (confirmed unchanged via `git stash`).
+- `directives/spec/27_enrolled_student_guard.md` (new) — full spec per the Five Primitives.
+
+**GHL-side fixes (Ali — draft email sent to review, thread "Outbound voice — routing change"):**
+(1) clear `AI Campaign` / `AI Campaign Name` on enrollment; (2) add a student-tag / won-opp
+exclusion to the Cold + New Lead workflow triggers; (3) decide deliberately whether dropped-out
+students get a separate win-back campaign (the Cora guard blocks them for now).
+
+**Known limitation:** the guard adds 2 live GHL GETs per campaign entry (search + get_contact).
+Fine at ~30 calls/day; revisit under spec/18 if volume grows. Suppressions are visible only in
+the server log (`grep "is a student"`), by design — no dashboard surface, so track the GHL-side
+fix by log volume, not an exception count.

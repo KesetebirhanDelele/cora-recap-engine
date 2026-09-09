@@ -422,6 +422,27 @@ def launch_outbound_call_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Enrolled-student guard (belt-and-suspenders with enter_campaign) ──
+        # spec/27. Catches jobs scheduled before this guard shipped, or from
+        # paths other than enter_campaign() (nurture scheduler, voicemail-tier
+        # retries). Reads GHL live by phone; fails open. Logged with its
+        # reason, NOT raised as an exception — see enter_campaign()'s matching
+        # guard: a student suppression is expected GHL list churn until the
+        # GHL-side fix lands, nothing for an operator to action.
+        from app.core.student_guard import check_is_student
+        student = check_is_student(phone or contact_id, settings)
+        if student is not None:
+            logger.warning(
+                "launch_outbound_call_job: contact is a student — cancelling | "
+                "contact_id=%s job_id=%s reason=%s matched_tags=%s",
+                contact_id, job_id,
+                student["classification_source"], student["matched_tags"],
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            session.commit()
+            return
+
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
         # is nothing to defer.

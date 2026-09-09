@@ -37,6 +37,19 @@ def session(engine):
         sess.rollback()
 
 
+@pytest.fixture(autouse=True)
+def _no_student_lookup():
+    """
+    enter_campaign() calls student_guard.check_is_student(), which reaches GHL
+    live. Default it to "not a student" for every test; the enrolled-student
+    guard tests below override this with their own patch.
+    """
+    from unittest.mock import patch
+
+    with patch("app.core.student_guard.check_is_student", return_value=None):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -486,6 +499,77 @@ def test_enter_campaign_proceeds_when_escalation_already_resolved(session):
     enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
     session.refresh(lead)
 
+    assert lead.campaign_name == "Cold Lead"
+
+
+# ---------------------------------------------------------------------------
+# Enrolled-student guard (spec/27) — GHL keeps enrolling current students
+# into the cold-pitch campaign via a stale AI Campaign field; students must
+# not be cold-called. Backstop for the GHL-side root cause.
+# ---------------------------------------------------------------------------
+
+def test_enter_campaign_skips_when_contact_is_student(session):
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    student = {
+        "ghl_contact_id": "ghl-abc",
+        "classification_source": "ghl_tags",
+        "matched_tags": ["enrolled student"],
+    }
+    with patch("app.core.student_guard.check_is_student", return_value=student):
+        enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+
+    assert lead.campaign_name is None
+    jobs = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)
+    ).all()
+    assert len(jobs) == 0
+
+
+def test_enter_campaign_student_suppression_creates_no_exception(session):
+    """A student suppression is expected GHL list churn — logged, not raised
+    as a dashboard exception/alert (same as the do_not_call guard)."""
+    from unittest.mock import patch
+
+    from app.models.exception import ExceptionRecord
+
+    lead = _make_lead(session, campaign_name=None)
+    student = {
+        "ghl_contact_id": "ghl-abc",
+        "classification_source": "ghl_tags",
+        "matched_tags": ["ipbc student"],
+    }
+    with patch("app.core.student_guard.check_is_student", return_value=student):
+        enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+
+    rows = session.scalars(
+        select(ExceptionRecord).where(
+            ExceptionRecord.type == "outbound_suppressed_student"
+        )
+    ).all()
+    assert rows == []
+
+
+def test_enter_campaign_proceeds_when_not_a_student(session):
+    lead = _make_lead(session, campaign_name=None)
+    # autouse fixture already returns None from check_is_student
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+    assert lead.campaign_name == "Cold Lead"
+
+
+def test_enter_campaign_skips_student_check_when_settings_none(session):
+    """settings is None → cannot build a GHLClient → student check is skipped
+    (same graceful degradation as the pause-flag check), campaign proceeds."""
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    with patch("app.core.student_guard.check_is_student") as mock_check:
+        enter_campaign(session, lead, "cold_lead", settings=None)
+        mock_check.assert_not_called()
+    session.refresh(lead)
     assert lead.campaign_name == "Cold Lead"
 
 

@@ -163,6 +163,34 @@ def enter_campaign(
         )
         return
 
+    # ── Enrolled-student guard (spec/27) ─────────────────────────────────────
+    # GHL keeps enrolling current students into the cold-pitch campaign via a
+    # stale `AI Campaign` field that is never cleared on enrollment. Students
+    # must not be cold-called. The durable fix is GHL-side (tracked with Ali);
+    # this is the Cora backstop. Reads GHL live (LeadState has no student
+    # concept) — needs settings to build a GHLClient, so skip when absent, the
+    # same graceful degradation the pause-flag check above uses. Fails open.
+    #
+    # Logged with its reason, NOT raised as an exception: until the GHL-side
+    # fix lands, GHL re-enrolls every current student into this campaign on
+    # each workflow re-evaluation, so a suppression here is expected list
+    # churn — nothing for an operator to action, so no dashboard exception /
+    # alert. Same treatment as the do_not_call guard above (see PROGRESS.md
+    # 2026-09-09). The server log is the audit trail for pushing the GHL fix.
+    if settings is not None:
+        from app.core.student_guard import check_is_student
+        student = check_is_student(
+            lead.normalized_phone or lead.contact_id, settings
+        )
+        if student is not None:
+            logger.info(
+                "enter_campaign: contact is a student — skipping entry | "
+                "contact_id=%s campaign=%s reason=%s matched_tags=%s",
+                lead.contact_id, campaign_name,
+                student["classification_source"], student["matched_tags"],
+            )
+            return
+
     # 1. Cancel existing pending jobs (clean slate for the new campaign)
     cancelled = _cancel_pending_jobs(session, lead.contact_id)
     if cancelled:
