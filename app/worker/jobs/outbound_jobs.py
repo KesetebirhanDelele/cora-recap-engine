@@ -354,21 +354,16 @@ def launch_outbound_call_job(job_id: str) -> None:
         # before do_not_call was set, or entered via a path other than
         # enter_campaign().
         if _is_do_not_call(session, contact_id):
-            logger.info(
+            # Logged, not raised as an exception — see enter_campaign()'s
+            # matching guard: a do_not_call suppression is expected list churn
+            # (GHL re-triggers already-worked contacts), not a dashboard alert.
+            logger.warning(
                 "launch_outbound_call_job: do_not_call set — cancelling | "
-                "contact_id=%s job_id=%s",
-                contact_id, job_id,
+                "contact_id=%s job_id=%s campaign=%s",
+                contact_id, job_id, campaign_name,
             )
             from app.worker.claim import cancel_job
             cancel_job(session, job.id)
-            create_exception(
-                session,
-                type="outbound_suppressed_do_not_call",
-                severity="warning",
-                context={"contact_id": contact_id, "job_id": job_id, "campaign_name": campaign_name},
-                entity_type="lead",
-                entity_id=contact_id,
-            )
             session.commit()
             return
 

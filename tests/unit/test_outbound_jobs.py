@@ -448,10 +448,13 @@ def test_cold_lead_campaign_paused_does_not_affect_new_lead_job(
 @patch("app.worker.jobs.outbound_jobs.get_sync_session")
 @patch("app.worker.jobs.outbound_jobs.claim_job")
 @patch("app.worker.jobs.outbound_jobs.mark_running")
-def test_do_not_call_cancels_job_and_raises_exception(
+def test_do_not_call_cancels_job_without_raising_exception(
     mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
     mock_worker_id, mock_create_exc, mock_is_dnc, mock_cancel,
 ):
+    """do_not_call suppression cancels the job and commits, but does NOT create
+    an exception row — it's expected list churn (GHL re-triggers already-worked
+    contacts), logged not alerted. See PROGRESS.md 2026-09-09."""
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
     mock_session = MagicMock()
@@ -466,10 +469,8 @@ def test_do_not_call_cancels_job_and_raises_exception(
         launch_outbound_call_job(mock_job.id)
 
     mock_mark_running.assert_not_called()
-    mock_create_exc.assert_called_once()
-    exc_call = mock_create_exc.call_args
-    assert exc_call.kwargs["type"] == "outbound_suppressed_do_not_call"
-    assert exc_call.kwargs["severity"] == "warning"
+    mock_cancel.assert_called_once()
+    mock_create_exc.assert_not_called()
     mock_session.commit.assert_called_once()
 
 

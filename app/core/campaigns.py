@@ -124,19 +124,14 @@ def enter_campaign(
     # lead_state.do_not_call is set by handle_intent() from live-call
     # detection but was never checked before dialing — a previously-known,
     # separately-tracked gap (see PROGRESS.md, 2026-07-15 session) closed here.
+    # Logged, not raised as an exception: GHL re-enrolls already-worked /
+    # do_not_call contacts routinely (its Cold Lead list has no way to know
+    # Cora flagged them), so a suppression here is expected list churn, not an
+    # anomaly worth a dashboard alert. See PROGRESS.md 2026-09-09.
     if getattr(lead, "do_not_call", False):
         logger.info(
             "enter_campaign: do_not_call set — skipping entry | contact_id=%s campaign=%s",
             lead.contact_id, campaign_name,
-        )
-        from app.worker.exceptions import create_exception
-        create_exception(
-            session,
-            type="outbound_suppressed_do_not_call",
-            severity="warning",
-            context={"contact_id": lead.contact_id, "campaign_type": campaign_type},
-            entity_type="lead",
-            entity_id=lead.contact_id,
         )
         return
 
