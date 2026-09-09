@@ -1486,3 +1486,17 @@ all downstream jobs completed: `run_call_analysis`, `create_crm_task`, `write_co
 - Minor: the test contact has timezone `US/Central` (not a valid IANA name) — Cora logs a
   warning and falls back to `America/Chicago`. Harmless but worth cleaning in GHL.
 - spec/21's status table still says the cutover is "NOT STARTED" — correct it.
+
+### Merged + deployed — 2026-09-09
+
+`feat/outbound-stall-alerting` merged to `feat/ghl-call-conversation-sync` (fast-forward,
+`c44e6ef..da1921c`), pushed. Hetzner redeployed via `scripts/deploy.sh` — all 12 services up,
+API + Dashboard health checks `ok`, postgres recreated cleanly (no migration this release).
+Verified post-deploy: `alert_outbound_stall_hours=4` loaded, both new evaluator functions
+import, webhook secret unchanged through the container recreate (all 3 `.env` lines identical),
+zero active alerts, zero open `intake_auth_failed` exceptions. Alerting is now live in
+production. Email sent to Ali summarizing the routing change + outage.
+
+Remaining: dedupe the 3 `CORA_INBOUND_WEBHOOK_SECRET` `.env` lines; watch real GHL enrollment
+volume over the next day; fix the test contact's `US/Central` timezone in GHL; correct spec/21's
+status table.
