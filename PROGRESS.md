@@ -1500,3 +1500,25 @@ production. Email sent to Ali summarizing the routing change + outage.
 Remaining: dedupe the 3 `CORA_INBOUND_WEBHOOK_SECRET` `.env` lines; watch real GHL enrollment
 volume over the next day; fix the test contact's `US/Central` timezone in GHL; correct spec/21's
 status table.
+
+### Follow-up — 2026-09-09: do_not_call suppression is now a log line, not an exception
+
+After the cutover went live, GHL's Cold Lead campaign fired a batch of ~36 enrollments through
+Cora (all 202, ~28 calls placed with a normal voicemail-heavy outcome mix, 20 more paced
+forward — the pipeline is healthy). Two of those hit the `do_not_call` guard: contacts
+`+15714269510` and `+14789603960`, both bulk-closed + flagged `do_not_call` on 2026-06-09
+(exhausted cold leads, all-voicemail history, not opt-outs). GHL has no way to know Cora flagged
+them, so it re-enrolls them — ~172 such flagged Cold Lead contacts exist, so this would have
+produced a steady trickle of dashboard warnings.
+
+Fix (`a3824ee`, branch `fix/do-not-call-suppression-noise`, merged + deployed): `enter_campaign()`
+and `launch_outbound_call_job()` no longer `create_exception` on a `do_not_call` suppression —
+they log it (`info` / `warning` respectively) and skip, as before. Behavior unchanged (still never
+dialed). The urgent-escalation and spam-likely guards are deliberately left as exceptions. Test
+renamed/updated in `test_outbound_jobs.py`; full suite 1186 passed / 7 pre-existing failures.
+
+**Manual cleanup for Kes:** the 2 pre-existing open `outbound_suppressed_do_not_call` exceptions
+(`b9271f82…`, `d2666ad8…`) won't self-clear — Ignore/Resolve them in the dashboard.
+
+**Bigger fix, GHL-side (not done):** exclude already-worked / exhausted contacts from the Cold
+Lead workflow trigger so GHL stops re-triggering dead leads at all.
