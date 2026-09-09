@@ -1565,3 +1565,20 @@ students get a separate win-back campaign (the Cora guard blocks them for now).
 Fine at ~30 calls/day; revisit under spec/18 if volume grows. Suppressions are visible only in
 the server log (`grep "is a student"`), by design — no dashboard surface, so track the GHL-side
 fix by log volume, not an exception count.
+
+#### Merged + deployed — 2026-09-09
+
+`feat/enrolled-student-guard` merged to `feat/ghl-call-conversation-sync` (fast-forward,
+`7990472..87c18ca`), pushed. Hetzner redeployed via `scripts/deploy.sh` — API + Dashboard health
+`ok`, all services up, no migration this release. Verified post-deploy: `student_guard` imports,
+`campaigns` + `outbound_jobs` import clean.
+
+**Still pending (blocked from the agent sandbox — Kes to run):** cancel the 5 queued student
+jobs —
+`ssh root@204.168.245.238 "cd /opt/cora-recap-engine && docker compose cp /tmp/acs.py api:/tmp/acs.py && docker compose exec -T api python /tmp/acs.py --apply"`.
+Not urgent: the now-live `launch_outbound_call_job()` guard cancels each one when it fires
+anyway; the `--apply` run just clears them immediately and re-scans for any enrolled since.
+
+**Ali email:** drafted (reply on "Outbound voice — routing change" thread), not sent — covers the
+two GHL-side asks (clear `AI Campaign`/`AI Campaign Name` on enrollment; add a student-tag /
+won-opp exclusion to the Cold + New Lead workflow triggers) + the dropped-out-student decision.
