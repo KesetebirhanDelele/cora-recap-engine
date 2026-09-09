@@ -1573,11 +1573,12 @@ fix by log volume, not an exception count.
 `ok`, all services up, no migration this release. Verified post-deploy: `student_guard` imports,
 `campaigns` + `outbound_jobs` import clean.
 
-**Still pending (blocked from the agent sandbox — Kes to run):** cancel the 5 queued student
-jobs —
-`ssh root@204.168.245.238 "cd /opt/cora-recap-engine && docker compose cp /tmp/acs.py api:/tmp/acs.py && docker compose exec -T api python /tmp/acs.py --apply"`.
-Not urgent: the now-live `launch_outbound_call_job()` guard cancels each one when it fires
-anyway; the `--apply` run just clears them immediately and re-scans for any enrolled since.
+**Queued-job cleanup (done by Kes, 22:12 UTC):** `acs.py --apply` re-scanned (5 student contacts,
+6 pending jobs by then) and **cancelled 5**. The 6th (`+13477346630`, dropped-out student) had
+fired ~20s earlier at 22:12:30 — still on the old pre-guard code (new containers started
+22:14:54) — and placed one more voicemail call (`d936c646`). Not a regression: pre-guard, same
+class as the day's other student calls. Post-restart the only student-phone job left pending is
+`+19409779004` ("registered - not enrolled"), correctly **allowed** by the negation carve-out.
 
 **Ali email:** drafted (reply on "Outbound voice — routing change" thread), not sent — covers the
 two GHL-side asks (clear `AI Campaign`/`AI Campaign Name` on enrollment; add a student-tag /
