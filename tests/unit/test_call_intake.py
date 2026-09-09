@@ -25,6 +25,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.config.settings import Settings
 from app.models.base import Base
+from app.models.exception import ExceptionRecord
 from app.models.lead_state import LeadState
 from app.models.scheduled_job import ScheduledJob
 
@@ -103,6 +104,37 @@ def test_wrong_secret_value_returns_401(client, db_session):
         headers={"X-Cora-Webhook-Secret": "wrong-secret"},
     )
     assert resp.status_code == 401
+
+
+def test_auth_failure_records_one_deduplicated_exception(client, db_session):
+    """A 401 storm at this endpoint must leave a trace for alerting — but
+    only one open row per dedup window, not one per rejected request."""
+    from sqlalchemy import func
+
+    def _open_intake_exc_count():
+        return db_session.scalar(
+            select(func.count()).select_from(ExceptionRecord).where(
+                ExceptionRecord.type == "intake_auth_failed",
+                ExceptionRecord.status == "open",
+            )
+        )
+
+    # Other auth tests in this module share the in-memory DB and may have left
+    # an open row — clear the slate so this asserts dedup, not accumulation.
+    db_session.query(ExceptionRecord).filter(
+        ExceptionRecord.type == "intake_auth_failed"
+    ).update({"status": "resolved"})
+    db_session.commit()
+    assert _open_intake_exc_count() == 0
+
+    for _ in range(4):
+        r = client.post(
+            "/v1/webhooks/leads/cold_lead",
+            json={"phone": _new_phone()},
+            headers={"X-Cora-Webhook-Secret": "nope"},
+        )
+        assert r.status_code == 401
+    assert _open_intake_exc_count() == 1
 
 
 def test_unconfigured_secret_closes_endpoint(db_session):

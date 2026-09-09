@@ -1316,3 +1316,173 @@ all containers healthy.
 
 Feature remains off by default (`STAFF_CALL_QUALITY_SCAN_ENABLED=false`) —
 this is pre-launch hardening, not a live-production fix.
+
+---
+
+## Session: 2026-09-08 — outbound calling has been 100% down for 12 days (undocumented Aug 27 GHL cutover + webhook-secret mismatch)
+
+**Branch**: `feat/outbound-stall-alerting` (cut from `feat/ghl-call-conversation-sync`).
+**Investigation + observability code only — the actual outage fix is a GHL-console change, not done in this session.**
+
+### What Kes reported
+
+No outbound calls (New Lead, Cold Lead, or voicemail-tier follow-ups) for "the last week."
+Inbound seemed unaffected. Asked whether GHL is triggering calls at all or there's a silent
+failure.
+
+### Root cause — confirmed against production
+
+The GHL->Cora cutover from spec/21 — which spec/21's own status table and the 2026-07 / 2026-08
+PROGRESS sections all record as **"NOT STARTED / explicitly deferred"** — **was actually
+performed on 2026-08-27** (~18:22 `.env` edit, `api` container recreated 19:34 UTC), by whom is
+unknown (GHL-console + `.env` change, no commit). Both GHL workflow actions ("Cora Outbound -
+New Leads" and "Cora Outbound - Cold Leads") were repointed from Synthflow's Make Call webhook to
+`https://204-168-245-238.sslip.io/v1/webhooks/leads/{new_lead,cold_lead}`, and the old
+direct-to-Synthflow trigger was removed rather than kept as the parallel fallback spec/21
+Out-of-scope required.
+
+**The `X-Cora-Webhook-Secret` header on the GHL side has never matched the server's
+`CORA_INBOUND_WEBHOOK_SECRET`.** Every request has been rejected 401:
+
+- `api` logs, full retained history: first `intake_lead: rejected` at 2026-08-27T20:00:01Z,
+  continuous through the investigation. Count: **~1998 cold_lead + 24 new_lead rejections, zero
+  `intake_lead: accepted` ever.** (24 vs 1998 ~= 1.2%, consistent with spec/21's "New Lead <2% of
+  volume" — both workflows were cut over, both fail auth.)
+- Source IP on every rejected request is the `caddy` container — these are real external GHL
+  requests through the reverse proxy, not internal noise. `Caddyfile` is a bare
+  `reverse_proxy api:8000`, which passes custom headers through untouched — Caddy is not
+  stripping the secret.
+- Server secret is fine: `get_settings().cora_inbound_webhook_secret` and all **three**
+  duplicate `.env` lines (15, 273, 274 — same value) hash identically; container has it loaded.
+  No container/env drift. The mismatch is purely the value configured in GHL's workflow actions.
+
+### Timeline of the collapse (production data)
+
+| Date | outbound `call_events` | Note |
+|---|---|---|
+| Aug 11-24 | 7-36/day steady | Healthy (Aug 24 = 36, Cold Lead go-live) |
+| Aug 27 | 5 | Cutover deployed 19:34; first 401 20:00 |
+| Aug 28 / 29 | 3 / 1 | Pipeline draining |
+| Aug 30 -> Sep 8 | **0** | Total outbound outage |
+
+- Last `launch_outbound_call` job **created**: Aug 27 16:36. Last `process_voicemail_tier`:
+  Aug 29 16:48. Last call-derived downstream job (`process_call_event`, `run_call_analysis`,
+  `write_conversation_log`, `create_crm_task`, `send_student_summary`): **Sep 1 20:20**, then
+  silence.
+- **Why VM-tier / nurture calls also stopped** (Kes's specific puzzle): they are entirely
+  downstream of the first-touch call. No GHL trigger -> no `launch_outbound_call` -> no completion
+  webhook -> no `process_call_event` -> no voicemail-tier retry scheduled, and zero leads ever
+  entered `status='nurture'` after the cutover (nurture leads are created only from call
+  outcomes). `run_nurture_scheduler` fires every ~90s and correctly finds nothing to graduate.
+- `auto_webhook_recovery` has run 4,273 times finding nothing to recover -> Synthflow genuinely
+  is not placing calls. This is a **trigger** failure, not a webhook-delivery failure.
+- Workers are healthy (all 13 compose services `Up`, zero restarts, zero OOM, `migrate` exited
+  0). The Docker cleanup Kes did earlier is not implicated — build cache pruned (harmless),
+  ~14 idle volumes (~3.7GB reclaimable, leftovers — **do not prune without checking**, one may
+  be an old DB volume). Worker container is named `...-worker-default-2` (no `-1`) — cosmetic,
+  was scaled to 2 once and one removed; the single one processes fine.
+- **Inbound**: also tapered to zero after Sep 1 in `call_events`. Inbound does not use the
+  intake endpoint (Synthflow -> `/v1/webhooks/calls`, which is confirmed up: `405` on GET, `202`
+  on POST over valid HTTPS). Not chased further this session — flag: if Synthflow shows inbound
+  calls last week that aren't in `call_events`, that's a separate webhook-URL problem on the
+  Inbound workflow.
+
+### Why nothing alerted (the gap behind the outage)
+
+The 401 is rejected at the FastAPI auth layer in `intake_lead` — **before** any
+`create_exception()`, job, or DB write. It produced no `exceptions` row, no `alert_events` row,
+no `scheduled_jobs` row. Every one of the 6 alert types in `alerting.py` is structurally blind:
+`queue_lag`/`worker_offline` (nothing congested/down), `error_rate_spike`/`exception_spike`
+(no jobs ran, no exceptions), `ghl_auth_failure` (that's *Cora->GHL API* auth, opposite
+direction), `webhook_drop_detected` (needs >=5 completed `launch_outbound_call` jobs in a bucket —
+there were 0). **Nothing anywhere asked "did we place any outbound calls today?"** That is the
+real bug behind the 12-day blackout.
+
+### What was built this session (branch `feat/outbound-stall-alerting` — NOT merged, NOT deployed)
+
+Two new alert types + the plumbing to feed them:
+
+1. **`intake_auth_failure`** (critical). `call_intake.py` now writes a single deduplicated
+   `intake_auth_failed` exception on any 401 (reason recorded: `server_secret_not_configured` vs
+   `missing_or_invalid_header`) — best-effort, swallows its own errors, one open row max so a
+   401-storm can't flood the table via this public endpoint.
+   `alerting.py::_evaluate_intake_auth_failure` fires while any such open exception exists,
+   resolves when cleared. Message names the exact fix (X-Cora-Webhook-Secret vs
+   CORA_INBOUND_WEBHOOK_SECRET).
+2. **`outbound_calls_stalled`** (critical). `alerting.py::_evaluate_outbound_stall`: fires when
+   `launch_outbound_call` completions in the last `ALERT_OUTBOUND_STALL_HOURS` (new setting,
+   default **4**) == 0, **and** `get_mode_flags` shows not `system_paused` / not
+   `outbound_campaigns_paused`, **and** at least one of New/Cold Lead is inside its active
+   window (`is_campaign_active`). Fails toward alerting if the window check errors. One page per
+   incident (onset -> resolve), not one per 60s cycle — added `_upsert_active_alert` /
+   `_resolve_active_alert` helpers for that (the generic `_evaluate_single_alert` re-pages every
+   dedup window; deliberate divergence).
+3. `.env.example` + `Settings.alert_outbound_stall_hours` documented. No migration (both
+   `alert_events.alert_type` and `exceptions.type` are free strings). No frontend change (alert
+   list renders `alert_type`/`message` generically — verified no hardcoded allowlist).
+
+Tests: `tests/unit/test_dashboard_v2.py` (+3 intake-auth, +6 outbound-stall covering
+fires/paused/outside-window/recent-completion/stale-completion/resolves) and
+`tests/unit/test_call_intake.py` (+1 dedup). Full unit suite: **1186 passed, 7 failed** — the
+7 are the known pre-existing baseline failures (`claim.py:270` MagicMock, `ghl_adapter` task
+payload, `inbound_call_processing` crm task, `admin_routes` redis, `enrolled_intent`),
+confirmed identical via `git stash`. Zero regressions. `ruff check` clean on all changed files.
+
+### Next steps, in order
+
+1. **Restore outbound calling — Kes, GHL console (this repo can't do it).** Either:
+   - **(A, fastest)** repoint both GHL workflow actions' URL back to Synthflow's Make Call
+     webhook (pre-Aug-27 config) — calls resume immediately, Cora endpoint stops mattering; or
+   - **(B)** set `X-Cora-Webhook-Secret` on both GHL actions to the server's
+     `CORA_INBOUND_WEBHOOK_SECRET` (retrieve from `/opt/cora-recap-engine/.env`), then send one
+     test enrollment and watch it go 202 -> `launch_outbound_call` row -> real dial. This path
+     has **zero** successful runs in its history, so also verify GHL's `phone` value is E.164
+     (`_looks_like_e164` 400s otherwise) and the payload keys match.
+   Campaigns are live and unpaused (`shadow_mode_enabled=false`, all pause flags off) — first
+   success = a real call.
+2. Dedupe the 3 `CORA_INBOUND_WEBHOOK_SECRET` lines in the server `.env` -> 1.
+3. Kes reviews this branch's debrief, then merge -> `feat/ghl-call-conversation-sync`, deploy
+   Hetzner (`git pull && docker compose up -d --build`; no migration). Confirm
+   `outbound_calls_stalled` is *active* immediately post-deploy (it should be — still 0 calls),
+   and that it resolves once step 1 lands.
+4. Correct spec/21's status table — the cutover is no longer "NOT STARTED".
+5. Decide whether the `intake_lead` endpoint should also carry the direct-to-Synthflow fallback
+   inline (spec/21 wanted the fallback kept; it was removed) so a future auth/endpoint problem
+   degrades instead of going dark.
+6. Separately check the Inbound Synthflow workflow's completion-webhook URL if inbound volume
+   in `call_events` doesn't recover.
+
+### RESOLVED same session — both breakages fixed, verified end-to-end
+
+Turned out to be **two** independent silent failures, not one:
+
+1. **GHL trigger auth (Aug 27)** — Kes had the `X-Cora-Webhook-Secret` in GHL's **Custom Data**
+   (request body) instead of **Headers**. Moved it to the Headers section on both the New Leads
+   and Cold Leads webhook actions, republished. `POST /v1/webhooks/leads/new_lead` → **202**.
+2. **Synthflow post-call webhook (Sep 1)** — separate breakage found only after fixing #1.
+   Synthflow kept placing calls but stopped POSTing completion data to `/v1/webhooks/calls`
+   (last one ever: 2026-09-01 20:20:38). Not a network/URL/Cora problem — verified `:8000/health`
+   and the sslip.io HTTPS endpoint both reachable externally; the correct URL
+   (`http://204.168.245.238:8000/v1/webhooks/calls`) was still in Synthflow's HTTP step. The
+   step/workflow itself had stopped firing. Kes restored it in Synthflow.
+
+**Verified end-to-end** with a real test call (contact `+15714782790`, Kes's own "test"-tagged
+contact): GHL 202 → `launch_outbound_call` (completed) → Synthflow dialed → call connected →
+Synthflow completion webhook from `49.13.34.137` → `POST /v1/webhooks/calls` **202** →
+`process_call_event` (completed) → `call_events` row (`call_id 35b19db9…`, outbound, completed) →
+all downstream jobs completed: `run_call_analysis`, `create_crm_task`, `write_conversation_log`,
+`write_internal_comment_note`, `send_student_summary`, `update_lead_state`. Zero exceptions.
+
+**The full outbound pipeline is live again as of 2026-09-09 ~01:46 UTC.**
+
+### Still open
+
+- **`feat/outbound-stall-alerting` branch is still uncommitted / not merged / not deployed.** It
+  is exactly what would have caught both of these on day one. Debrief was delivered; awaiting
+  Kes's "looks good" to merge → `feat/ghl-call-conversation-sync` + deploy.
+- Dedupe the 3 `CORA_INBOUND_WEBHOOK_SECRET` lines in the server `.env` → 1.
+- Confirm **real** GHL enrollments (not just Test Workflow) start flowing through — watch
+  `scheduled_jobs`/`call_events` over the next day.
+- Minor: the test contact has timezone `US/Central` (not a valid IANA name) — Cora logs a
+  warning and falls back to `America/Chicago`. Harmless but worth cleaning in GHL.
+- spec/21's status table still says the cutover is "NOT STARTED" — correct it.

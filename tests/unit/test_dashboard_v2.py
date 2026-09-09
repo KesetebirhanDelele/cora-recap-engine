@@ -278,6 +278,8 @@ class TestAlertingService:
         s.alert_error_rate_threshold = 0.20
         s.alert_exception_spike_threshold = 10
         s.alert_dedup_window_seconds = 3600
+        s.alert_outbound_stall_hours = 4
+        s.default_timezone = "America/Chicago"
         s.smtp_enabled = False
         for k, v in overrides.items():
             setattr(s, k, v)
@@ -358,6 +360,145 @@ class TestAlertingService:
                 is_resolution=False,
             )
         mock_smtp.assert_not_called()
+
+
+class TestIntakeAuthFailureAlert:
+    """alerting._evaluate_intake_auth_failure — driven by open
+    'intake_auth_failed' exception rows written by the intake endpoint."""
+
+    def _settings(self):
+        s = MagicMock()
+        s.alert_dedup_window_seconds = 3600
+        s.smtp_enabled = False
+        return s
+
+    def _add_exception(self, session, status="open"):
+        from app.models.exception import ExceptionRecord
+        now = datetime.now(tz=timezone.utc)
+        session.add(ExceptionRecord(
+            id=str(uuid.uuid4()), type="intake_auth_failed", severity="warning",
+            status=status, context_json={}, version=0, created_at=now, updated_at=now,
+        ))
+        session.flush()
+
+    def _count(self, session, alert_type):
+        return session.execute(
+            text("SELECT COUNT(*) FROM alert_events WHERE alert_type = :t AND status = 'active'"),
+            {"t": alert_type},
+        ).scalar()
+
+    def test_fires_when_open_intake_auth_exception_exists(self, session):
+        from app.services.alerting import _evaluate_intake_auth_failure
+        self._add_exception(session)
+        _evaluate_intake_auth_failure(
+            session, self._settings(), datetime.now(tz=timezone.utc), timedelta(seconds=3600),
+        )
+        assert self._count(session, "intake_auth_failure") == 1
+
+    def test_silent_when_no_open_exception(self, session):
+        from app.services.alerting import _evaluate_intake_auth_failure
+        self._add_exception(session, status="resolved")
+        _evaluate_intake_auth_failure(
+            session, self._settings(), datetime.now(tz=timezone.utc), timedelta(seconds=3600),
+        )
+        assert self._count(session, "intake_auth_failure") == 0
+
+    def test_resolves_when_exception_cleared(self, session):
+        from app.services.alerting import _evaluate_intake_auth_failure
+        settings, now, win = self._settings(), datetime.now(tz=timezone.utc), timedelta(seconds=3600)
+        self._add_exception(session)
+        _evaluate_intake_auth_failure(session, settings, now, win)
+        assert self._count(session, "intake_auth_failure") == 1
+        # clear the open exception, re-evaluate
+        session.execute(text("UPDATE exceptions SET status = 'resolved' WHERE type = 'intake_auth_failed'"))
+        _evaluate_intake_auth_failure(session, settings, now + timedelta(minutes=5), win)
+        assert self._count(session, "intake_auth_failure") == 0
+
+
+class TestOutboundStallAlert:
+    """alerting._evaluate_outbound_stall — no launch_outbound_call completions
+    during an active, unpaused campaign window."""
+
+    def _settings(self):
+        s = MagicMock()
+        s.alert_dedup_window_seconds = 3600
+        s.alert_outbound_stall_hours = 4
+        s.default_timezone = "America/Chicago"
+        s.smtp_enabled = False
+        return s
+
+    def _flags(self, *, system_paused=False, outbound_campaigns_paused=False):
+        f = MagicMock()
+        f.system_paused = system_paused
+        f.outbound_campaigns_paused = outbound_campaigns_paused
+        return f
+
+    def _add_completion(self, session, minutes_ago=10):
+        from app.models.scheduled_job import ScheduledJob
+        now = datetime.now(tz=timezone.utc)
+        session.add(ScheduledJob(
+            id=str(uuid.uuid4()), job_type="launch_outbound_call",
+            entity_type="lead", entity_id="+15550001111",
+            run_at=now - timedelta(minutes=minutes_ago), status="completed",
+            version=1, created_at=now - timedelta(minutes=minutes_ago),
+            updated_at=now - timedelta(minutes=minutes_ago),
+        ))
+        session.flush()
+
+    def _count(self, session):
+        return session.execute(
+            text("SELECT COUNT(*) FROM alert_events WHERE alert_type = 'outbound_calls_stalled' AND status = 'active'")
+        ).scalar()
+
+    def _run(self, session, settings, now=None):
+        from app.services.alerting import _evaluate_outbound_stall
+        _evaluate_outbound_stall(
+            session, settings, now or datetime.now(tz=timezone.utc), timedelta(seconds=3600),
+        )
+
+    def test_fires_when_no_completions_in_window(self, session):
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            self._run(session, self._settings())
+        assert self._count(session) == 1
+
+    def test_silent_when_outbound_campaigns_paused(self, session):
+        with patch("app.core.mode_flags.get_mode_flags",
+                   return_value=self._flags(outbound_campaigns_paused=True)), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            self._run(session, self._settings())
+        assert self._count(session) == 0
+
+    def test_silent_outside_active_window(self, session):
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=False):
+            self._run(session, self._settings())
+        assert self._count(session) == 0
+
+    def test_silent_when_recent_completion_exists(self, session):
+        self._add_completion(session, minutes_ago=30)
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            self._run(session, self._settings())
+        assert self._count(session) == 0
+
+    def test_ignores_stale_completion_older_than_window(self, session):
+        self._add_completion(session, minutes_ago=5 * 60)  # 5h ago, window is 4h
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            self._run(session, self._settings())
+        assert self._count(session) == 1
+
+    def test_resolves_when_calls_resume(self, session):
+        settings = self._settings()
+        now = datetime.now(tz=timezone.utc)
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            self._run(session, settings, now=now)
+            assert self._count(session) == 1
+            self._add_completion(session, minutes_ago=1)
+            self._run(session, settings, now=now + timedelta(minutes=2))
+        assert self._count(session) == 0
 
 
 # ── Pipeline trace service ─────────────────────────────────────────────────────

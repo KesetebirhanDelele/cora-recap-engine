@@ -59,6 +59,44 @@ def _looks_like_e164(phone: str) -> bool:
     return phone.startswith("+") and len(phone) >= 10
 
 
+def _record_auth_failure(campaign_type: str, reason: str) -> None:
+    """
+    Persist an 'intake_auth_failed' exception so an otherwise invisible 401
+    storm at this endpoint surfaces as an alert
+    (alerting.py::_evaluate_intake_auth_failure).
+
+    Deduplicated to a single open row: a misconfigured caller (GHL retries
+    hard) must not flood the exceptions table via this public endpoint, and
+    one open row is all the alert needs to stay lit until an operator
+    resolves it. Best-effort — any failure here is swallowed, observability
+    must never break the endpoint's own response path.
+    """
+    try:
+        from app.models.exception import ExceptionRecord
+        from app.worker.exceptions import create_exception
+
+        with get_sync_session() as session:
+            already_open = session.scalars(
+                select(ExceptionRecord.id).where(
+                    ExceptionRecord.type == "intake_auth_failed",
+                    ExceptionRecord.status == "open",
+                )
+            ).first()
+            if already_open is not None:
+                return
+            create_exception(
+                session,
+                type="intake_auth_failed",
+                context={"campaign_type": campaign_type, "reason": reason},
+                severity="warning",
+                entity_type="webhook",
+                entity_id="v1/webhooks/leads",
+            )
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 — deliberately non-fatal
+        logger.warning("intake_lead: could not record auth-failure exception: %s", exc)
+
+
 @router.post("/leads/{campaign_type}", status_code=status.HTTP_202_ACCEPTED)
 async def intake_lead(
     campaign_type: str,
@@ -71,11 +109,18 @@ async def intake_lead(
     # An unset secret means the endpoint is closed, not open — never treat a
     # missing configured value as "auth not required".
     configured_secret = settings.cora_inbound_webhook_secret
-    if not configured_secret or x_cora_webhook_secret != configured_secret:
+    if not configured_secret:
+        reason = "server_secret_not_configured"
+    elif x_cora_webhook_secret != configured_secret:
+        reason = "missing_or_invalid_header"
+    else:
+        reason = None
+
+    if reason is not None:
         logger.warning(
-            "intake_lead: rejected — missing/invalid webhook secret | campaign_type=%s",
-            campaign_type,
+            "intake_lead: rejected — %s | campaign_type=%s", reason, campaign_type,
         )
+        _record_auth_failure(campaign_type, reason)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="invalid or missing webhook secret",

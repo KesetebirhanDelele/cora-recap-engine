@@ -300,6 +300,12 @@ class Settings(BaseSettings):
     alert_error_rate_threshold: float = 0.20
     alert_exception_spike_threshold: int = 10
     alert_dedup_window_seconds: int = 3600
+    # Fire outbound_calls_stalled when zero launch_outbound_call jobs have
+    # completed in this many hours while a campaign is inside its active
+    # window and outbound calling is not paused. Backstop for a silently
+    # broken upstream trigger (GHL workflow off, webhook-secret mismatch,
+    # Synthflow workflow disabled) — none of which produce a failed job.
+    alert_outbound_stall_hours: int = 4
 
     # Metrics collector
     metrics_collection_interval_seconds: int = 60
