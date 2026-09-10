@@ -50,9 +50,10 @@ from app.worker.jobs.outbound_jobs import (
     _compute_window_run_at,
 )
 
-# Bucket-aligned by construction (an exact multiple of 75s past _EPOCH), so
-# tests don't depend on incidental alignment of an arbitrary wall-clock date.
-_WINDOW_START = _bucket_start(1_000_000)
+# Grid-aligned window ~125 min in the future — far enough ahead that
+# _compute_window_run_at's "never schedule in the past" clamp is a no-op for
+# these tests, so the exact-bucket assertions hold.
+_WINDOW_START = _bucket_start(_bucket_index(datetime.now(tz=timezone.utc)) + 100)
 
 
 @pytest.fixture(scope="module")
@@ -135,6 +136,37 @@ def test_jobs_outside_four_hour_search_range_not_counted(session):
     session.flush()
     result = _compute_window_run_at(session, _WINDOW_START)
     assert result == _WINDOW_START
+
+
+def test_past_window_start_is_clamped_to_now(session):
+    """spec/29: _slot_aware_run_at floors now+delay to a 5-min boundary that can
+    be in the past. _compute_window_run_at must never return a past bucket —
+    otherwise quick re-schedules stack on a just-vacated past timestamp."""
+    past_window = _bucket_start(_bucket_index(datetime.now(tz=timezone.utc)) - 20)  # 25 min ago
+    result = _compute_window_run_at(session, past_window)
+    assert _aware(result) >= datetime.now(tz=timezone.utc) - timedelta(seconds=_CALL_WITHIN_SLOT_SPACING)
+
+
+def test_past_completed_jobs_do_not_free_a_past_bucket_for_stacking(session):
+    """Fill a past 5-min window with completed jobs, then schedule 3 more with a
+    past window_start — they must land on distinct *future* buckets, not stack
+    on the completed past ones."""
+    past_window = _bucket_start(_bucket_index(datetime.now(tz=timezone.utc)) - 20)
+    for i in range(_CALL_BATCH_SIZE):
+        session.add(_pending_job(past_window + timedelta(seconds=i * _CALL_WITHIN_SLOT_SPACING),
+                                 status="completed"))
+    session.flush()
+
+    run_ats = []
+    for _ in range(3):
+        r = _compute_window_run_at(session, past_window)
+        session.add(_pending_job(r))
+        session.flush()
+        run_ats.append(_aware(r))
+
+    now = datetime.now(tz=timezone.utc)
+    assert all(r >= now - timedelta(seconds=_CALL_WITHIN_SLOT_SPACING) for r in run_ats)
+    assert len(set(run_ats)) == 3  # distinct buckets, no stacking
 
 
 def test_burst_never_exceeds_batch_size_per_window(session):

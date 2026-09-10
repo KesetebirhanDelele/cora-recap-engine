@@ -180,9 +180,19 @@ def _compute_window_run_at(session, window_start: datetime, *, campaign_name: st
 
     is_priority = (campaign_name or "").strip().lower() == _PRIORITY_CAMPAIGN
 
-    # Ceiling: never return a time before window_start.
-    start_bucket = -(-(window_start - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)
-    start_bucket = int(start_bucket)
+    # Ceiling: never return a time before window_start — and never in the past.
+    # _slot_aware_run_at floors `now + delay` to the 5-minute boundary, which is
+    # already in the past whenever delay is small or the scheduler is running
+    # behind. Without the `now` clamp, the search starts on a past bucket whose
+    # earlier jobs have since `completed` (so they no longer count as occupied),
+    # and a fresh burst of quick re-schedules all pile onto that same past
+    # timestamp → fire at once. Observed 2026-09-10: 6 launch jobs stacked on a
+    # 4-minute-old 5-minute boundary.
+    now = datetime.now(tz=timezone.utc)
+    start_bucket = max(
+        int(-(-(window_start - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)),
+        int(-(-(now - _EPOCH).total_seconds() // _CALL_WITHIN_SLOT_SPACING)),
+    )
     end_bucket = start_bucket + _MAX_BUCKET_SEARCH
 
     existing_jobs = session.scalars(
