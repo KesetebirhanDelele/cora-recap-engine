@@ -8,6 +8,7 @@
 | **Item 1c** — auto-resolve the matching `call_pending` exception when a stuck row is repaired | **SPEC — not implemented.** |
 | **Item 2** — hard cap of `_CALL_BATCH_SIZE` launch jobs per 5-minute window; serialize bucket allocation | **SPEC — not implemented.** |
 | **Item 2a** — nurture scheduler commits per lead so the bucket-allocation lock is not held across a 50-lead batch's GHL lookups | **SPEC — not implemented.** |
+| **Item 3** (follow-up, 2026-09-10) — `call_pending` is now **log-only**, no dashboard exception. The recovery sweep repairs these automatically within ~20–40 min, so the alert was transient noise an operator can't action. Same treatment as the `do_not_call` / enrolled-student guards. `_resolve_call_pending` stays (cleans up exceptions raised before this change). | **DONE.** |
 | Synthflow-side webhook delivery reliability | **NOT IN THIS REPO** — tracked with Ali. This spec is the Cora-side backstop. |
 
 ---

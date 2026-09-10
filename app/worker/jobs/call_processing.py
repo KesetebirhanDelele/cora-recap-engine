@@ -510,17 +510,17 @@ def process_call_event(job_id: str) -> None:
                     call_status, call_id, job_id,
                 )
             elif call_status in _PENDING_STATUSES:
+                # Synthflow sent a non-terminal webhook (start-of-call ping) and
+                # the completion callback hasn't arrived. Logged, not raised as
+                # an exception: the spec/29 recovery sweep repairs these
+                # automatically within ~20-40 min (or finalizes them after 3h),
+                # so a dashboard alert is transient noise an operator can't
+                # action. Same treatment as the do_not_call / enrolled-student
+                # guards. The log line is the audit trail.
                 logger.warning(
-                    "process_call_event: call still in progress | call_id=%s status=%s",
-                    call_id, call_status,
-                )
-                create_exception(
-                    session,
-                    type="call_pending",
-                    severity="warning",
-                    context={"call_id": call_id, "status": call_status, "job_id": job_id},
-                    entity_type="call",
-                    entity_id=call_id,
+                    "process_call_event: call still non-terminal — awaiting spec/29 "
+                    "recovery | call_id=%s status=%s job_id=%s",
+                    call_id, call_status, job_id,
                 )
             else:
                 # Genuinely unrecognised status — route to call-through as the
