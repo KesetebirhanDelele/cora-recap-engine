@@ -71,7 +71,12 @@ def staff_call_quality_scan_job(job_id: str) -> None:
     worker_id = get_worker_id()
 
     with get_sync_session() as session:
-        job = claim_job(session, job_id=job_id, worker_id=worker_id)
+        # Default 300s lease is shorter than this job's realistic worst case
+        # (discovery fan-out + per-call Whisper transcription fallback — see
+        # module docstring). A too-short lease meant recover_expired_claims
+        # reset the row mid-run and the cycle retried from scratch forever
+        # (spec/29, observed 2026-09-10). Match the self-reschedule cadence.
+        job = claim_job(session, job_id=job_id, worker_id=worker_id, lease_seconds=_SCHEDULE_INTERVAL_SECONDS)
         if job is None:
             logger.info("staff_call_quality_scan: could not claim job_id=%s — skipping", job_id)
             return

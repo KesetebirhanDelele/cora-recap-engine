@@ -39,6 +39,7 @@ def schedule_job(
     payload: Optional[dict] = None,
     rq_queue: Optional[Any] = None,
     rq_job_func: Optional[Any] = None,
+    job_timeout: Optional[int] = None,
 ) -> ScheduledJob:
     """
     Create a durable scheduled job record in Postgres.
@@ -77,7 +78,8 @@ def schedule_job(
     is_due = run_at <= now
     if rq_queue is not None and rq_job_func is not None and is_due:
         try:
-            rq_job = rq_queue.enqueue(rq_job_func, job_id)
+            enqueue_kwargs = {"job_timeout": job_timeout} if job_timeout else {}
+            rq_job = rq_queue.enqueue(rq_job_func, job_id, **enqueue_kwargs)
             job.rq_job_id = rq_job.id
             session.flush()
             logger.info(
@@ -99,12 +101,19 @@ def enqueue_now(
     job: ScheduledJob,
     rq_queue: Any,
     rq_job_func: Any,
+    job_timeout: Optional[int] = None,
 ) -> bool:
     """
     Enqueue a pending Postgres job in RQ immediately.
 
     Used by the worker recovery loop to re-enqueue pending jobs after
     a Redis clear or worker restart.
+
+    job_timeout overrides RQ's default 180s work-horse timeout for job types
+    that legitimately run longer (e.g. staff_call_quality_scan — spec/29:
+    without this, RQ kills the process mid-run, the Postgres claim is never
+    released cleanly, its lease later expires, and the job retries from
+    scratch forever).
 
     Returns True if enqueue succeeded, False otherwise (job stays pending).
     """
@@ -116,7 +125,8 @@ def enqueue_now(
         return False
 
     try:
-        rq_job = rq_queue.enqueue(rq_job_func, job.id)
+        enqueue_kwargs = {"job_timeout": job_timeout} if job_timeout else {}
+        rq_job = rq_queue.enqueue(rq_job_func, job.id, **enqueue_kwargs)
         job.rq_job_id = rq_job.id
         session.flush()
         logger.info(

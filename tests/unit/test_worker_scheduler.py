@@ -178,6 +178,44 @@ def test_enqueue_now_returns_true_and_sets_rq_job_id(session):
     assert job.rq_job_id == "rq-enqueue-001"
 
 
+def test_enqueue_now_passes_job_timeout_when_given(session):
+    """spec/29: job types with a realistic runtime longer than RQ's 180s
+    default (e.g. staff_call_quality_scan) need an explicit override."""
+    from app.worker.scheduler import enqueue_now
+
+    job = ScheduledJob(
+        id=str(uuid.uuid4()), job_type="staff_call_quality_scan", entity_type="system",
+        entity_id="e-3", run_at=_now(), status="pending",
+        version=0, created_at=_now(), updated_at=_now(),
+    )
+    session.add(job)
+    session.flush()
+
+    mock_q = _mock_rq_queue("rq-enqueue-002")
+    fn = MagicMock()
+    enqueue_now(session, job, mock_q, fn, job_timeout=900)
+    mock_q.enqueue.assert_called_once_with(fn, job.id, job_timeout=900)
+
+
+def test_enqueue_now_omits_job_timeout_when_not_given(session):
+    """Default (no override) must produce the exact same call as before —
+    no regression for job types that don't need a longer timeout."""
+    from app.worker.scheduler import enqueue_now
+
+    job = ScheduledJob(
+        id=str(uuid.uuid4()), job_type="process_call_event", entity_type="call",
+        entity_id="e-4", run_at=_now(), status="pending",
+        version=0, created_at=_now(), updated_at=_now(),
+    )
+    session.add(job)
+    session.flush()
+
+    mock_q = _mock_rq_queue("rq-enqueue-003")
+    fn = MagicMock()
+    enqueue_now(session, job, mock_q, fn)
+    mock_q.enqueue.assert_called_once_with(fn, job.id)
+
+
 def test_enqueue_now_returns_false_for_non_pending(session):
     from app.worker.scheduler import enqueue_now
 

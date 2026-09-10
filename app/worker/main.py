@@ -78,6 +78,16 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "staff_call_quality_scan":    "rq_quality_queue",
 }
 
+# Per-job-type RQ work-horse timeout override, in seconds. Omitted job types
+# use RQ's default (180s). staff_call_quality_scan legitimately runs longer
+# (GHL conversation discovery pagination + OpenAI scoring for up to 20
+# messages/cycle) — without this override RQ kills it mid-run, the Postgres
+# claim is never released cleanly, and the job retries from scratch forever
+# once its lease expires (spec/29, observed 2026-09-10).
+_JOB_TIMEOUT_SECONDS: dict[str, int] = {
+    "staff_call_quality_scan": 900,
+}
+
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
 # "all" preserves the original single-worker topology for local/dev use.
 _ROLE_QUEUE_ATTRS: dict[str, list[str]] = {
@@ -156,7 +166,10 @@ def _run_scheduler_loop(
                         )
                         continue
 
-                    enqueue_now(session, job, rq_queue, job_func)
+                    enqueue_now(
+                        session, job, rq_queue, job_func,
+                        job_timeout=_JOB_TIMEOUT_SECONDS.get(job.job_type),
+                    )
 
         except Exception as exc:
             logger.exception("scheduler_loop: error | %s", exc)
