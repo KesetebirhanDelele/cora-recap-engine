@@ -37,6 +37,7 @@ _PER_CYCLE_CAP = 10
 _LOOKBACK_HOURS = 3
 _MIN_AGE_MINUTES = 20   # mirrors the panel — skip very-recent executions
 _MAX_AGE_HOURS = 24     # same window as the panel
+_STUCK_FINALIZE_HOURS = 3  # spec/29: write off a stuck call Synthflow can't resolve
 _SCHEDULE_INTERVAL_SECONDS = 300  # 5 minutes
 _OPERATOR_ID = "auto_webhook_recovery"
 
@@ -249,7 +250,10 @@ def _recover_stuck_calls(session: Session, settings: Any) -> None:
     now = datetime.now(tz=timezone.utc)
     min_age_cutoff = now - timedelta(minutes=_MIN_AGE_MINUTES)
     window_cutoff = now - timedelta(days=7)
-    max_age_cutoff = now - timedelta(hours=_MAX_AGE_HOURS)
+    # A call Synthflow can't give us a terminal outcome for (no record, or its
+    # own record stuck non-terminal) is written off after this long — well past
+    # any real call duration or reasonable webhook delay.
+    finalize_cutoff = now - timedelta(hours=_STUCK_FINALIZE_HOURS)
 
     stuck = session.scalars(
         select(CallEvent)
@@ -311,18 +315,18 @@ def _recover_stuck_calls(session: Session, settings: Any) -> None:
             skipped += 1
         except WebhookRecoveryError as exc:
             session.rollback()
-            if created_at < max_age_cutoff:
+            if created_at < finalize_cutoff:
                 _finalize_unrecoverable_stuck_call(session, call_id, str(exc))
                 session.commit()
                 finalized += 1
                 logger.warning(
-                    "auto_webhook_recovery: stuck call %s has no Synthflow record "
-                    "past %dh — finalized as failed", call_id, _MAX_AGE_HOURS,
+                    "auto_webhook_recovery: stuck call %s unrecoverable past %dh "
+                    "(%s) — finalized as failed", call_id, _STUCK_FINALIZE_HOURS, exc,
                 )
             else:
                 logger.info(
-                    "auto_webhook_recovery: stuck call %s not yet in Synthflow — retry next cycle",
-                    call_id,
+                    "auto_webhook_recovery: stuck call %s not yet recoverable (%s) — retry next cycle",
+                    call_id, exc,
                 )
                 skipped += 1
         except Exception as exc:
@@ -337,13 +341,14 @@ def _recover_stuck_calls(session: Session, settings: Any) -> None:
 
 
 def _finalize_unrecoverable_stuck_call(session: Session, call_id: str, reason: str) -> None:
-    """A stuck call Synthflow has no record of, past _MAX_AGE_HOURS: mark the
-    row failed and resolve the call_pending exception (spec/29 AC5)."""
+    """A stuck call Synthflow can't give a terminal outcome for, past
+    _STUCK_FINALIZE_HOURS: mark the row failed and resolve the call_pending
+    exception (spec/29)."""
     from app.worker.jobs.call_processing import _resolve_call_pending
 
     session.execute(text("""
         UPDATE call_events
-        SET status = 'failed', end_call_reason = 'recovery_no_record'
+        SET status = 'failed', end_call_reason = 'recovery_unresolved'
         WHERE call_id = :call_id AND status IN ('in-progress', 'queue')
     """), {"call_id": call_id})
     _resolve_call_pending(session, call_id, "failed")

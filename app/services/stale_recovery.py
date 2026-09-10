@@ -405,14 +405,15 @@ def recover_missed_webhook(
     if call_status == "ok":
         call_status = "completed"
 
-    # Synthflow still has no terminal outcome (call genuinely in flight, or its
-    # record not yet finalized). Nothing to replay — signal the caller to retry
-    # on a later cycle (spec/29).
+    # Synthflow still has no terminal outcome (call genuinely in flight, or —
+    # seen in prod — Synthflow abandoned the call in its own queue and its
+    # record never finalizes). Nothing to replay. WebhookRecoveryError so the
+    # caller retries for a while, then finalizes the row (spec/29).
     if str(call_status).strip().lower() in (
         "in_progress", "in-progress", "queue", "in_queue", "ringing",
         "initiated", "paused", "checking",
     ):
-        raise StaleLeadConflict(
+        raise WebhookRecoveryError(
             f"Synthflow still reports {call_status} for call {synthflow_call_id}"
         )
 

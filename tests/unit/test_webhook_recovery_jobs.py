@@ -287,19 +287,38 @@ def test_stuck_call_left_alone_when_synthflow_still_non_terminal(MockClient, db_
 
 
 @patch("app.adapters.synthflow.SynthflowClient")
-def test_stuck_call_finalized_when_no_synthflow_record_past_max_age(MockClient, db_session):
+def test_stuck_call_finalized_when_no_synthflow_record_past_threshold(MockClient, db_session):
     from app.adapters.synthflow import SynthflowError
-    from app.worker.jobs.webhook_recovery_jobs import _MAX_AGE_HOURS, _recover_stuck_calls
+    from app.worker.jobs.webhook_recovery_jobs import _STUCK_FINALIZE_HOURS, _recover_stuck_calls
 
     call_id = _seed_stuck_call(db_session, contact_id="+15551230004",
-                               age_minutes=_MAX_AGE_HOURS * 60 + 120)
+                               age_minutes=_STUCK_FINALIZE_HOURS * 60 + 60)
     MockClient.return_value.get_call.side_effect = SynthflowError("404 not found")
 
     _recover_stuck_calls(db_session, MagicMock())
 
     ce = db_session.query(_CallEvent).filter_by(call_id=call_id).one()
     assert ce.status == "failed"
-    assert ce.end_call_reason == "recovery_no_record"
+    assert ce.end_call_reason == "recovery_unresolved"
+    exc = db_session.query(_ExceptionRecord).filter_by(entity_id=call_id).one()
+    assert exc.status == "resolved"
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_finalized_when_synthflow_record_stuck_non_terminal_past_threshold(MockClient, db_session):
+    """Seen in prod: Synthflow abandons a call in its own queue and the record
+    never finalizes. Write it off after the threshold rather than retry forever."""
+    from app.worker.jobs.webhook_recovery_jobs import _STUCK_FINALIZE_HOURS, _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session, contact_id="+15551230006", status="queue",
+                               age_minutes=_STUCK_FINALIZE_HOURS * 60 + 60)
+    MockClient.return_value.get_call.return_value = {"call_id": call_id, "status": "queue", "duration": 0}
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    ce = db_session.query(_CallEvent).filter_by(call_id=call_id).one()
+    assert ce.status == "failed"
+    assert ce.end_call_reason == "recovery_unresolved"
     exc = db_session.query(_ExceptionRecord).filter_by(entity_id=call_id).one()
     assert exc.status == "resolved"
 
