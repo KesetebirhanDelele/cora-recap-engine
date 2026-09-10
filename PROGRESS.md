@@ -1583,3 +1583,63 @@ class as the day's other student calls. Post-restart the only student-phone job 
 **Ali email:** drafted (reply on "Outbound voice — routing change" thread), not sent — covers the
 two GHL-side asks (clear `AI Campaign`/`AI Campaign Name` on enrollment; add a student-tag /
 won-opp exclusion to the Cold + New Lead workflow triggers) + the dropped-out-student decision.
+
+---
+
+## 2026-09-10 — Stuck-call recovery + outbound burst cap (spec/29)
+
+**Trigger:** Kes brought two dashboard symptoms — a pile of `call_pending` warnings, and (from
+the call-spacing question) evidence that outbound calls were firing far closer than the 75s grid
+allows. Investigation on prod tied them together.
+
+**Root cause (both):**
+- **Stuck calls** — Synthflow sends a start-of-call webhook (`Status=in-progress`, duration 0,
+  no transcript) and then sometimes never sends the completion callback. `process_call_event`
+  can't route a non-terminal call → writes a `call_pending` warning and stops. The existing
+  auto-recovery job ignored these because a `call_events` row *does* exist (`ce.call_id IS NULL`
+  filter). `_create_call_event` also returned the stale row untouched on a dedupe hit, so even a
+  forced replay wouldn't fix it. 19 stuck outbound calls on 2026-09-10 (the 13:41–15:58 UTC
+  burst).
+- **Burst over-dialing** — `_compute_window_run_at` (spec/21 75s grid) had **no concurrency
+  protection**. Concurrent schedulers (a wave of GHL re-enrollment webhooks, each its own txn)
+  each read the same free-bucket snapshot and wrote to it. Prod on 2026-09-10: two 5-min windows
+  with **14 launch jobs each** vs a cap of 4; 66% of the day's 73 outbound calls started <75s
+  after the previous, 10% within 5s. Same windows the 11 stuck calls landed in — flooding
+  Synthflow is the likely reason it dropped their callbacks.
+
+**Shipped (`feat/webhook-recovery-hardening` → `feat/ghl-call-conversation-sync`, `35c11fb`):**
+- `_create_call_event` now **refreshes** a stale `in-progress`/`queue` row in place on a terminal
+  replay (status, transcript, duration, end_call_reason, recording, timeline, telephony_*).
+  Already-terminal rows still no-op.
+- `_resolve_call_pending` closes the `call_pending` exception on any terminal outcome — natural
+  late webhook *or* recovery.
+- `_recover_stuck_calls` sweep appended to the 5-min `auto_webhook_recovery` cycle: outbound rows
+  stuck ≥20 min → ask Synthflow for the real outcome, replay. `recover_missed_webhook` gains
+  `route: bool`; raises `StaleLeadConflict` when Synthflow still reports non-terminal.
+  `_finalize_unrecoverable_stuck_call` → `failed`/`recovery_no_record` past 24 h.
+- `_compute_window_run_at` takes `pg_advisory_xact_lock` (Postgres only) to serialize bucket
+  allocation. `_BUCKET_ALLOC_LOCK_KEY = 29090001`.
+- `nurture_scheduler` commits per lead so the lock isn't held across a 50-lead batch's GHL calls.
+- Tests: +12 unit. Full suite 1235 passed / 7 pre-existing failures.
+- `directives/spec/29_stuck_call_recovery_and_burst_cap.md` (new).
+
+**Deploy + verification (Hetzner, 2026-09-10 ~16:14 UTC):**
+- `deploy.sh` clean — all services up, health `ok`, no migration.
+- Recovery cycles at 16:18 / 16:26 / 16:31 swept the backlog: **18 `call_pending` exceptions
+  resolved**, all 11 original stuck calls now carry their real terminal status + transcript
+  (7 voicemail, 3 answered → `run_call_analysis` ran, 1 completed). 3 still open — all <20 min
+  old / Synthflow still non-terminal, will clear on later cycles. Self-sustaining thereafter.
+- **Burst cap holding:** launch jobs per 5-min window since deploy = mostly ≤4 (one window at 6),
+  vs 14 at baseline. Consecutive-call gaps <70s dropped from 66% to ~6%.
+
+**Deviation from the debrief:** I expected the recovered 11 to take the *cosmetic* path
+(row + exception patched, no re-routing) on the assumption the leads had moved on. In fact most
+had **no newer call_event** after the stuck one, so `moved_on` was False and they took **full
+recovery** — routed forward (tier advance / analysis), ~2 h late. No pile-ups (5 pending launch
+jobs across 11 contacts, properly laddered), no double-advances observed. Arguably the better
+outcome (campaigns resume correctly) but not what the debrief said — the `moved_on` heuristic
+(needs a newer *terminal* call_event) is stricter than "the campaign moved on".
+
+**Not done:** true cross-transaction concurrency test for the advisory lock (no Postgres in the
+unit suite — verified live instead). spec/28 (answering-service handling) still parked on
+`feat/answering-service-handling`.
