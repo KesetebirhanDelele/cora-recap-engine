@@ -247,6 +247,64 @@ def _resolve_outbound_campaign(session, contact_id: str | None) -> str | None:
     return (job.payload_json or {}).get("campaign_name")
 
 
+def _resolve_call_pending(session, call_id: str, terminal_status: str) -> None:
+    """Resolve any open call_pending exception for this call once a terminal
+    outcome is known (spec/29)."""
+    from sqlalchemy import select
+
+    from app.models.exception import ExceptionRecord
+    from app.worker.exceptions import resolve_exception
+
+    open_rows = session.scalars(
+        select(ExceptionRecord).where(
+            ExceptionRecord.type == "call_pending",
+            ExceptionRecord.entity_id == call_id,
+            ExceptionRecord.status == "open",
+        )
+    ).all()
+    for row in open_rows:
+        resolve_exception(
+            session, row.id, "system",
+            f"call reached terminal status {terminal_status}",
+        )
+
+
+def _refresh_stale_call_event(event, payload: dict[str, Any], status: str) -> None:
+    """
+    Overwrite a stale non-terminal CallEvent row in place with the real
+    terminal outcome recovered from Synthflow (spec/29). Only the fields that
+    a completion payload carries are touched; contact_id / direction /
+    campaign_name / voice_agent were resolved correctly at creation and are
+    left alone.
+    """
+    duration_raw = payload.get("duration") or payload.get("duration_seconds")
+    start_time = _parse_datetime(
+        payload.get("start_time") or payload.get("start_time_utc")
+    )
+
+    event.status = status
+    if payload.get("end_call_reason") is not None:
+        event.end_call_reason = payload.get("end_call_reason")
+    if payload.get("transcript"):
+        event.transcript = payload.get("transcript")
+    if duration_raw is not None:
+        event.duration_seconds = int(duration_raw)
+    if payload.get("recording_url"):
+        event.recording_url = payload.get("recording_url")
+    if start_time is not None:
+        event.start_time_utc = start_time
+        event.call_started_at = start_time
+    if payload.get("timeline") is not None:
+        event.timeline = payload.get("timeline")
+    if payload.get("telephony_duration") is not None:
+        event.telephony_duration = payload.get("telephony_duration")
+    if payload.get("telephony_start") is not None:
+        event.telephony_start = _parse_datetime(payload.get("telephony_start"))
+    if payload.get("telephony_end") is not None:
+        event.telephony_end = _parse_datetime(payload.get("telephony_end"))
+    event.raw_payload_json = payload
+
+
 def _create_call_event(session, call_id: str, payload: dict[str, Any], status: str):
     """
     Persist a CallEvent row from a Synthflow completed-call payload.
@@ -264,6 +322,21 @@ def _create_call_event(session, call_id: str, payload: dict[str, Any], status: s
         select(CallEvent).where(CallEvent.dedupe_key == dedupe_key)
     ).first()
     if existing:
+        # Replay of a call that first arrived on a non-terminal webhook
+        # (Synthflow sent "in-progress" then dropped the completion callback —
+        # see spec/29). A later replay carrying the real terminal status must
+        # overwrite the stale row; a replay of an already-terminal row stays a
+        # true no-op dedupe.
+        if existing.status in _PENDING_STATUSES and status not in _PENDING_STATUSES:
+            prior_status = existing.status
+            _refresh_stale_call_event(existing, payload, status)
+            session.flush()
+            logger.info(
+                "_create_call_event: refreshed stale non-terminal row | "
+                "call_id=%s id=%s %s->%s",
+                call_id, existing.id, prior_status, status,
+            )
+            return existing
         logger.info(
             "_create_call_event: dedupe hit, reusing existing | call_id=%s id=%s",
             call_id, existing.id,
@@ -375,6 +448,11 @@ def process_call_event(job_id: str) -> None:
             # 3. Persist CallEvent row (idempotent)
             call_event = _create_call_event(session, call_id, payload, call_status)
 
+            # A terminal outcome clears any open call_pending warning for this
+            # call — whether it arrived late on its own or via spec/29 recovery.
+            if call_status not in _PENDING_STATUSES:
+                _resolve_call_pending(session, call_id, call_status)
+
             # Publish dashboard event (non-fatal)
             try:
                 from app.services.event_publisher import publish_event
@@ -396,6 +474,18 @@ def process_call_event(job_id: str) -> None:
 
             # 4. Log any in-agent action failures
             _log_executed_actions(call_id, payload)
+
+            # 4b. Cosmetic recovery (spec/29): the row + exception have been
+            # repaired above, but the lead has since moved on — replaying this
+            # stale outcome into the tier engine / analysis would double-advance
+            # it. Stop here.
+            if payload.get("recovery_cosmetic"):
+                logger.info(
+                    "process_call_event: cosmetic recovery — row refreshed, "
+                    "routing skipped | call_id=%s status=%s", call_id, call_status,
+                )
+                complete_job(session, job)
+                return
 
             # 5. Route by normalized status
             if call_status in _COMPLETED_STATUSES:

@@ -41,6 +41,9 @@ _CALL_WITHIN_SLOT_SPACING = _CALL_SLOT_SECONDS // _CALL_BATCH_SIZE  # 75 s
 # lands on the same grid and can be checked for collisions against each
 # other, regardless of which code path scheduled it.
 _EPOCH = datetime(2020, 1, 1, tzinfo=timezone.utc)
+# Postgres advisory-lock key that serializes launch_outbound_call bucket
+# allocation across concurrent schedulers (spec/29). Arbitrary fixed constant.
+_BUCKET_ALLOC_LOCK_KEY = 2909_0001
 # Bound the free-bucket search to the same 4-hour horizon the old count-based
 # version used, so behavior doesn't silently search forever.
 _MAX_BUCKET_SEARCH = int(timedelta(hours=4).total_seconds() // _CALL_WITHIN_SLOT_SPACING)  # 192
@@ -159,9 +162,21 @@ def _compute_window_run_at(session, window_start: datetime, *, campaign_name: st
     back to the bucket immediately after the search range and logs a
     warning rather than looping indefinitely.
     """
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     from app.models.scheduled_job import ScheduledJob
+
+    # spec/29: serialize bucket allocation. Without this, concurrent schedulers
+    # (a burst of GHL New/Cold Lead webhooks, each in its own transaction) each
+    # read the same "free bucket" snapshot and all write to it — observed
+    # 2026-09-10 as 14 launch jobs in a single 5-minute window against a cap of
+    # 4. The xact lock is held to commit/rollback, covering the read, the
+    # priority-bump decision, and the caller's insert. Postgres only; SQLite
+    # tests are single-threaded so the ladder assertions still hold unlocked.
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:k)"), {"k": _BUCKET_ALLOC_LOCK_KEY}
+        )
 
     is_priority = (campaign_name or "").strip().lower() == _PRIORITY_CAMPAIGN
 

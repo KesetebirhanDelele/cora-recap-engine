@@ -231,6 +231,66 @@ def test_create_call_event_dedupes_on_replay(session):
     assert ce1.id == ce2.id
 
 
+def test_create_call_event_refreshes_stale_in_progress_row(session):
+    """spec/29: a call that first arrived as 'in-progress' and later gets its
+    real terminal outcome must have the existing row overwritten in place."""
+    call_id = str(uuid.uuid4())
+    ce1 = _create_call_event(
+        session, call_id,
+        {"call_id": call_id, "Status": "in-progress", "duration": 0, "transcript": ""},
+        "in-progress",
+    )
+    assert ce1.status == "in-progress"
+
+    ce2 = _create_call_event(
+        session, call_id,
+        {
+            "call_id": call_id,
+            "call_status": "hangup_on_voicemail",
+            "end_call_reason": "voicemail",
+            "duration": 58,
+            "transcript": "human: leave a message",
+            "recording_url": "https://example.com/rec.mp3",
+        },
+        "hangup_on_voicemail",
+    )
+    assert ce2.id == ce1.id
+    assert ce2.status == "hangup_on_voicemail"
+    assert ce2.end_call_reason == "voicemail"
+    assert ce2.duration_seconds == 58
+    assert ce2.transcript == "human: leave a message"
+    assert ce2.recording_url == "https://example.com/rec.mp3"
+
+
+def test_create_call_event_does_not_overwrite_terminal_row(session):
+    """A replay of an already-terminal row stays a true no-op dedupe."""
+    call_id = str(uuid.uuid4())
+    ce1 = _create_call_event(
+        session, call_id,
+        {"call_id": call_id, "call_status": "completed", "transcript": "real convo"},
+        "completed",
+    )
+    ce2 = _create_call_event(
+        session, call_id,
+        {"call_id": call_id, "call_status": "hangup_on_voicemail", "transcript": "different"},
+        "hangup_on_voicemail",
+    )
+    assert ce2.id == ce1.id
+    assert ce2.status == "completed"
+    assert ce2.transcript == "real convo"
+
+
+def test_create_call_event_refreshes_queue_status_too(session):
+    call_id = str(uuid.uuid4())
+    _create_call_event(session, call_id, {"call_id": call_id, "Status": "queue"}, "queue")
+    ce = _create_call_event(
+        session, call_id,
+        {"call_id": call_id, "call_status": "no-answer"},
+        "no-answer",
+    )
+    assert ce.status == "no-answer"
+
+
 def test_create_call_event_synthflow_fields_null_when_absent(session):
     call_id = str(uuid.uuid4())
     ce = _create_call_event(session, call_id, {"call_id": call_id}, "completed")

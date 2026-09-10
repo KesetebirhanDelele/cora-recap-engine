@@ -219,6 +219,135 @@ def _run_recovery_cycle(session: Session, settings: Any) -> None:
         recovered, rescheduled, skipped,
     )
 
+    _recover_stuck_calls(session, settings)
+
+
+def _recover_stuck_calls(session: Session, settings: Any) -> None:
+    """
+    spec/29: repair calls stuck on a non-terminal webhook.
+
+    Synthflow sometimes delivers a start-of-call webhook (Status=in-progress)
+    and then never delivers the completion callback. process_call_event writes
+    a call_pending warning and stops; _get_pending_failures above ignores these
+    because a call_events row *does* exist.
+
+    For each stuck outbound row older than _MIN_AGE_MINUTES, ask Synthflow for
+    the real outcome and replay it. If the lead has since moved on (a newer
+    terminal call_event, or a pending launch_outbound_call) the replay is
+    cosmetic — row + exception repaired, no re-routing.
+    """
+    from sqlalchemy import select
+
+    from app.models.call_event import CallEvent
+    from app.models.scheduled_job import ScheduledJob
+    from app.services.stale_recovery import (
+        StaleLeadConflict,
+        WebhookRecoveryError,
+        recover_missed_webhook,
+    )
+
+    now = datetime.now(tz=timezone.utc)
+    min_age_cutoff = now - timedelta(minutes=_MIN_AGE_MINUTES)
+    window_cutoff = now - timedelta(days=7)
+    max_age_cutoff = now - timedelta(hours=_MAX_AGE_HOURS)
+
+    stuck = session.scalars(
+        select(CallEvent)
+        .where(
+            CallEvent.status.in_(("in-progress", "queue")),
+            CallEvent.direction == "outbound",
+            CallEvent.created_at <= min_age_cutoff,
+            CallEvent.created_at >= window_cutoff,
+            CallEvent.contact_id.is_not(None),
+        )
+        .order_by(CallEvent.created_at.asc())
+        .limit(_PER_CYCLE_CAP)
+    ).all()
+
+    if not stuck:
+        return
+
+    logger.info("auto_webhook_recovery: %d stuck non-terminal call(s) this cycle", len(stuck))
+    repaired = cosmetic = finalized = skipped = 0
+
+    for row in stuck:
+        call_id, contact_id = row.call_id, row.contact_id
+        created_at = row.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+
+        newer_terminal = session.scalars(
+            select(CallEvent.id).where(
+                CallEvent.contact_id == contact_id,
+                CallEvent.status.not_in(("in-progress", "queue")),
+                CallEvent.created_at > row.created_at,
+            ).limit(1)
+        ).first()
+        pending_launch = session.scalars(
+            select(ScheduledJob.id).where(
+                ScheduledJob.job_type == "launch_outbound_call",
+                ScheduledJob.entity_id == contact_id,
+                ScheduledJob.status.in_(("pending", "claimed")),
+            ).limit(1)
+        ).first()
+        moved_on = newer_terminal is not None or pending_launch is not None
+
+        try:
+            recover_missed_webhook(
+                session, contact_id, call_id, _OPERATOR_ID, settings,
+                route=not moved_on,
+            )
+            session.commit()
+            if moved_on:
+                cosmetic += 1
+            else:
+                repaired += 1
+            logger.info(
+                "auto_webhook_recovery: stuck call queued for %s | contact=%s call_id=%s",
+                "cosmetic repair" if moved_on else "full recovery", contact_id, call_id,
+            )
+        except StaleLeadConflict as exc:
+            logger.info("auto_webhook_recovery: stuck call conflict %s — %s (skip)", call_id, exc)
+            skipped += 1
+        except WebhookRecoveryError as exc:
+            session.rollback()
+            if created_at < max_age_cutoff:
+                _finalize_unrecoverable_stuck_call(session, call_id, str(exc))
+                session.commit()
+                finalized += 1
+                logger.warning(
+                    "auto_webhook_recovery: stuck call %s has no Synthflow record "
+                    "past %dh — finalized as failed", call_id, _MAX_AGE_HOURS,
+                )
+            else:
+                logger.info(
+                    "auto_webhook_recovery: stuck call %s not yet in Synthflow — retry next cycle",
+                    call_id,
+                )
+                skipped += 1
+        except Exception as exc:
+            logger.error("auto_webhook_recovery: stuck call recovery failed for %s: %s", call_id, exc)
+            session.rollback()
+            skipped += 1
+
+    logger.info(
+        "auto_webhook_recovery: stuck-call pass done | full=%d cosmetic=%d finalized=%d skipped=%d",
+        repaired, cosmetic, finalized, skipped,
+    )
+
+
+def _finalize_unrecoverable_stuck_call(session: Session, call_id: str, reason: str) -> None:
+    """A stuck call Synthflow has no record of, past _MAX_AGE_HOURS: mark the
+    row failed and resolve the call_pending exception (spec/29 AC5)."""
+    from app.worker.jobs.call_processing import _resolve_call_pending
+
+    session.execute(text("""
+        UPDATE call_events
+        SET status = 'failed', end_call_reason = 'recovery_no_record'
+        WHERE call_id = :call_id AND status IN ('in-progress', 'queue')
+    """), {"call_id": call_id})
+    _resolve_call_pending(session, call_id, "failed")
+
 
 def _get_pending_failures(session: Session) -> list:
     """

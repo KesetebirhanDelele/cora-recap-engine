@@ -167,6 +167,157 @@ def test_find_call_paginates_until_last_page(MockClient):
     assert kw2["offset"] == 20
 
 
+# ── _recover_stuck_calls (spec/29) ─────────────────────────────────────────────
+
+import uuid as _uuid  # noqa: E402
+
+from sqlalchemy import create_engine as _create_engine  # noqa: E402
+from sqlalchemy.orm import Session as _Session  # noqa: E402
+
+from app.models import Base as _Base  # noqa: E402
+from app.models.call_event import CallEvent as _CallEvent  # noqa: E402
+from app.models.exception import ExceptionRecord as _ExceptionRecord  # noqa: E402
+from app.models.scheduled_job import ScheduledJob as _ScheduledJob  # noqa: E402
+
+
+@pytest.fixture
+def db_session():
+    eng = _create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    _Base.metadata.create_all(eng)
+    with _Session(eng) as s:
+        yield s
+    _Base.metadata.drop_all(eng)
+    eng.dispose()
+
+
+def _seed_stuck_call(session, *, contact_id="+15551230000", age_minutes=60, status="in-progress"):
+    call_id = str(_uuid.uuid4())
+    now = datetime.now(tz=timezone.utc)
+    session.add(_CallEvent(
+        id=str(_uuid.uuid4()), call_id=call_id, contact_id=contact_id,
+        direction="outbound", status=status, dedupe_key=f"{call_id}:process_call_event",
+        created_at=now - timedelta(minutes=age_minutes),
+    ))
+    session.add(_ExceptionRecord(
+        id=str(_uuid.uuid4()), type="call_pending", severity="warning", status="open",
+        entity_type="call", entity_id=call_id,
+        context_json={"call_id": call_id, "status": "in-progress"},
+        version=1, created_at=now, updated_at=now,
+    ))
+    session.commit()
+    return call_id
+
+
+def _vm_call_data(call_id):
+    return {"call_id": call_id, "call_status": "hangup_on_voicemail",
+            "end_call_reason": "voicemail", "duration": 58,
+            "Agent": "Cora Outbound NewLead Completed Call"}
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_full_recovery_when_lead_not_moved_on(MockClient, db_session):
+    from app.worker.jobs.webhook_recovery_jobs import _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session)
+    MockClient.return_value.get_call.return_value = _vm_call_data(call_id)
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    job = db_session.query(_ScheduledJob).filter_by(job_type="process_call_event").one()
+    assert job.payload_json["call_status"] == "hangup_on_voicemail"
+    assert "recovery_cosmetic" not in job.payload_json
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_cosmetic_when_newer_call_event_exists(MockClient, db_session):
+    from app.worker.jobs.webhook_recovery_jobs import _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session, contact_id="+15551230001")
+    # a newer terminal call for the same contact → lead moved on
+    db_session.add(_CallEvent(
+        id=str(_uuid.uuid4()), call_id=str(_uuid.uuid4()), contact_id="+15551230001",
+        direction="outbound", status="hangup_on_voicemail",
+        dedupe_key=str(_uuid.uuid4()), created_at=datetime.now(tz=timezone.utc),
+    ))
+    db_session.commit()
+    MockClient.return_value.get_call.return_value = _vm_call_data(call_id)
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    job = db_session.query(_ScheduledJob).filter_by(job_type="process_call_event").one()
+    assert job.payload_json["recovery_cosmetic"] is True
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_cosmetic_when_pending_launch_job_exists(MockClient, db_session):
+    from app.worker.jobs.webhook_recovery_jobs import _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session, contact_id="+15551230002")
+    db_session.add(_ScheduledJob(
+        id=str(_uuid.uuid4()), job_type="launch_outbound_call", entity_type="lead",
+        entity_id="+15551230002", status="pending",
+        run_at=datetime.now(tz=timezone.utc), payload_json={}, version=1,
+        created_at=datetime.now(tz=timezone.utc), updated_at=datetime.now(tz=timezone.utc),
+    ))
+    db_session.commit()
+    MockClient.return_value.get_call.return_value = _vm_call_data(call_id)
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    job = db_session.query(_ScheduledJob).filter_by(job_type="process_call_event").one()
+    assert job.payload_json["recovery_cosmetic"] is True
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_left_alone_when_synthflow_still_non_terminal(MockClient, db_session):
+    from app.worker.jobs.webhook_recovery_jobs import _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session, contact_id="+15551230003")
+    MockClient.return_value.get_call.return_value = {"call_id": call_id, "call_status": "in_progress"}
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    # Synthflow still non-terminal → nothing replayed, exception stays open,
+    # retried next cycle.
+    assert db_session.query(_ScheduledJob).filter_by(job_type="process_call_event").count() == 0
+    exc = db_session.query(_ExceptionRecord).filter_by(entity_id=call_id).one()
+    assert exc.status == "open"
+    ce = db_session.query(_CallEvent).filter_by(call_id=call_id).one()
+    assert ce.status == "in-progress"
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_finalized_when_no_synthflow_record_past_max_age(MockClient, db_session):
+    from app.adapters.synthflow import SynthflowError
+    from app.worker.jobs.webhook_recovery_jobs import _MAX_AGE_HOURS, _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session, contact_id="+15551230004",
+                               age_minutes=_MAX_AGE_HOURS * 60 + 120)
+    MockClient.return_value.get_call.side_effect = SynthflowError("404 not found")
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    ce = db_session.query(_CallEvent).filter_by(call_id=call_id).one()
+    assert ce.status == "failed"
+    assert ce.end_call_reason == "recovery_no_record"
+    exc = db_session.query(_ExceptionRecord).filter_by(entity_id=call_id).one()
+    assert exc.status == "resolved"
+
+
+@patch("app.adapters.synthflow.SynthflowClient")
+def test_stuck_call_not_finalized_when_recent_and_no_record(MockClient, db_session):
+    from app.adapters.synthflow import SynthflowError
+    from app.worker.jobs.webhook_recovery_jobs import _recover_stuck_calls
+
+    call_id = _seed_stuck_call(db_session, contact_id="+15551230005", age_minutes=60)
+    MockClient.return_value.get_call.side_effect = SynthflowError("not indexed yet")
+
+    _recover_stuck_calls(db_session, MagicMock())
+
+    ce = db_session.query(_CallEvent).filter_by(call_id=call_id).one()
+    assert ce.status == "in-progress"  # left for the next cycle
+
+
 # ── _run_recovery_cycle ─────────────────────────────────────────────────────────
 
 def _make_failure_row(job_id, contact_id, campaign, minutes_ago=30):

@@ -137,6 +137,53 @@ def test_jobs_outside_four_hour_search_range_not_counted(session):
     assert result == _WINDOW_START
 
 
+def test_burst_never_exceeds_batch_size_per_window(session):
+    """spec/29: scheduling _CALL_BATCH_SIZE + N calls sequentially into one
+    window ladders the first _CALL_BATCH_SIZE onto its buckets and spills the
+    rest to later windows — never more than _CALL_BATCH_SIZE per 5-min window."""
+    n_extra = 6
+    for _ in range(_CALL_BATCH_SIZE + n_extra):
+        run_at = _compute_window_run_at(session, _WINDOW_START)
+        session.add(_pending_job(run_at))
+        session.flush()
+
+    from collections import Counter
+    window_seconds = _CALL_BATCH_SIZE * _CALL_WITHIN_SLOT_SPACING
+    per_window = Counter()
+    for job in session.query(ScheduledJob).all():
+        window_idx = int((_aware(job.run_at) - _WINDOW_START).total_seconds() // window_seconds)
+        per_window[window_idx] += 1
+
+    assert per_window[0] == _CALL_BATCH_SIZE
+    assert all(v <= _CALL_BATCH_SIZE for v in per_window.values())
+    assert sum(per_window.values()) == _CALL_BATCH_SIZE + n_extra
+
+
+def test_advisory_lock_acquired_on_postgres(monkeypatch):
+    """The bucket allocator must serialize on Postgres (pg_advisory_xact_lock);
+    on SQLite it runs unlocked (single-threaded tests)."""
+    executed = []
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Bind:
+        dialect = _Dialect()
+
+    class _SpySession:
+        bind = _Bind()
+
+        def execute(self, stmt, *a, **kw):
+            executed.append(str(stmt))
+            return MagicMock(scalars=lambda: MagicMock(all=lambda: []))
+
+        def scalars(self, *a, **kw):
+            return MagicMock(all=lambda: [])
+
+    _compute_window_run_at(_SpySession(), _WINDOW_START)
+    assert any("pg_advisory_xact_lock" in s for s in executed)
+
+
 def test_non_pending_statuses_dont_occupy_bucket(session):
     for status in ("completed", "failed", "cancelled"):
         session.add(_pending_job(_WINDOW_START, status=status))

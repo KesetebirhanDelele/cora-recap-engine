@@ -351,13 +351,20 @@ def recover_missed_webhook(
     synthflow_call_id: str,
     operator_id: str,
     settings: Settings,
+    route: bool = True,
 ) -> dict[str, Any]:
     """
     Fetch a call from the Synthflow API by call_id and replay the full
     process_call_event pipeline, exactly as if the webhook had been delivered.
 
     Idempotent: if call_events already has this call_id the job is still
-    scheduled; process_call_event will skip the DB insert via dedupe_key.
+    scheduled; process_call_event refreshes a stale non-terminal row via
+    dedupe_key (spec/29) or skips an already-terminal one.
+
+    route=False (spec/29 cosmetic recovery): the call_events row and any
+    call_pending exception are still repaired, but downstream routing (tier
+    engine / call analysis) is skipped — used when the lead has already
+    progressed past this call and a replay would double-advance it.
     """
     from app.adapters.synthflow import SynthflowClient, SynthflowError
     from app.worker.scheduler import enqueue_now
@@ -398,6 +405,17 @@ def recover_missed_webhook(
     if call_status == "ok":
         call_status = "completed"
 
+    # Synthflow still has no terminal outcome (call genuinely in flight, or its
+    # record not yet finalized). Nothing to replay — signal the caller to retry
+    # on a later cycle (spec/29).
+    if str(call_status).strip().lower() in (
+        "in_progress", "in-progress", "queue", "in_queue", "ringing",
+        "initiated", "paused", "checking",
+    ):
+        raise StaleLeadConflict(
+            f"Synthflow still reports {call_status} for call {synthflow_call_id}"
+        )
+
     # Build a normalized payload that process_call_event can consume.
     # Mirror the key normalizations from normalize_synthflow_payload() in webhooks.py.
     # Primary: Agent field name; fallback: model_id / voice_agent prefix constants.
@@ -437,6 +455,8 @@ def recover_missed_webhook(
         # process_call_event's normalize_synthflow_outcome call.
         "call_status":   call_status,
     }
+    if not route:
+        normalized["recovery_cosmetic"] = True
 
     # Schedule process_call_event — the worker runs the full pipeline
     job = schedule_job(

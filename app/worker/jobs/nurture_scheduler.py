@@ -170,7 +170,13 @@ def _process_due_nurture_leads(session, settings) -> tuple[int, int]:
                     "contact_id=%s",
                     lead.contact_id,
                 )
+            # Commit per lead so the spec/29 bucket-allocation advisory lock
+            # (taken inside enter_campaign) is released between leads rather than
+            # held across the whole batch's GHL lookups. Also makes partial
+            # progress durable if a later lead fails.
+            session.commit()
         except Exception as exc:
+            session.rollback()
             errors += 1
             logger.exception(
                 "run_nurture_scheduler: failed for contact_id=%s: %s",
