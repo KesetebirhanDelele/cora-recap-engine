@@ -10,6 +10,8 @@ Queue topology:
   callbacks       — create_crm_task, send_student_summary, launch_outbound_call,
                     write_conversation_log, write_internal_comment_note
   retries         — retry_failed_job
+  quality         — staff_call_quality_scan (long-running; isolated so it
+                    never blocks call processing — spec/29)
   sheet_mirror    — sync_sheet_rows (Phase 9, out of scope)
 
 Worker role selection (WORKER_ROLE env var):
@@ -19,6 +21,7 @@ Worker role selection (WORKER_ROLE env var):
   ai         — listens on the ai queue; runs OpenAI analysis jobs.
   callbacks  — listens on the callbacks queue; runs GHL/Synthflow jobs.
   retries    — listens on the retries queue; isolated from live job traffic.
+  quality    — listens on the quality queue; runs the staff call-quality scan.
   all        — listens on all queues (default for single-process deployments
                and backwards-compatible local runs). Also owns scheduler loop.
 
@@ -72,7 +75,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "write_internal_comment_note": "rq_callback_queue",
     "rebalance_call_slots":       "rq_default_queue",
     "auto_webhook_recovery":      "rq_default_queue",
-    "staff_call_quality_scan":    "rq_default_queue",
+    "staff_call_quality_scan":    "rq_quality_queue",
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -82,11 +85,13 @@ _ROLE_QUEUE_ATTRS: dict[str, list[str]] = {
     "ai":        ["rq_ai_queue"],
     "callbacks": ["rq_callback_queue"],
     "retries":   ["rq_retry_queue"],
+    "quality":   ["rq_quality_queue"],
     "all": [
         "rq_default_queue",
         "rq_ai_queue",
         "rq_callback_queue",
         "rq_retry_queue",
+        "rq_quality_queue",
         "rq_sheet_mirror_queue",
     ],
 }

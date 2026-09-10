@@ -194,7 +194,7 @@ def test_worker_queues_non_empty():
 def test_worker_queues_contain_all_expected():
     from app.worker.main import get_queues
     queues = get_queues()
-    for expected in ["default", "ai", "callbacks", "retries", "sheet_mirror"]:
+    for expected in ["default", "ai", "callbacks", "retries", "quality", "sheet_mirror"]:
         assert expected in queues, f"Queue '{expected}' not found in worker queues"
 
 

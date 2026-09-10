@@ -235,6 +235,30 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # Dedicated worker for the long-running staff_call_quality_scan (spec/23):
+  # ~200s per run, every ~30 min. On the shared default queue it monopolised
+  # worker-default and backed up call processing (spec/29). Isolated here so a
+  # slow scan never delays process_call_event / voicemail tiers / the scheduler.
+  worker-quality:
+    build: .
+    command: python -m app.worker.main
+    env_file:
+      - .env
+    environment:
+      WORKER_ROLE: quality
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USERNAME:-postgres}:${POSTGRES_PASSWORD}@pgbouncer:5432/${POSTGRES_DATABASE:-cora}
+      REDIS_HOST: redis
+      POSTGRES_POOL_SIZE: "2"
+      POSTGRES_MAX_OVERFLOW: "2"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ── Caddy reverse proxy (TLS termination) ─────────────────────────────────────
   # Fronts the webhook API with automatic HTTPS (Let's Encrypt) so external
   # callers (GHL, Synthflow) don't have to send secrets/lead PII over plain

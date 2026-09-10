@@ -20,6 +20,7 @@ Provides durable Postgres-backed state, Redis/RQ job execution, GHL CRM updates,
 │  POST /exceptions   │    │    ai                  │
 └────────┬────────────┘    │    callbacks           │
          │                 │    retries             │
+         │                 │    quality             │
          ▼                 └────────────┬───────────┘
 ┌─────────────────────┐                │
 │   PgBouncer         │◄───────────────┘
@@ -154,7 +155,7 @@ docker compose logs -f worker
 ```
 docker compose build --no-cache worker-ai api && docker compose up -d --no-deps worker-ai api
 
-docker compose build --no-cache worker-ai worker-callbacks worker-default worker-retries api && docker compose up -d --no-deps worker-ai worker-callbacks worker-default worker-retries api
+docker compose build --no-cache worker-ai worker-callbacks worker-default worker-retries worker-quality api && docker compose up -d --no-deps worker-ai worker-callbacks worker-default worker-retries worker-quality api
 
 # Confirm it picked up the change after deploy:
 docker compose logs worker-ai --tail=20
@@ -340,7 +341,7 @@ python -m app.worker.main
 
 Expected:
 ```
-Listening on default, ai, callbacks, retries, sheet_mirror...
+Listening on default, ai, callbacks, retries, quality, sheet_mirror...
 ```
 
 ---

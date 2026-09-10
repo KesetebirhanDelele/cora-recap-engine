@@ -9,6 +9,7 @@
 | **Item 2** — hard cap of `_CALL_BATCH_SIZE` launch jobs per 5-minute window; serialize bucket allocation | **SPEC — not implemented.** |
 | **Item 2a** — nurture scheduler commits per lead so the bucket-allocation lock is not held across a 50-lead batch's GHL lookups | **SPEC — not implemented.** |
 | **Item 3** (follow-up, 2026-09-10) — `call_pending` is now **log-only**, no dashboard exception. The recovery sweep repairs these automatically within ~20–40 min, so the alert was transient noise an operator can't action. Same treatment as the `do_not_call` / enrolled-student guards. `_resolve_call_pending` stays (cleans up exceptions raised before this change). | **DONE.** |
+| **Item 4** (follow-up, 2026-09-10) — the burst that caused items 1–2 also saturated `worker-default` (single process, `default` queue): `process_call_event` wait times went from 14 s to ~290 s, largely because `staff_call_quality_scan` (~200 s/run) shares that queue. Moved `staff_call_quality_scan` to a dedicated `quality` queue + `worker-quality` service. New `WORKER_ROLE=quality`, `rq_quality_queue` setting. Does not fix the "`worker-default` is unscalable" root (scheduler-loop singleton) — see spec/18 Stage 2 for the advisory-lock guard that unlocks that. | **DONE.** |
 | Synthflow-side webhook delivery reliability | **NOT IN THIS REPO** — tracked with Ali. This spec is the Cora-side backstop. |
 
 ---

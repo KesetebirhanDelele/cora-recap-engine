@@ -48,13 +48,13 @@ git pull --ff-only
 
 echo ""
 echo "==> [2/5] Building images..."
-# Rebuilds: api, dashboard-api, frontend, all workers.
+# Rebuilds: api, dashboard-api, frontend, all workers (default/ai/callbacks/retries/quality).
 # postgres, redis, pgbouncer, adminer use upstream images (docker compose pull handles those).
 docker compose pull postgres redis adminer 2>/dev/null || true
 # shellcheck disable=SC2086
 docker compose build $NO_CACHE \
   api dashboard-api frontend \
-  worker-default worker-ai worker-callbacks worker-retries
+  worker-default worker-ai worker-callbacks worker-retries worker-quality
 
 echo ""
 echo "==> [3/5] Ensuring infrastructure is up (postgres, redis, pgbouncer)..."
@@ -75,7 +75,7 @@ echo ""
 echo "==> [5/5] Starting / restarting app services..."
 docker compose up -d --no-deps \
   api dashboard-api frontend \
-  worker-default worker-ai worker-callbacks worker-retries
+  worker-default worker-ai worker-callbacks worker-retries worker-quality
 
 echo ""
 echo "Waiting 15s for services to stabilise..."

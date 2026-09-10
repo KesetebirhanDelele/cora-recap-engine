@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     rq_callback_queue: str = "callbacks"
     rq_retry_queue: str = "retries"
     rq_sheet_mirror_queue: str = "sheet_mirror"
+    # Dedicated queue for the long-running staff_call_quality_scan (spec/23) so
+    # a 200s+ scan never blocks call processing on the default queue (spec/29).
+    rq_quality_queue: str = "quality"
     rq_dashboard_enabled: bool = False
 
     # ── GHL / LeadConnector ───────────────────────────────────────────────────

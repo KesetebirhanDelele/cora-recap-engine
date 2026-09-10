@@ -55,6 +55,18 @@ The claim/lease pattern in `app/worker/claim.py` is already concurrency-safe:
 
 **Ceiling before external API rate limits become the real constraint:** ~5–8 workers for current GHL/Synthflow/OpenAI quotas.
 
+**Role-based topology (2026-09-10):** workers are now split by `WORKER_ROLE`
+— `default` / `ai` / `callbacks` / `retries` / `quality`, each listening on
+one queue. `worker-ai`, `worker-callbacks`, `worker-retries`, `worker-quality`
+are freely scalable (`docker compose up -d --scale worker-ai=3`). **`worker-default`
+is NOT** — it owns the singleton scheduler loop; running it in >1 process
+double-enqueues every recurring job. To scale `default`-queue throughput,
+first add a `pg_try_advisory_lock` guard to `_run_scheduler_loop` (same
+pattern as spec/29's bucket-allocation lock) so only one replica's loop is
+active per tick, *then* scale. The long-running `staff_call_quality_scan`
+(~200 s/run) was moved off the `default` queue to its own `quality` queue +
+`worker-quality` (spec/29) precisely so it can't starve call processing.
+
 ### Stage 3 — PgBouncer connection pooler
 **Status: IMPLEMENTED 2026-04-29**
 
