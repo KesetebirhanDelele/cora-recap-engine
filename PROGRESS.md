@@ -1686,3 +1686,79 @@ rows existed at deploy time — no manual dashboard cleanup needed this time.
 All 4 outbound-suppression guard types (`do_not_call`, `enrolled-student`, `urgent-escalation`,
 `spam-likely`) are now consistently log-only. Server log is the audit trail for all four; none
 surface a dashboard alert.
+
+---
+
+## 2026-09-11 (continued) — New-exception + sales-queue-urgent email alerts (spec/30), SMTP credential incident, prompt URL swap
+
+### Email alerts (spec/30) — shipped in 4 small deploys, same session
+Kes asked to be emailed on every new exception (not just the existing `exception_spike`
+threshold-of-10 alert) and to have Rose/Taiwo emailed when a lead hits urgent sales-queue
+priority, routed by topic (admissions → Rose, payment/IPBC → Taiwo) or by name if the caller
+asked for someone specifically. Full design in `directives/spec/30_sales_queue_and_exception_email_alerts.md`.
+
+Built on top of the existing live `app/services/alerting.py` SMTP cycle (60s, via
+`metrics_jobs.py`) rather than new infra. Also fixed a latent bug found along the way:
+`ALERT_EMAIL_TO` was documented as comma-separated but never actually split before
+`smtplib.sendmail`, so a second address would silently never receive anything.
+
+Shipped in order, each merged to `feat/ghl-call-conversation-sync` + deployed:
+1. `feat/exception-and-sales-queue-email-alerts` (`79fcfcf`) — both new alert types, friendly
+   Rose/Taiwo template with a `{frontend_url}/lead/{contact_id}` dashboard link,
+   `ALERT_SALES_QUEUE_ENABLED` gate.
+2. `fix/sales-queue-email-drop-dashboard-link` (`5970051`) — see incident below.
+3. `feat/sales-queue-email-cc-kes` (`08d20e2`) — CC'd Kes on the Rose/Taiwo email.
+4. `fix/sales-queue-email-no-cc` (`a0d4ed0`) — Kes reverted the CC minutes later. Mechanism
+   (`cc_addrs` param on `_smtp_send`/`_send_sales_queue_urgent_email`) kept, just unused.
+
+`tests/unit/test_alerting.py` (new file, 27 cases) — this module had zero prior coverage.
+Full suite stayed at 1267 passed / 7 pre-existing-unrelated failures through all 4 deploys.
+
+### Incident — first live send had a dead link
+Prod's `FRONTEND_URL` env var was stale (`http://localhost:3000`, never corrected because
+nothing read it before this feature). Before it was caught, the metrics cycle fired once
+(16:26:02 UTC) for a genuinely-qualifying lead (`+15082722326`) and sent Rose/Taiwo a real
+email with a dead link. Kes's call: drop the dashboard link entirely — Rose/Taiwo check GHL
+directly by phone number, not the Cora dashboard. Template now ends with a GHL-lookup
+instruction instead. **The stale alert_events row for that lead is still active** (dedup means
+it won't resend on its own) — a one-row `UPDATE ... SET status='resolved'` would let it
+re-fire correctly on the next cycle, but that write was blocked by the auto-mode safety
+classifier and Kes hasn't yet said go/no-go. Still open.
+
+### Incident — SMTP auth was broken, unrelated to any of the above
+While verifying the `ALERT_EMAIL_FROM` change (see below), a live test send failed
+`535 5.7.8 BadCredentials` — confirmed unrelated to the From-address change by reproducing the
+same failure with the original From address. The Gmail App Password itself was being
+rejected. **Fixed same session:** Kes generated a fresh app password for `kes@colaberry.com`
+and set `SMTP_USERNAME`/`SMTP_PASSWORD` on the server directly (I never saw the password).
+Verified with a real test send (`alerting: email sent for smtp_auth_verify` in logs, no error) —
+auth confirmed working.
+
+### Config corrections, same session
+- `ALERT_EMAIL_FROM`: `asnakebekele2024@gmail.com` → `kes@colaberry.com` (Kes's request).
+- `ALERT_EMAIL_TO`: `kesetebeirhan@gmail.com` → `kesetebirhan@gmail.com` — **this was a
+  pre-existing typo**, not matching Kes's real address. Unclear how long alert emails (queue
+  lag, exception spike, etc.) had been silently misdelivered before this session; worth a
+  mental note that "alerting is live" claims from earlier sessions should be treated with
+  suspicion until this fix.
+
+### Prompt URL swap — training.colaberry.com → www.myfreeaiclass.com
+`docs/update-training-url-to-myfreeaiclass` (`e6d0635`) — 15 occurrences across
+`docs/colaberry-knowledge-base.md`, `docs/synthflow-cold-lead-prompt.md`,
+`docs/synthflow-warm-lead-prompt.md`. Initially mischaracterized this as docs-only (no `app/`
+code references the URL string) — Kes corrected that: `app/adapters/synthflow.py::_load_campaign_prompt`
+(`@lru_cache`) reads `synthflow-cold-lead-prompt.md` / `synthflow-warm-lead-prompt.md` directly
+off disk at call time and injects the result as the live Synthflow `prompt` payload — those two
+files **are** the runtime prompt, not just reference docs. (`colaberry-knowledge-base.md`
+genuinely is unreferenced by any code, for whatever that's worth as a distinction.)
+
+Deployed (`docker compose up -d --build`, all workers rebuilt to clear the `lru_cache`) and
+verified by calling `_load_campaign_prompt()` directly on the server for both campaigns: 0 old
+references, 7 new in New Lead / 5 new in Cold Lead (matches source file counts exactly). Next
+call placed on either campaign will use the corrected URL.
+
+### Still open
+- The stale `+15082722326` `alert_events` row (see incident above) — needs Kes's go-ahead for
+  the one-row UPDATE.
+- Whether any *other* `ALERT_EMAIL_TO`-style address elsewhere in `.env` has a similar typo was
+  not audited — only this one was caught, because it happened to come up.
