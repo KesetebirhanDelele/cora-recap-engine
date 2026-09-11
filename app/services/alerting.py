@@ -51,6 +51,32 @@ from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
+# ── Delayed-email debounce (2026-09-11) ─────────────────────────────────────
+#
+# Kes: most of these clear themselves before anyone needs to act — don't
+# email until a problem has actually persisted. Calibrated against real
+# alert_events history (median time from created_at to resolved_at):
+#   webhook_drop_detected   4.5 min  (n=31)
+#   error_rate_spike        7.5 min  (n=15)
+#   queue_lag_exceeded      9.6 min  (n=46, heavily right-skewed — some
+#                            persist for days, but the median blip clears
+#                            fast)
+#   exception_spike         ~9.5h    (n=26) — rarely self-heals quickly, but
+#                            still worth a short debounce for the rare
+#                            instant blip
+# Deliberately NOT delayed: outbound_calls_stalled (the flatlined-pipeline
+# backstop — see PROGRESS.md 2026-09-08's 12-day silent outage, the reason
+# this alert exists at all; only 2 historical samples besides, too little to
+# calibrate), worker_offline (zero workers is unambiguous and severe, never
+# seen a resolved row in history), ghl_auth_failure / intake_auth_failure
+# (an auth failure doesn't self-heal — waiting only delays the fix).
+_ALERT_EMAIL_DELAY_SECONDS: dict[str, int] = {
+    "queue_lag_exceeded": 900,
+    "webhook_drop_detected": 900,
+    "error_rate_spike": 900,
+    "exception_spike": 300,
+}
+
 # ── Alert definitions ─────────────────────────────────────────────────────────
 
 _ALERT_DEFINITIONS = [
@@ -168,6 +194,44 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
                 "alerting: alert eval failed for %s: %s", defn["alert_type"], exc
             )
 
+    try:
+        _send_pending_delayed_alert_emails(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: pending_delayed_emails eval failed: %s", exc)
+
+
+def _send_pending_delayed_alert_emails(session: Session, settings: Any, now: datetime) -> None:
+    """
+    For alert types in _ALERT_EMAIL_DELAY_SECONDS, the creation path leaves
+    email_sent_at NULL instead of emailing right away. Once an active row
+    has existed at least that type's delay without resolving, send the
+    email here, once. Runs every cycle, independent of which evaluator
+    created the row — a row that resolves before crossing its delay never
+    gets picked up here at all (status='active' filter), which is the
+    whole point: self-healing blips never generate an email.
+    """
+    for alert_type, delay_seconds in _ALERT_EMAIL_DELAY_SECONDS.items():
+        cutoff = now - timedelta(seconds=delay_seconds)
+        rows = session.execute(
+            text("""
+                SELECT id, severity, message
+                FROM alert_events
+                WHERE alert_type = :t AND status = 'active'
+                  AND email_sent_at IS NULL AND created_at <= :cutoff
+            """),
+            {"t": alert_type, "cutoff": cutoff},
+        ).fetchall()
+        for row in rows:
+            alert_id, severity, message = row
+            _send_alert_email(
+                settings=settings, alert_id=alert_id, alert_type=alert_type,
+                severity=severity, message=message, now=now,
+            )
+            session.execute(
+                text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
+                {"now": now, "id": alert_id},
+            )
+
 
 def _evaluate_single_alert(
     session: Session,
@@ -238,13 +302,15 @@ def _evaluate_single_alert(
         )
         session.add(row)
         session.flush()
-        _send_alert_email(settings=settings, alert_id=alert_id, alert_type=alert_type,
-                          severity=defn["severity"], message=msg, now=now)
-        # Mark email_sent_at
-        session.execute(
-            text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
-            {"now": now, "id": alert_id},
-        )
+        if not _ALERT_EMAIL_DELAY_SECONDS.get(alert_type):
+            _send_alert_email(settings=settings, alert_id=alert_id, alert_type=alert_type,
+                              severity=defn["severity"], message=msg, now=now)
+            session.execute(
+                text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
+                {"now": now, "id": alert_id},
+            )
+        # else: email_sent_at stays NULL — _send_pending_delayed_alert_emails
+        # sends it later only if the condition is still active past the delay.
     else:
         # Condition cleared — resolve any active row. Per Kes (2026-09-11):
         # no resolution email, status update only. The active alert already
@@ -634,14 +700,17 @@ def _evaluate_webhook_drop(
         )
         session.add(row_obj)
         session.flush()
-        _send_alert_email(
-            settings=settings, alert_id=alert_id, alert_type=alert_type,
-            severity="warning", message=msg, now=now,
-        )
-        session.execute(
-            text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
-            {"now": now, "id": alert_id},
-        )
+        if not _ALERT_EMAIL_DELAY_SECONDS.get(alert_type):
+            _send_alert_email(
+                settings=settings, alert_id=alert_id, alert_type=alert_type,
+                severity="warning", message=msg, now=now,
+            )
+            session.execute(
+                text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
+                {"now": now, "id": alert_id},
+            )
+        # else: email_sent_at stays NULL — _send_pending_delayed_alert_emails
+        # sends it later only if the condition is still active past the delay.
     else:
         # No resolution email — see _evaluate_single_alert's matching comment.
         if existing:

@@ -361,6 +361,154 @@ class TestAlertingService:
         mock_smtp.assert_not_called()
 
 
+class TestDelayedAlertEmails:
+    """Delay-eligible alert types (2026-09-11, per Kes: most alerts
+    self-resolve, only email if they persist) don't email on the same cycle
+    they're created — see _ALERT_EMAIL_DELAY_SECONDS in alerting.py, and
+    _send_pending_delayed_alert_emails for the sweep that sends them once
+    they've actually persisted past their type's delay."""
+
+    def _make_settings(self, **overrides):
+        s = MagicMock()
+        s.alert_queue_lag_threshold_seconds = 300
+        s.alert_dedup_window_seconds = 3600
+        s.smtp_enabled = True
+        s.alert_email_from = "cora@colaberry.com"
+        s.alert_email_to = "kesetebirhan@gmail.com"
+        for k, v in overrides.items():
+            setattr(s, k, v)
+        return s
+
+    def test_delay_eligible_type_does_not_email_on_creation(self, session):
+        """queue_lag_exceeded is in _ALERT_EMAIL_DELAY_SECONDS -- a fresh
+        breach must create the row but leave email_sent_at NULL and never
+        touch SMTP."""
+        from app.services.alerting import _evaluate_single_alert
+
+        settings = self._make_settings()
+        defn = {
+            "alert_type": "queue_lag_exceeded",
+            "severity": "critical",
+            "metric_key": "queue_lag_seconds",
+            "threshold_setting": "alert_queue_lag_threshold_seconds",
+            "condition": "gt",
+            "message_template": "Lag {value:.0f}s > {threshold:.0f}s",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            _evaluate_single_alert(
+                session=session, settings=settings, defn=defn,
+                health={"queue_lag_seconds": 450.0}, now=datetime.now(tz=timezone.utc),
+                dedup_window=timedelta(seconds=3600),
+            )
+        mock_smtp.assert_not_called()
+
+        row = session.execute(
+            text("SELECT status, email_sent_at FROM alert_events WHERE alert_type = 'queue_lag_exceeded'")
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "active"
+        assert row[1] is None
+
+    def test_non_delay_eligible_type_emails_on_creation(self, session):
+        """worker_offline has no entry in _ALERT_EMAIL_DELAY_SECONDS -- must
+        still email immediately, unaffected by the delay mechanism."""
+        from app.services.alerting import _evaluate_single_alert
+
+        settings = self._make_settings()
+        defn = {
+            "alert_type": "worker_offline",
+            "severity": "critical",
+            "metric_key": "active_workers",
+            "threshold_setting": None,
+            "condition": "eq_zero",
+            "message_template": "No active workers detected",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_server)
+            mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+            _evaluate_single_alert(
+                session=session, settings=settings, defn=defn,
+                health={"active_workers": 0}, now=datetime.now(tz=timezone.utc),
+                dedup_window=timedelta(seconds=3600),
+            )
+        mock_server.sendmail.assert_called_once()
+
+        row = session.execute(
+            text("SELECT status, email_sent_at FROM alert_events WHERE alert_type = 'worker_offline'")
+        ).fetchone()
+        assert row[1] is not None  # email_sent_at populated immediately
+
+    def test_pending_delayed_email_sent_once_past_cutoff(self, session):
+        from app.models.alert_event import AlertEvent
+        from app.services.alerting import _send_pending_delayed_alert_emails
+
+        settings = self._make_settings()
+        now = datetime.now(tz=timezone.utc)
+        old_enough = now - timedelta(seconds=901)  # past the 900s queue_lag_exceeded delay
+        session.add(AlertEvent(
+            id="past-cutoff-id", alert_type="queue_lag_exceeded", severity="critical",
+            status="active", message="Lag 500s > 300s", last_seen_at=old_enough,
+            created_at=old_enough,
+        ))
+        session.flush()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_server)
+            mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+            _send_pending_delayed_alert_emails(session, settings, now)
+        mock_server.sendmail.assert_called_once()
+
+        row = session.execute(
+            text("SELECT email_sent_at FROM alert_events WHERE id = 'past-cutoff-id'")
+        ).fetchone()
+        assert row[0] is not None
+
+    def test_pending_delayed_email_not_sent_before_cutoff(self, session):
+        from app.models.alert_event import AlertEvent
+        from app.services.alerting import _send_pending_delayed_alert_emails
+
+        settings = self._make_settings()
+        now = datetime.now(tz=timezone.utc)
+        too_recent = now - timedelta(seconds=60)  # well under the 900s delay
+        session.add(AlertEvent(
+            id="too-recent-id", alert_type="queue_lag_exceeded", severity="critical",
+            status="active", message="Lag 500s > 300s", last_seen_at=too_recent,
+            created_at=too_recent,
+        ))
+        session.flush()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            _send_pending_delayed_alert_emails(session, settings, now)
+        mock_smtp.assert_not_called()
+
+        row = session.execute(
+            text("SELECT email_sent_at FROM alert_events WHERE id = 'too-recent-id'")
+        ).fetchone()
+        assert row[0] is None
+
+    def test_pending_delayed_email_skips_already_resolved(self, session):
+        """A row that resolved before crossing its delay must never email --
+        this is the actual debounce behavior Kes asked for."""
+        from app.models.alert_event import AlertEvent
+        from app.services.alerting import _send_pending_delayed_alert_emails
+
+        settings = self._make_settings()
+        now = datetime.now(tz=timezone.utc)
+        old_enough = now - timedelta(seconds=901)
+        session.add(AlertEvent(
+            id="resolved-before-cutoff-id", alert_type="queue_lag_exceeded", severity="critical",
+            status="resolved", message="Lag 500s > 300s", last_seen_at=old_enough,
+            created_at=old_enough, resolved_at=now - timedelta(seconds=700),
+        ))
+        session.flush()
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            _send_pending_delayed_alert_emails(session, settings, now)
+        mock_smtp.assert_not_called()
+
+
 class TestIntakeAuthFailureAlert:
     """alerting._evaluate_intake_auth_failure — driven by open
     'intake_auth_failed' exception rows written by the intake endpoint."""
