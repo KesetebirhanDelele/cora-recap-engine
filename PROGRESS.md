@@ -1643,3 +1643,46 @@ outcome (campaigns resume correctly) but not what the debrief said — the `move
 **Not done:** true cross-transaction concurrency test for the advisory lock (no Postgres in the
 unit suite — verified live instead). spec/28 (answering-service handling) still parked on
 `feat/answering-service-handling`.
+
+---
+
+## 2026-09-11 — Urgent-escalation and spam-likely guards are now log-only, not exceptions
+
+**Trigger:** Kes flagged an `outbound_suppressed_urgent_escalation` dashboard alert and said the
+guard firing correctly (job cancelled, lead held) wasn't in question — just that it shouldn't
+surface as a dashboard alert. Asked for an audit of every other `create_exception()` call site
+for the same class of noise.
+
+**Audit:** all 15 files calling `create_exception()` reviewed. Two clean buckets — every `*_failed`
+type from an actual `except Exception` handler is a genuine, actionable failure and was left
+alone. The guard/suppression-on-expected-skip category had 4 members: `do_not_call` and
+`outbound_suppressed_student` were already fixed 2026-09-09 (see above). `outbound_suppressed_urgent_escalation`
+and `outbound_suppressed_spam_likely_tag` were the two the 2026-09-09 session had *deliberately*
+left as exceptions. Kes reversed that decision for both today.
+
+**Shipped (`fix/escalation-guard-log-only` → `feat/ghl-call-conversation-sync`, `54f16eb`):**
+- `enter_campaign()` and `launch_outbound_call_job()`'s urgent-escalation gates
+  (`app/core/campaigns.py`, `app/worker/jobs/outbound_jobs.py`) — no longer `create_exception`;
+  log `warning` and skip/cancel, as before. Behavior unchanged (still never dialed).
+- `launch_outbound_call_job()`'s spam-likely-tag gate — same treatment.
+- `directives/spec/22_urgent_escalation_guard.md` updated: the "must not silently drop" constraint
+  now documents the log-only revision and why, since the original spec explicitly required an
+  auditable exceptions row.
+- Tests renamed/updated in `test_outbound_jobs.py` (`test_unresolved_escalation_cancels_job_without_raising_exception`,
+  `test_spam_likely_tag_cancels_job_without_raising_exception`), matching the `do_not_call` test
+  pattern. `test_campaigns.py` needed no changes. Full suite: 1240 passed / 7 pre-existing failures
+  (confirmed unchanged via `git stash` before this change).
+
+**Deployed:** Hetzner redeployed via `docker compose up -d --build` — all 13 services up, no
+migration this release (`migrate` exited clean), API + Dashboard health both `ok`,
+`app.worker.jobs.outbound_jobs` / `app.core.campaigns` import clean, zero errors in service logs
+in the 3 min after restart.
+
+**Cleanup check:** unlike the 2026-09-09 `do_not_call` fix (which left 2 pre-existing open
+exceptions needing manual Resolve/Ignore), zero open `outbound_suppressed_urgent_escalation` /
+`outbound_suppressed_spam_likely_tag` / `outbound_suppressed_do_not_call` / `outbound_suppressed_student`
+rows existed at deploy time — no manual dashboard cleanup needed this time.
+
+All 4 outbound-suppression guard types (`do_not_call`, `enrolled-student`, `urgent-escalation`,
+`spam-likely`) are now consistently log-only. Server log is the audit trail for all four; none
+surface a dashboard alert.
