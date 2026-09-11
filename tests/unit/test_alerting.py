@@ -187,7 +187,7 @@ def test_sales_queue_urgent_email_is_friendly_not_generic(mock_smtp_cls):
     mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
     _send_sales_queue_urgent_email(
-        settings=settings, to_addrs=["roselen@colaberry.com"],
+        settings=settings, to_addrs=["roselen@colaberry.com"], cc_addrs=None,
         lead_name="Jane Doe", phone="+15551234567", intent="callback_with_time",
         call_time_str="2026-09-11T00:09:05+00:00",
         transcript_excerpt="I'd like to know about the admissions requirements.",
@@ -208,6 +208,29 @@ def test_sales_queue_urgent_email_is_friendly_not_generic(mock_smtp_cls):
 
 
 @patch("app.services.alerting.smtplib.SMTP")
+def test_sales_queue_urgent_email_ccs_kes(mock_smtp_cls):
+    settings = _make_settings()
+    mock_server = MagicMock()
+    mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
+    mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+    _send_sales_queue_urgent_email(
+        settings=settings, to_addrs=["roselen@colaberry.com"],
+        cc_addrs=["kesetebeirhan@gmail.com"],
+        lead_name="Jane Doe", phone="+15551234567", intent="callback_with_time",
+        call_time_str="2026-09-11T00:09:05+00:00",
+        transcript_excerpt="admissions question",
+        routing_reason="the call sounded admissions-related",
+        callback_note="",
+    )
+
+    envelope_addrs = mock_server.sendmail.call_args[0][1]
+    assert set(envelope_addrs) == {"roselen@colaberry.com", "kesetebeirhan@gmail.com"}
+    sent = mock_server.sendmail.call_args[0][2]
+    assert "Cc: kesetebeirhan@gmail.com" in sent
+
+
+@patch("app.services.alerting.smtplib.SMTP")
 def test_sales_queue_urgent_email_falls_back_to_phone_when_no_name(mock_smtp_cls):
     settings = _make_settings()
     mock_server = MagicMock()
@@ -215,7 +238,7 @@ def test_sales_queue_urgent_email_falls_back_to_phone_when_no_name(mock_smtp_cls
     mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
 
     _send_sales_queue_urgent_email(
-        settings=settings, to_addrs=["taiwo@colaberry.com"],
+        settings=settings, to_addrs=["taiwo@colaberry.com"], cc_addrs=None,
         lead_name="", phone="+15551234567", intent="callback_request",
         call_time_str="2026-09-11T00:09:05+00:00",
         transcript_excerpt="question about payment",
@@ -339,6 +362,7 @@ def test_sales_queue_urgent_new_lead_emails_and_creates_alert(mock_send):
     mock_send.assert_called_once()
     kwargs = mock_send.call_args.kwargs
     assert kwargs["to_addrs"] == ["taiwo@colaberry.com"]
+    assert kwargs["cc_addrs"] == ["kesetebeirhan@gmail.com"]
     assert kwargs["phone"] == "+15082722326"
     assert kwargs["callback_note"] == ""
 

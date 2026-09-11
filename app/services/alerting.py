@@ -948,8 +948,9 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
         if len(transcript or "") > 400:
             transcript_excerpt += "..."
 
+        cc_addrs = [a.strip() for a in (settings.alert_email_to or "").split(",") if a.strip()]
         _send_sales_queue_urgent_email(
-            settings=settings, to_addrs=recipients,
+            settings=settings, to_addrs=recipients, cc_addrs=cc_addrs,
             lead_name=lead_name or "", phone=phone, intent=intent,
             call_time_str=call_time_str, transcript_excerpt=transcript_excerpt,
             routing_reason=routing_reason, callback_note=callback_note,
@@ -962,7 +963,14 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
 
 # ── SMTP email sender ─────────────────────────────────────────────────────────
 
-def _smtp_send(settings: Any, to_addrs: list[str], subject: str, body: str, log_label: str) -> None:
+def _smtp_send(
+    settings: Any,
+    to_addrs: list[str],
+    subject: str,
+    body: str,
+    log_label: str,
+    cc_addrs: list[str] | None = None,
+) -> None:
     """
     Low-level SMTP send, shared by every alert email (generic system alerts
     and the friendly sales-queue template). Non-fatal: exceptions are
@@ -975,6 +983,7 @@ def _smtp_send(settings: Any, to_addrs: list[str], subject: str, body: str, log_
 
     from_addr = settings.alert_email_from
     to_addrs = [a.strip() for a in to_addrs if a and a.strip()]
+    cc_addrs = [a.strip() for a in (cc_addrs or []) if a and a.strip()]
     if not from_addr or not to_addrs:
         logger.warning(
             "alerting: ALERT_EMAIL_FROM or recipient list not configured; skipping email for %s",
@@ -986,7 +995,14 @@ def _smtp_send(settings: Any, to_addrs: list[str], subject: str, body: str, log_
     msg["Subject"] = subject
     msg["From"] = from_addr
     msg["To"] = ", ".join(to_addrs)
+    if cc_addrs:
+        msg["Cc"] = ", ".join(cc_addrs)
     msg.attach(MIMEText(body, "plain"))
+
+    # RFC 5321 envelope recipients must include Cc addresses explicitly —
+    # the Cc header alone only controls what recipients *see* on the mail,
+    # it doesn't cause SMTP to actually deliver to them.
+    envelope_addrs = to_addrs + [a for a in cc_addrs if a not in to_addrs]
 
     try:
         with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
@@ -994,8 +1010,11 @@ def _smtp_send(settings: Any, to_addrs: list[str], subject: str, body: str, log_
                 server.starttls()
             if settings.smtp_username and settings.smtp_password:
                 server.login(settings.smtp_username, settings.smtp_password)
-            server.sendmail(from_addr, to_addrs, msg.as_string())
-        logger.info("alerting: email sent for %s (to=%d recipient(s))", log_label, len(to_addrs))
+            server.sendmail(from_addr, envelope_addrs, msg.as_string())
+        logger.info(
+            "alerting: email sent for %s (to=%d, cc=%d recipient(s))",
+            log_label, len(to_addrs), len(cc_addrs),
+        )
     except Exception as exc:
         logger.error("alerting: SMTP send failed for %s: %s", log_label, exc)
 
@@ -1047,6 +1066,7 @@ def _send_sales_queue_urgent_email(
     settings: Any,
     *,
     to_addrs: list[str],
+    cc_addrs: list[str] | None,
     lead_name: str,
     phone: str,
     intent: str,
@@ -1060,6 +1080,9 @@ def _send_sales_queue_urgent_email(
     "Alert ID" / "log in to the dashboard" system-alert framing. Per Kes,
     2026-09-11. No dashboard link — per Kes, 2026-09-11 follow-up: Rose and
     Taiwo look the lead up in GHL directly, not the Cora dashboard.
+
+    cc_addrs: Kes stays CC'd on these (per Kes, 2026-09-11 follow-up) —
+    unlike every other alert type, this one's primary recipients aren't him.
     """
     # Plain hyphen, not an em dash — keeps the Subject header pure ASCII so
     # it isn't RFC 2047 (quoted-printable) encoded by the email library.
@@ -1083,4 +1106,4 @@ def _send_sales_queue_urgent_email(
     ]
     body = "\n".join(body_lines)
 
-    _smtp_send(settings, to_addrs, subject, body, log_label=f"sales_queue_urgent:{intent}")
+    _smtp_send(settings, to_addrs, subject, body, log_label=f"sales_queue_urgent:{intent}", cc_addrs=cc_addrs)

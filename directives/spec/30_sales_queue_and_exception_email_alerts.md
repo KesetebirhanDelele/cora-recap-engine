@@ -49,8 +49,11 @@ them without watching the dashboard live.
   exception, subject `[<severity>] Cora Alert: new_exception`, body includes
   type, entity, and up to 5 context fields.
 - `sales_queue_urgent`: one email per lead, routed per the rules below, to
-  `alert_email_rose` and/or `alert_email_taiwo` — never to `ALERT_EMAIL_TO`
-  (Kes explicitly asked to keep this off his own inbox). When a callback is
+  `alert_email_rose` and/or `alert_email_taiwo`, **CC'd to `ALERT_EMAIL_TO`**
+  (Kes, 2026-09-11 follow-up — revises the earlier "never to Kes" framing:
+  he's not a primary recipient, but stays CC'd). Sent from
+  `ALERT_EMAIL_FROM` (prod: `asnakebekele2024@gmail.com`), same as every
+  other alert type. When a callback is
   already scheduled, the message names the time and reason. Uses a
   dedicated friendly template (`_send_sales_queue_urgent_email`), not the
   generic `[severity] Cora Alert: <type>` / "Alert ID" / "log in to the
