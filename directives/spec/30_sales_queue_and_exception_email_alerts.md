@@ -58,7 +58,9 @@ them without watching the dashboard live.
   Cora operators. Subject: `Urgent lead needs follow-up - <name or phone>`.
   Body: who needs a follow-up, phone, when they called, why it reached this
   person, the already-booked-callback line (if any), a transcript excerpt
-  (400 chars), and a link to `{frontend_url}/lead/{contact_id}`.
+  (400 chars), and an instruction to check the lead's GHL account by phone
+  number — **no dashboard link** (revised 2026-09-11, see incident note
+  below).
 
 ### Routing rules (per Kes, 2026-09-11)
 1. If the transcript names "Rose" or "Taiwo" explicitly (word-boundary
@@ -68,6 +70,18 @@ them without watching the dashboard live.
    payment/IPBC-topic keywords → Taiwo; both hit → both.
 3. If neither a name nor a topic keyword matches, send to **both** — an
    unclassified urgent lead is safer over-notified than silently dropped.
+
+### Incident note — first live send had a dead link (2026-09-11)
+The first deploy included a `dashboard_url` field (`{frontend_url}/lead/{contact_id}`)
+in the friendly email. Prod's `FRONTEND_URL` env var was stale
+(`http://localhost:3000`, apparently never corrected since nothing read it
+before this feature) — the very first real send, for the genuinely-qualifying
+lead `+15082722326`, went to Rose and Taiwo with a dead link before the env
+var was caught and fixed. Kes's resolution: drop the dashboard link
+entirely — Rose and Taiwo check GHL directly, not the Cora dashboard. The
+template now ends with "Check this lead's GHL account for full details
+(look up by phone: ...)" instead. `settings.frontend_url` is no longer read
+anywhere in this module (it was otherwise unused in the codebase already).
 
 ### Already-booked callback/appointment handling
 If Cora already has a pending `launch_outbound_call` job for the contact

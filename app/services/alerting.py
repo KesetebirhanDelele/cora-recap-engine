@@ -947,14 +947,12 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
         transcript_excerpt = (transcript or "").strip()[:400]
         if len(transcript or "") > 400:
             transcript_excerpt += "..."
-        dashboard_url = f"{settings.frontend_url}/lead/{contact_id}"
 
         _send_sales_queue_urgent_email(
             settings=settings, to_addrs=recipients,
             lead_name=lead_name or "", phone=phone, intent=intent,
             call_time_str=call_time_str, transcript_excerpt=transcript_excerpt,
             routing_reason=routing_reason, callback_note=callback_note,
-            dashboard_url=dashboard_url,
         )
         session.execute(
             text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
@@ -1056,12 +1054,12 @@ def _send_sales_queue_urgent_email(
     transcript_excerpt: str,
     routing_reason: str,
     callback_note: str,
-    dashboard_url: str,
 ) -> None:
     """
     Friendly, human-facing email for Rose/Taiwo (not Cora operators) — no
     "Alert ID" / "log in to the dashboard" system-alert framing. Per Kes,
-    2026-09-11.
+    2026-09-11. No dashboard link — per Kes, 2026-09-11 follow-up: Rose and
+    Taiwo look the lead up in GHL directly, not the Cora dashboard.
     """
     # Plain hyphen, not an em dash — keeps the Subject header pure ASCII so
     # it isn't RFC 2047 (quoted-printable) encoded by the email library.
@@ -1081,7 +1079,7 @@ def _send_sales_queue_urgent_email(
         "What they said:",
         f'"{transcript_excerpt}"',
         "",
-        f"Full details: {dashboard_url}",
+        f"Check this lead's GHL account for full details (look up by phone: {phone}).",
     ]
     body = "\n".join(body_lines)
 

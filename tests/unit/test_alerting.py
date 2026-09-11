@@ -193,7 +193,6 @@ def test_sales_queue_urgent_email_is_friendly_not_generic(mock_smtp_cls):
         transcript_excerpt="I'd like to know about the admissions requirements.",
         routing_reason="the call sounded admissions-related",
         callback_note="Cora already has a follow-up call scheduled for 2026-09-12T15:00:00 UTC.",
-        dashboard_url="https://cora.colaberry.com/lead/+15551234567",
     )
 
     sent = mock_server.sendmail.call_args[0][2]  # raw message string
@@ -204,7 +203,8 @@ def test_sales_queue_urgent_email_is_friendly_not_generic(mock_smtp_cls):
     assert "+15551234567" in sent
     assert "admissions requirements" in sent
     assert "already has a follow-up call scheduled" in sent
-    assert "https://cora.colaberry.com/lead/" in sent
+    assert "Check this lead's GHL account" in sent
+    assert "http" not in sent.lower()  # no dashboard link — GHL lookup instead
 
 
 @patch("app.services.alerting.smtplib.SMTP")
@@ -221,7 +221,6 @@ def test_sales_queue_urgent_email_falls_back_to_phone_when_no_name(mock_smtp_cls
         transcript_excerpt="question about payment",
         routing_reason="the call sounded payment/IPBC-related",
         callback_note="",
-        dashboard_url="https://cora.colaberry.com/lead/+15551234567",
     )
 
     sent = mock_server.sendmail.call_args[0][2]
