@@ -342,8 +342,28 @@ def test_new_exceptions_no_open_rows_no_email(mock_send):
 
 
 # ── _evaluate_sales_queue_urgent ─────────────────────────────────────────────
-# Row shape: contact_id, intent, transcript, call_time, sales_outcome,
+# Row shape: contact_id, intent, transcript, call_time,
 #            next_callback_at, next_callback_reason, phone, lead_name
+# (no sales_outcome column in the row — it's a query-level filter now, not a
+# Python-level branch; fire-once dedup isn't tracked against resolution
+# afterward, but a lead already resolved *before* this cycle runs is
+# excluded from the result set entirely. Revised 2026-09-11 per Kes.)
+
+@patch("app.services.alerting._send_sales_queue_urgent_email")
+def test_sales_queue_urgent_query_excludes_already_resolved_leads(mock_send):
+    """SQL-level guard: this evaluator's query isn't runnable against SQLite
+    (DISTINCT ON, jsonb ops), so the ls.sales_outcome IS NULL filter can't be
+    exercised end-to-end here — assert it's still present in the query text
+    so a future edit can't silently drop it."""
+    from datetime import datetime, timezone
+    settings = _make_settings()
+    session = _mock_session_dispatch(fetchall_by_query={"FROM call_events": []})
+    _evaluate_sales_queue_urgent(session, settings, datetime.now(tz=timezone.utc))
+
+    queries = [str(c.args[0]) for c in session.execute.call_args_list if "FROM call_events" in str(c.args[0])]
+    assert len(queries) == 1
+    assert "ls.sales_outcome IS NULL" in queries[0]
+
 
 @patch("app.services.alerting._send_sales_queue_urgent_email")
 def test_sales_queue_urgent_new_lead_emails_and_creates_alert(mock_send):
@@ -353,7 +373,7 @@ def test_sales_queue_urgent_new_lead_emails_and_creates_alert(mock_send):
         fetchall_by_query={
             "FROM call_events": [
                 ("+15082722326", "callback_with_time", "I need a callback about payment",
-                 datetime.now(tz=timezone.utc), None, None, None,
+                 datetime.now(tz=timezone.utc), None, None,
                  "+15082722326", None),
             ]
         },
@@ -362,6 +382,8 @@ def test_sales_queue_urgent_new_lead_emails_and_creates_alert(mock_send):
     _evaluate_sales_queue_urgent(session, settings, datetime.now(tz=timezone.utc))
 
     session.add.assert_called_once()
+    added_row = session.add.call_args.args[0]
+    assert added_row.status == "resolved"  # fire-once tombstone, not a live lifecycle state
     mock_send.assert_called_once()
     kwargs = mock_send.call_args.kwargs
     assert kwargs["to_addrs"] == ["taiwo@colaberry.com"]
@@ -382,7 +404,7 @@ def test_sales_queue_urgent_includes_already_booked_callback_time(mock_send):
         fetchall_by_query={
             "FROM call_events": [
                 ("+15082722326", "callback_with_time", "call me back at 3pm about admissions",
-                 datetime.now(tz=timezone.utc), None, booked_at, "callback_with_time",
+                 datetime.now(tz=timezone.utc), booked_at, "callback_with_time",
                  "+15082722326", "Jane Doe"),
             ]
         },
@@ -399,46 +421,25 @@ def test_sales_queue_urgent_includes_already_booked_callback_time(mock_send):
 
 
 @patch("app.services.alerting._send_sales_queue_urgent_email")
-def test_sales_queue_urgent_already_active_skips_duplicate_email(mock_send):
+def test_sales_queue_urgent_already_sent_skips_forever(mock_send):
+    """Fire-once: any existing alert_events row for this contact_id blocks a
+    resend, regardless of status — not re-checked against sales_outcome."""
     from datetime import datetime, timezone
     settings = _make_settings()
     session = _mock_session_dispatch(
         fetchall_by_query={
             "FROM call_events": [
                 ("+15082722326", "callback_with_time", "payment question",
-                 datetime.now(tz=timezone.utc), None, None, None,
+                 datetime.now(tz=timezone.utc), None, None,
                  "+15082722326", None),
             ]
         },
-        fetchone_by_query={"FROM alert_events": ("existing-id", "active")},
+        fetchone_by_query={"FROM alert_events": (1,)},  # already sent, any status
     )
     _evaluate_sales_queue_urgent(session, settings, datetime.now(tz=timezone.utc))
 
     session.add.assert_not_called()
     mock_send.assert_not_called()
-
-
-@patch("app.services.alerting._send_sales_queue_urgent_email")
-def test_sales_queue_urgent_resolved_by_rep_closes_silently(mock_send):
-    from datetime import datetime, timezone
-    settings = _make_settings()
-    session = _mock_session_dispatch(
-        fetchall_by_query={
-            "FROM call_events": [
-                ("+15082722326", "callback_with_time", "payment question",
-                 datetime.now(tz=timezone.utc), "booked", None, None,
-                 "+15082722326", None),  # sales_outcome set -> resolved
-            ]
-        },
-        fetchone_by_query={"FROM alert_events": ("existing-id", "active")},
-    )
-    _evaluate_sales_queue_urgent(session, settings, datetime.now(tz=timezone.utc))
-
-    mock_send.assert_not_called()
-    session.add.assert_not_called()
-    # Should have issued an UPDATE to resolve the existing active row.
-    update_calls = [c for c in session.execute.call_args_list if "UPDATE alert_events" in str(c.args[0])]
-    assert len(update_calls) == 1
 
 
 @patch("app.services.alerting._send_sales_queue_urgent_email")
@@ -461,7 +462,7 @@ def test_sales_queue_urgent_disabled_is_a_no_op(mock_send):
         fetchall_by_query={
             "FROM call_events": [
                 ("+15082722326", "callback_with_time", "payment question",
-                 datetime.now(tz=timezone.utc), None, None, None,
+                 datetime.now(tz=timezone.utc), None, None,
                  "+15082722326", None),
             ]
         },

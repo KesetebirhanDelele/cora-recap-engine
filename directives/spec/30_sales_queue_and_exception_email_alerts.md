@@ -3,7 +3,7 @@
 | Area | Status |
 |---|---|
 | Per-exception email (`new_exception`) | **DONE.** One email per newly-opened `exceptions` row, any type/severity, capped at 20/cycle. To Kes. |
-| Sales-queue urgent-notice email (`sales_queue_urgent`) | **DONE, enabled.** One email per lead entering "urgent" sales priority, routed to Rose and/or Taiwo by topic keyword or by name, using a friendly human-facing template (not the generic system-alert one). Gated by `ALERT_SALES_QUEUE_ENABLED` (default `true` as of 2026-09-11, Kes confirmed both routing and template) — the flag exists so it *can* be switched off without a redeploy if needed; this is the one alert type in the system that emails people other than Kes. |
+| Sales-queue urgent-notice email (`sales_queue_urgent`) | **DONE, enabled.** One email per lead entering "urgent" sales priority, routed to Rose and/or Taiwo by topic keyword or by name, using a friendly human-facing template (not the generic system-alert one). Fires exactly once per lead, ever — not tracked against resolution (revised 2026-09-11, see below). Gated by `ALERT_SALES_QUEUE_ENABLED` (default `true` as of 2026-09-11, Kes confirmed both routing and template) — the flag exists so it *can* be switched off without a redeploy if needed; this is the one alert type in the system that emails people other than Kes. |
 | `ALERT_EMAIL_TO` multi-recipient bug | **FIXED.** Was documented as comma-separated but never split before handing to `smtplib`. |
 
 ## Self-contained problem statement
@@ -77,6 +77,35 @@ them without watching the dashboard live.
 3. If neither a name nor a topic keyword matches, send to **both** — an
    unclassified urgent lead is safer over-notified than silently dropped.
 
+### Revision — fire-once, no resolution *tracking* (2026-09-11)
+Originally `sales_queue_urgent` tracked active/resolved state against
+`lead_state.sales_outcome`: skip while a rep hasn't logged an outcome yet,
+auto-resolve (silently, no email) once they do, and allow a *new* urgent
+episode for the same contact to re-alert after that. Kes's call: drop the
+*ongoing tracking* — the Sales Queue itself is already the mechanism for
+knowing whether a lead has been addressed, so this alert doesn't need to
+re-check `sales_outcome` on every 60s cycle to decide whether a resend is
+allowed.
+
+It still checks `sales_outcome` exactly once, at detection time
+(`ls.sales_outcome IS NULL` in the query's WHERE clause) — a lead already
+resolved before this cycle even runs is excluded from consideration
+entirely, never emailed. That's a one-time gate, not tracking: once an
+email sends, the contact is permanently done (fire-once tombstone, any
+existing `alert_events` row for `sales_queue_urgent:{contact_id}` blocks
+forever, written `status='resolved'` at creation — a tombstone, not a
+lifecycle state, matching `_evaluate_new_exceptions`'
+`exception_notified:{id}` pattern). Kes's exact ask, reconciled: "one time
+email, don't check if addressed [afterward]" + "don't alert me about
+things already resolved [before you'd even send]" are two different
+moments, both now satisfied without contradiction.
+
+**Consequence:** the stale `+15082722326` row from the dead-link incident
+below now needs a `DELETE`, not an `UPDATE ... status='resolved'` — under
+this simpler dedup, any existing row (any status) blocks a resend, so
+resolving in place no longer un-blocks it the way it would have under the
+old active/resolved design.
+
 ### Incident note — SMTP credentials broken (2026-09-11, unresolved)
 While verifying the `ALERT_EMAIL_FROM` change, a live test send failed with
 `535 5.7.8 Username and Password not accepted` — and failed identically
@@ -118,9 +147,10 @@ happened) also has no future time to report — nothing is scheduled because
 the handoff already occurred.
 
 ### Known edge cases
-- A lead's urgent call resolves (rep logs `sales_outcome`) and then a *new*
-  urgent call happens later for the same contact — re-alerts (new active
-  row, same `alert_type` key), does not stay silenced forever.
+- A lead's urgent call fires the email, then a *new*, separate urgent call
+  happens later for the same contact — does **not** re-alert. Fire-once is
+  per contact_id, permanently, not per distinct urgent episode (revised
+  2026-09-11 — see Revision note above).
 - First-ever run of `new_exception` (empty ledger) seeds the ledger for
   every currently-open exception **without emailing** — avoids a backlog
   flood on first deploy. Verified: prod had 0 open exceptions at deploy
@@ -151,8 +181,11 @@ the handoff already occurred.
    caught on a later cycle.
 2. The same exception is never emailed twice.
 3. A lead's most recent call has a detected_intent in the always-urgent set,
-   duration ≥30s, has a transcript, and `lead_state.sales_outcome IS NULL` →
-   one email to the routed recipient(s), once, until `sales_outcome` is set.
+   duration ≥30s, has a transcript, and `lead_state.sales_outcome IS NULL`
+   at detection time → one email to the routed recipient(s), exactly once
+   ever for that contact_id. `sales_outcome` is checked once at detection
+   (skip if already resolved), never re-checked afterward to gate a resend
+   (revised 2026-09-11).
 4. Transcript names Rose/Taiwo explicitly → routes to that person regardless
    of topic keywords also present.
 5. `ALERT_EMAIL_TO="a@x.com, b@y.com"` → both addresses receive the email

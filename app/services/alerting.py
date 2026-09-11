@@ -25,8 +25,9 @@ Alert types (all thresholds settings-driven):
                           sales priority (see dashboard_metrics._compute_sales_priority),
                           routed to Rose (admissions) and/or Taiwo (payment/IPBC)
                           by transcript keyword, or by name if the caller asked
-                          for one of them specifically. Fires once per lead
-                          until a rep logs a sales_outcome.
+                          for one of them specifically. Fires exactly once per
+                          lead, ever — not tracked against resolution (the
+                          Sales Queue itself is the mechanism for that).
 
 Deduplication key: (alert_type, status='active').
   - If an active row for the same alert_type was created within
@@ -837,8 +838,20 @@ def _sales_queue_routing_reason(transcript: str | None) -> str:
 
 def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime) -> None:
     """
-    Email Rose and/or Taiwo once per lead when it enters "urgent" sales
-    priority (spec/30), until a rep logs a sales_outcome for that contact.
+    Email Rose and/or Taiwo exactly once per lead when it enters "urgent"
+    sales priority (spec/30) — a permanent, fire-once notification, not
+    tracked against resolution over time. Per Kes, 2026-09-11: whether the
+    lead has since been addressed is tracked by a separate mechanism (the
+    Sales Queue itself); this alert doesn't re-check that on every cycle to
+    decide whether a *resend* is allowed.
+
+    It does still check sales_outcome once, at the moment a lead is first
+    considered (the `ls.sales_outcome IS NULL` filter below) — a lead a rep
+    already resolved before this cycle ran is skipped, never emailed at
+    all. That's a one-time gate at detection time, not ongoing tracking:
+    once sent, a contact never re-alerts through this path again regardless
+    of what happens to sales_outcome afterward, and a lead resolved after
+    the email already went out doesn't get walked back either.
 
     If Cora already has a pending launch_outbound_call job for this contact
     (e.g. callback_with_time extracted a specific promised time, or any of
@@ -850,9 +863,8 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
     spec/22's "out of scope" note on GHL-native appointment ingestion.
 
     Dedup uses alert_events with alert_type=f"sales_queue_urgent:{contact_id}"
-    — an active row means already notified and still unresolved; a resolved
-    row means a *prior* urgent episode was closed out, so a fresh urgent
-    call after that re-alerts (new active row, same alert_type).
+    — any row at all (regardless of status) means already notified; that
+    contact never re-alerts through this path again.
 
     Gated by settings.alert_sales_queue_enabled (default False) — this is
     the one alert type that emails people other than Kes.
@@ -867,7 +879,6 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
         SELECT DISTINCT ON (ce.contact_id)
             ce.contact_id, ce.detected_intent, ce.transcript,
             COALESCE(ce.start_time_utc, ce.created_at) AS call_time,
-            ls.sales_outcome,
             sj.run_at AS next_callback_at,
             sj.payload_json->>'intent_reason' AS next_callback_reason,
             COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
@@ -887,32 +898,21 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
           AND COALESCE(ce.duration_seconds, 0) >= 30
           AND ce.transcript IS NOT NULL AND ce.transcript != ''
           AND COALESCE(ce.start_time_utc, ce.created_at) >= :window_start
+          AND ls.sales_outcome IS NULL
         ORDER BY ce.contact_id, COALESCE(ce.start_time_utc, ce.created_at) DESC
     """), {"window_start": window_start}).fetchall()
 
     for row in rows:
-        (contact_id, intent, transcript, call_time, sales_outcome,
+        (contact_id, intent, transcript, call_time,
          next_callback_at, next_callback_reason, phone, lead_name) = row
         alert_type = f"sales_queue_urgent:{contact_id}"
 
-        existing = session.execute(
-            text("""
-                SELECT id, status FROM alert_events
-                WHERE alert_type = :t ORDER BY created_at DESC LIMIT 1
-            """),
+        already_sent = session.execute(
+            text("SELECT 1 FROM alert_events WHERE alert_type = :t LIMIT 1"),
             {"t": alert_type},
         ).fetchone()
-
-        if sales_outcome:
-            if existing and existing[1] == "active":
-                session.execute(
-                    text("UPDATE alert_events SET status = 'resolved', resolved_at = :now WHERE id = :id"),
-                    {"now": now, "id": existing[0]},
-                )
-            continue
-
-        if existing and existing[1] == "active":
-            continue  # already notified for this lead, not yet resolved
+        if already_sent:
+            continue  # fire-once — already notified for this lead, ever
 
         recipients = _route_sales_queue_recipients(settings, transcript)
         routing_reason = _sales_queue_routing_reason(transcript)
@@ -937,10 +937,13 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
             f"call_time={call_time_str}. {callback_note} Routed to: {', '.join(recipients)} "
             f"({routing_reason})."
         ).strip()
+        # status='resolved' from the start — this is a fire-once tombstone
+        # (existence alone blocks a resend), not an active/resolved
+        # lifecycle like the other alert types track.
         alert_id = str(uuid.uuid4())
         session.add(AlertEvent(
-            id=alert_id, alert_type=alert_type, severity="warning", status="active",
-            message=msg, last_seen_at=now, created_at=now,
+            id=alert_id, alert_type=alert_type, severity="warning", status="resolved",
+            message=msg, last_seen_at=now, created_at=now, resolved_at=now,
         ))
         session.flush()
 
