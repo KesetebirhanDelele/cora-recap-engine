@@ -1865,3 +1865,50 @@ Kes: "Update claude.md so that when I ask for an email draft, it means I need th
 created in my email." Added an **Email Draft Rule** to `C:\Users\keset\.claude\CLAUDE.md`
 (personal global config, not this repo) — future "draft an email" requests create the actual
 Gmail draft, not just chat text, asking for the recipient's address first if unknown.
+
+---
+
+## 2026-09-11 (continued, once more) — data-driven delay before emailing self-healing alerts; resolution email brought back, gated on having actually notified
+
+### Real trigger
+Kes forwarded a `webhook_drop_detected` "Status: resolved" email — even after resolution emails
+were removed (see above), he'd apparently still gotten one shortly before that removal deployed.
+His actual ask, once unpacked over a couple of messages: don't email at all for something that
+clears itself quickly; only email if a problem *persists*. Then, once persistence-gating existed,
+a follow-up concern — if something persists long enough to notify him, and *then* clears, he
+wants to know it cleared (the fully-removed resolution email from earlier in the day went too
+far). Confirmed via AskUserQuestion before building the second part.
+
+### Part 1 — delay before emailing (`feat/delay-self-healing-alert-emails`, `acd8bcb`)
+Queried real `alert_events` history (median `resolved_at - created_at` per type) before picking
+any numbers — see the query and full table in this session's earlier notes / the spec doc.
+Results: `webhook_drop_detected` 4.5 min (n=31), `error_rate_spike` 7.5 min (n=15),
+`queue_lag_exceeded` 9.6 min (n=46, right-skewed), `exception_spike` ~9.5h (n=26).
+
+New `_ALERT_EMAIL_DELAY_SECONDS`: 15 min for the first three, 5 min debounce for
+`exception_spike`. New `_send_pending_delayed_alert_emails` sweep (runs every cycle,
+independent of which evaluator created the row): an active row for a delay-eligible type is
+created with `email_sent_at` left `NULL`; only gets emailed once it's been active past its
+type's delay without resolving. Deliberately left immediate: `outbound_calls_stalled` (the
+flatlined-pipeline backstop from the 12-day silent outage — delaying it defeats the point),
+`worker_offline` (unambiguous and severe, zero historical samples to calibrate against anyway),
+`ghl_auth_failure`/`intake_auth_failure` (auth doesn't self-heal).
+
+### Part 2 — resolution email restored, gated on email_sent_at (`feat/resolution-email-only-if-notified`, `55bfe04`)
+Restored `is_resolution` on `_send_alert_email` (had been fully removed a few commits earlier
+the same day). Every resolve branch now checks the existing row's `email_sent_at` before
+sending — `NOT NULL` (this alert did notify) → resolution email; `NULL` (self-healed before
+ever crossing its delay) → resolve silently, same as before. `alert_events.status` always
+transitions to `'resolved'` regardless; only the email send is conditional.
+
+Found and fixed a latent correctness issue while touching `_evaluate_webhook_drop`: its
+`existing` row lookup is a 2-hour lookback with **no status filter** (by design — see its own
+comment about suppressing re-fire on the same historical bucket). Without an extra
+`existing[2] == 'active'` guard, a row already resolved in a prior cycle would have re-sent a
+resolution email on every subsequent cycle within that 2-hour window. Caught before deploy, not
+in production.
+
+### Verification
+7 new tests in `test_dashboard_v2.py` (5 for the delay sweep, 2 for conditional resolution
+email) + existing suites all still pass. Full suite: 1278 passed / 7 pre-existing unrelated
+failures (unchanged). Deployed, healthy, no errors.
