@@ -208,7 +208,10 @@ def test_sales_queue_urgent_email_is_friendly_not_generic(mock_smtp_cls):
 
 
 @patch("app.services.alerting.smtplib.SMTP")
-def test_sales_queue_urgent_email_ccs_kes(mock_smtp_cls):
+def test_sales_queue_urgent_email_ccs_when_cc_addrs_given(mock_smtp_cls):
+    """The evaluator currently always passes cc_addrs=None (Kes asked not to
+    be CC'd, 2026-09-11) — this test covers the CC mechanism itself, which
+    stays available for if that preference changes again."""
     settings = _make_settings()
     mock_server = MagicMock()
     mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
@@ -362,7 +365,7 @@ def test_sales_queue_urgent_new_lead_emails_and_creates_alert(mock_send):
     mock_send.assert_called_once()
     kwargs = mock_send.call_args.kwargs
     assert kwargs["to_addrs"] == ["taiwo@colaberry.com"]
-    assert kwargs["cc_addrs"] == ["kesetebeirhan@gmail.com"]
+    assert kwargs["cc_addrs"] is None  # Kes asked not to be CC'd (2026-09-11)
     assert kwargs["phone"] == "+15082722326"
     assert kwargs["callback_note"] == ""
 

@@ -49,11 +49,14 @@ them without watching the dashboard live.
   exception, subject `[<severity>] Cora Alert: new_exception`, body includes
   type, entity, and up to 5 context fields.
 - `sales_queue_urgent`: one email per lead, routed per the rules below, to
-  `alert_email_rose` and/or `alert_email_taiwo`, **CC'd to `ALERT_EMAIL_TO`**
-  (Kes, 2026-09-11 follow-up — revises the earlier "never to Kes" framing:
-  he's not a primary recipient, but stays CC'd). Sent from
-  `ALERT_EMAIL_FROM` (prod: `asnakebekele2024@gmail.com`), same as every
-  other alert type. When a callback is
+  `alert_email_rose` and/or `alert_email_taiwo` only — **not** to
+  `ALERT_EMAIL_TO`/Kes (he asked to be CC'd, then minutes later asked not to
+  be, both 2026-09-11 — the CC mechanism stays in `_smtp_send` /
+  `_send_sales_queue_urgent_email` for if that preference changes again, but
+  the evaluator always passes `cc_addrs=None`). Sent from `ALERT_EMAIL_FROM`
+  (prod: `kes@colaberry.com` as of 2026-09-11, changed from
+  `asnakebekele2024@gmail.com`), same as every other alert type. When a
+  callback is
   already scheduled, the message names the time and reason. Uses a
   dedicated friendly template (`_send_sales_queue_urgent_email`), not the
   generic `[severity] Cora Alert: <type>` / "Alert ID" / "log in to the
@@ -73,6 +76,19 @@ them without watching the dashboard live.
    payment/IPBC-topic keywords → Taiwo; both hit → both.
 3. If neither a name nor a topic keyword matches, send to **both** — an
    unclassified urgent lead is safer over-notified than silently dropped.
+
+### Incident note — SMTP credentials broken (2026-09-11, unresolved)
+While verifying the `ALERT_EMAIL_FROM` change, a live test send failed with
+`535 5.7.8 Username and Password not accepted` — and failed identically
+when retried with the original From address, proving it's not a From-address
+mismatch but the Gmail App Password itself being rejected. **This is
+unrelated to any change in this spec** — it means no alert email of any
+type (queue lag, exception spike, new_exception, sales_queue_urgent, etc.)
+can currently send, silently (non-fatal by design — see module docstring).
+Needs a fresh Gmail App Password for whichever account now authenticates
+SMTP, set as `SMTP_PASSWORD` on the server. Until fixed, alerts still
+evaluate and log correctly (`alert_events` rows are still created) — only
+the email step fails.
 
 ### Incident note — first live send had a dead link (2026-09-11)
 The first deploy included a `dashboard_url` field (`{frontend_url}/lead/{contact_id}`)

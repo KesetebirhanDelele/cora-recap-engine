@@ -948,9 +948,8 @@ def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime)
         if len(transcript or "") > 400:
             transcript_excerpt += "..."
 
-        cc_addrs = [a.strip() for a in (settings.alert_email_to or "").split(",") if a.strip()]
         _send_sales_queue_urgent_email(
-            settings=settings, to_addrs=recipients, cc_addrs=cc_addrs,
+            settings=settings, to_addrs=recipients, cc_addrs=None,
             lead_name=lead_name or "", phone=phone, intent=intent,
             call_time_str=call_time_str, transcript_excerpt=transcript_excerpt,
             routing_reason=routing_reason, callback_note=callback_note,
@@ -1081,8 +1080,10 @@ def _send_sales_queue_urgent_email(
     2026-09-11. No dashboard link — per Kes, 2026-09-11 follow-up: Rose and
     Taiwo look the lead up in GHL directly, not the Cora dashboard.
 
-    cc_addrs: Kes stays CC'd on these (per Kes, 2026-09-11 follow-up) —
-    unlike every other alert type, this one's primary recipients aren't him.
+    cc_addrs: optional CC list. Kes asked to be CC'd (2026-09-11), then
+    asked not to be (same day, minutes later) — caller currently always
+    passes None. Kept as a parameter rather than removed since this is the
+    kind of preference that comes back.
     """
     # Plain hyphen, not an em dash — keeps the Subject header pure ASCII so
     # it isn't RFC 2047 (quoted-printable) encoded by the email library.
