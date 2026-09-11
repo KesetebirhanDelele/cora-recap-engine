@@ -68,14 +68,34 @@ them without watching the dashboard live.
   number — **no dashboard link** (revised 2026-09-11, see incident note
   below).
 
-### Routing rules (per Kes, 2026-09-11)
-1. If the transcript names "Rose" or "Taiwo" explicitly (word-boundary
-   match, case-insensitive), route to that person — overrides topic
-   matching entirely.
-2. Else, keyword-match the transcript: admissions-topic keywords → Rose;
-   payment/IPBC-topic keywords → Taiwo; both hit → both.
-3. If neither a name nor a topic keyword matches, send to **both** — an
-   unclassified urgent lead is safer over-notified than silently dropped.
+### Routing rules (per Kes, 2026-09-11, revised same day)
+1. If the caller's own words name "Rose" or "Taiwo" explicitly
+   (word-boundary match, case-insensitive), route to that person —
+   overrides topic matching entirely.
+2. Else, keyword-match the caller's own words: admissions-topic keywords →
+   Rose; payment/IPBC-topic keywords → Taiwo; both hit → both (a genuine
+   dual-topic call).
+3. If no signal at all, default to **Rose only** — strictly either/or per
+   Kes, not "send to both." Sales Queue leads are inherently admissions-track
+   calls (New/Cold Lead campaigns); Taiwo's payment/IPBC domain is the
+   narrower exception that only applies when the caller's words raise it.
+
+### Revision — classify on the caller's words only, not Cora's own script (2026-09-11)
+Real-world bug, caught from an actual live send: contact `+15082722326`'s
+email said "the call touched both admissions and payment/IPBC topics" and
+went to both Rose and Taiwo. The transcript's only "payment" mention was
+Cora's own scripted line — *"no payment, no pressure"*, describing the free
+Explorer preview — which is boilerplate present on **nearly every call,
+both campaigns** (see `docs/synthflow-cold-lead-prompt.md` /
+`synthflow-warm-lead-prompt.md`). The caller never said anything about
+payment; "admissions" also only appeared in Cora's own line ("a follow-up
+with Admissions"), not the caller's words. New `_extract_caller_turns()`
+isolates `"human:"`-prefixed transcript lines before any keyword/name
+matching; falls back to the raw transcript if no such lines are found
+(unexpected format — fail open rather than classify on nothing). Combined
+with the "default to Rose, not both" change above: this same transcript
+now correctly routes to Rose only, reason "the topic wasn't clear from
+what the caller said, defaulting to admissions."
 
 ### Revision — fire-once, no resolution *tracking* (2026-09-11)
 Originally `sales_queue_urgent` tracked active/resolved state against
@@ -205,15 +225,23 @@ the handoff already occurred.
   indirection of a DB-backed config for a two-person routing table.
 
 ## Eval design
-`tests/unit/test_alerting.py` (20 cases): `_route_sales_queue_recipients`
-(admissions-only, payment-only, both keywords, name override, both named,
-name-substring false-positive guard, no-signal default-to-both, `None`
-transcript) + `_send_alert_email` (comma-split fix, `to_override` bypass,
-SMTP-disabled no-op) + `_evaluate_new_exceptions` (first-run silent seed,
-subsequent-run emails once, no-open-rows no-op) + `_evaluate_sales_queue_urgent`
-(new urgent lead emails + creates alert, already-active skips duplicate,
-rep-resolved closes silently, no qualifying leads no-op, disabled-by-default
-gate no-op, already-booked-callback time+reason included in the message).
+`tests/unit/test_alerting.py` (31 cases, current as of the fire-once +
+caller-turns revisions): `_route_sales_queue_recipients` (admissions-only,
+payment-only, both keywords hit in caller's words, name override, both
+named, name-substring false-positive guard, no-signal defaults to Rose
+only, `None` transcript, bot-script payment mention ignored) +
+`_extract_caller_turns` (ignores bot lines including the "no payment, no
+pressure" script line, falls back to raw text when no speaker prefixes
+found, handles `None`) + `_sales_queue_routing_reason` (mirrors the above)
++ `_send_alert_email` (comma-split fix, `to_override` bypass, SMTP-disabled
+no-op) + `_send_sales_queue_urgent_email` (friendly-not-generic template,
+phone fallback when no lead name, CC mechanism works when given) +
+`_evaluate_new_exceptions` (first-run silent seed, subsequent-run emails
+once, no-open-rows no-op) + `_evaluate_sales_queue_urgent` (new urgent lead
+emails + creates a fire-once tombstone, already-sent skips forever
+regardless of status, no qualifying leads no-op, disabled-by-default-off
+gate no-op, already-booked-callback time+reason included, query-text guard
+for the `ls.sales_outcome IS NULL` filter).
 
 No prior test coverage existed for `alerting.py` before this change — the
 above covers only the spec/30 additions; the pre-existing evaluators

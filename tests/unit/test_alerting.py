@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 from app.services.alerting import (
     _evaluate_new_exceptions,
     _evaluate_sales_queue_urgent,
+    _extract_caller_turns,
     _route_sales_queue_recipients,
     _sales_queue_routing_reason,
     _send_alert_email,
@@ -88,19 +89,65 @@ def test_route_name_substring_does_not_false_match():
     recipients = _route_sales_queue_recipients(
         settings, "My name is Rosetta and I have a general question."
     )
-    assert set(recipients) == {"roselen@colaberry.com", "taiwo@colaberry.com"}
+    assert recipients == ["roselen@colaberry.com"]  # falls through to no-signal default
 
 
-def test_route_no_signal_defaults_to_both():
+def test_route_no_signal_defaults_to_rose_only():
+    """Revised 2026-09-11: strictly either/or, not both. Sales Queue leads
+    are inherently admissions-track calls; Taiwo is the narrower exception."""
     settings = _make_settings()
     recipients = _route_sales_queue_recipients(settings, "Hello, just checking in.")
-    assert set(recipients) == {"roselen@colaberry.com", "taiwo@colaberry.com"}
+    assert recipients == ["roselen@colaberry.com"]
 
 
 def test_route_handles_none_transcript():
     settings = _make_settings()
     recipients = _route_sales_queue_recipients(settings, None)
-    assert set(recipients) == {"roselen@colaberry.com", "taiwo@colaberry.com"}
+    assert recipients == ["roselen@colaberry.com"]
+
+
+# ── _extract_caller_turns ────────────────────────────────────────────────────
+
+def test_extract_caller_turns_ignores_bot_script():
+    """Real-world bug: Cora's own scripted greeting says 'no payment, no
+    pressure' (about the free preview) on nearly every call — must not
+    classify on that. Only 'human:' lines should be considered."""
+    transcript = (
+        "bot: Hi there, no payment, no pressure, start free at our admissions page.\n"
+        "human: Yes.\n"
+        "bot: Great, I can set up a follow-up with Admissions.\n"
+        "human: Friday works."
+    )
+    result = _extract_caller_turns(transcript)
+    assert "payment" not in result.lower()
+    assert "admissions" not in result.lower()
+    assert "Yes." in result
+    assert "Friday works." in result
+
+
+def test_extract_caller_turns_falls_back_to_raw_when_no_speaker_prefixes():
+    """Unexpected transcript format (no 'human:'/'bot:' lines) — fail open,
+    classify on the whole thing rather than nothing."""
+    result = _extract_caller_turns("just a plain string with no speaker labels")
+    assert result == "just a plain string with no speaker labels"
+
+
+def test_extract_caller_turns_handles_none():
+    assert _extract_caller_turns(None) == ""
+
+
+def test_route_ignores_bot_script_payment_mention():
+    """The exact real-world false-positive: 'no payment, no pressure' is in
+    Cora's own script on every call, not something the caller said."""
+    settings = _make_settings()
+    transcript = (
+        "bot: You can start free anytime, no payment, no pressure. Are you 18+?\n"
+        "human: Yes.\n"
+        "bot: I can set up a follow-up with Admissions — Friday or Monday?\n"
+        "human: Friday."
+    )
+    recipients = _route_sales_queue_recipients(settings, transcript)
+    assert recipients == ["roselen@colaberry.com"]  # no real signal in caller's words -> default
 
 
 # ── _sales_queue_routing_reason ──────────────────────────────────────────────
@@ -121,7 +168,7 @@ def test_routing_reason_describes_payment_topic():
 
 def test_routing_reason_describes_unclassified_fallback():
     reason = _sales_queue_routing_reason("Hello, just checking in.")
-    assert "Rose" in reason and "Taiwo" in reason
+    assert "admissions" in reason
 
 
 # ── _send_alert_email multi-recipient fix ───────────────────────────────────

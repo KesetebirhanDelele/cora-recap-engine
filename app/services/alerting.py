@@ -778,6 +778,28 @@ _PAYMENT_KEYWORDS = (
 )
 
 
+def _extract_caller_turns(transcript: str | None) -> str:
+    """
+    Isolate the caller's own lines ("human:"-prefixed) from a Synthflow
+    transcript, for topic/name routing decisions.
+
+    Must not classify on Cora's own scripted lines — the bot's canned
+    greeting says "no payment, no pressure" (describing the free preview)
+    on nearly every call, both campaigns, which would otherwise false-match
+    the payment keyword almost universally. Falls back to the raw
+    transcript if no "human:" lines are found (unexpected format — fail
+    open rather than classify on nothing).
+    """
+    if not transcript:
+        return ""
+    human_lines = [
+        line.split(":", 1)[1].strip()
+        for line in transcript.splitlines()
+        if line.strip().lower().startswith("human:")
+    ]
+    return " ".join(human_lines) if human_lines else transcript
+
+
 def _route_sales_queue_recipients(settings: Any, transcript: str | None) -> list[str]:
     """
     Decide who gets the urgent-sales-queue email for one lead.
@@ -785,11 +807,19 @@ def _route_sales_queue_recipients(settings: Any, transcript: str | None) -> list
     Priority: an explicit name mention ("can I talk to Rose") always wins,
     per Kes's instruction — routes to that person regardless of topic.
     Otherwise route by topic keyword (admissions -> Rose, payment/IPBC ->
-    Taiwo; both keyword sets hit -> both). If neither the name nor a topic
-    keyword matches, default to both — an unclassified urgent lead is safer
-    over-notified than silently dropped.
+    Taiwo; both keyword sets hit in the caller's own words -> both, a
+    genuine dual-topic call). If no signal at all, default to Rose only
+    (revised 2026-09-11, per Kes: strictly either/or, not both) — Sales
+    Queue leads are inherently admissions-track calls (New/Cold Lead
+    campaigns); Taiwo's payment/IPBC domain is the narrower exception that
+    only applies when the caller's words actually raise it.
+
+    Classifies on the caller's words only (_extract_caller_turns) — not
+    Cora's own scripted lines, which mention "Admissions" and "payment"
+    (the free-preview pitch) on nearly every call regardless of topic. See
+    that function's docstring.
     """
-    text_lower = (transcript or "").lower()
+    text_lower = _extract_caller_turns(transcript).lower()
 
     named = []
     if re.search(r"\brose\b", text_lower):
@@ -807,15 +837,16 @@ def _route_sales_queue_recipients(settings: Any, transcript: str | None) -> list
     if recipients:
         return recipients
 
-    return [settings.alert_email_rose, settings.alert_email_taiwo]
+    return [settings.alert_email_rose]
 
 
 def _sales_queue_routing_reason(transcript: str | None) -> str:
     """Human-readable version of _route_sales_queue_recipients' logic, for
     the "why this reached you" line in the friendly email. Kept as a
     separate small function rather than changing that one's return shape,
-    to avoid disturbing its existing callers/tests."""
-    text_lower = (transcript or "").lower()
+    to avoid disturbing its existing callers/tests. Classifies on the
+    caller's words only — see _extract_caller_turns."""
+    text_lower = _extract_caller_turns(transcript).lower()
 
     named = []
     if re.search(r"\brose\b", text_lower):
@@ -833,7 +864,7 @@ def _sales_queue_routing_reason(transcript: str | None) -> str:
         return "the call sounded admissions-related"
     if payment_hit:
         return "the call sounded payment/IPBC-related"
-    return "the topic wasn't clear from the transcript, so both Rose and Taiwo are included"
+    return "the topic wasn't clear from what the caller said, defaulting to admissions"
 
 
 def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime) -> None:
