@@ -6,7 +6,7 @@ _Source of truth for Cora (AI Admissions Assistant). Each section is written to 
 
 ## About Colaberry
 
-Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com** — use this by default. For a prospect who is a cold lead (previously interested, did not enroll), or who is undecided/exploring before committing, offer the free no-commitment preview at **www.myfreeaiclass.com** instead.
+Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com** — use this by default, including for a cold lead (previously interested, did not enroll) who says they're now ready to enroll. For a prospect who is still undecided or exploring before committing — cold leads default to this state until they say otherwise — offer the free no-commitment preview at **www.myfreeaiclass.com** instead.
 
 ---
 
