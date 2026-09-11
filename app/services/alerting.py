@@ -18,6 +18,15 @@ Alert types (all thresholds settings-driven):
                           ALERT_OUTBOUND_STALL_HOURS during an active,
                           unpaused campaign window
   duplicate_rate_spike  — (not yet computable; reserved for future metric)
+  new_exception         — (spec/30) one email per newly-opened exceptions row,
+                          any type/severity — the per-incident counterpart to
+                          exception_spike's aggregate threshold. To Kes.
+  sales_queue_urgent    — (spec/30) one email per lead newly showing "urgent"
+                          sales priority (see dashboard_metrics._compute_sales_priority),
+                          routed to Rose (admissions) and/or Taiwo (payment/IPBC)
+                          by transcript keyword, or by name if the caller asked
+                          for one of them specifically. Fires once per lead
+                          until a rep logs a sales_outcome.
 
 Deduplication key: (alert_type, status='active').
   - If an active row for the same alert_type was created within
@@ -28,6 +37,7 @@ Deduplication key: (alert_type, status='active').
 from __future__ import annotations
 
 import logging
+import re
 import smtplib
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -131,6 +141,16 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         _evaluate_outbound_stall(session, settings, now, dedup_window)
     except Exception as exc:
         logger.error("alerting: outbound_stall eval failed: %s", exc)
+
+    try:
+        _evaluate_new_exceptions(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: new_exceptions eval failed: %s", exc)
+
+    try:
+        _evaluate_sales_queue_urgent(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: sales_queue_urgent eval failed: %s", exc)
 
     for defn in _ALERT_DEFINITIONS:
         try:
@@ -653,7 +673,334 @@ def _evaluate_webhook_drop(
             )
 
 
+# ── New-exception alert (spec/30) ───────────────────────────────────────────
+
+# Cap the number of individual exception emails sent per 60s metrics cycle.
+# A real outage can open many exceptions at once (e.g. a downstream API
+# going down); without a cap, "one email per exception" becomes a mail-bomb
+# on top of the outage. exception_spike (the aggregate threshold alert)
+# still fires immediately regardless of this cap. Uncaught exceptions catch
+# up over the next few cycles.
+_NEW_EXCEPTION_BATCH_LIMIT = 20
+
+
+def _evaluate_new_exceptions(session: Session, settings: Any, now: datetime) -> None:
+    """
+    Email once for every newly-opened exceptions row (spec/30), any
+    type/severity. Dedup uses alert_events as a per-exception notified-ledger
+    (alert_type=f"exception_notified:{exception_id}") rather than a schema
+    change to `exceptions` — same trick as _evaluate_sales_queue_urgent.
+
+    First-ever run seeds the ledger for every currently-open exception
+    without emailing (avoids a backlog flood the first time this ships or
+    redeploys after downtime) — detected by the ledger being completely
+    empty.
+    """
+    from app.models.alert_event import AlertEvent
+
+    is_first_run = session.execute(text("""
+        SELECT 1 FROM alert_events WHERE alert_type LIKE 'exception_notified:%' LIMIT 1
+    """)).fetchone() is None
+
+    rows = session.execute(text("""
+        SELECT e.id, e.type, e.severity, e.entity_type, e.entity_id, e.context_json, e.created_at
+        FROM exceptions e
+        WHERE e.status = 'open'
+          AND NOT EXISTS (
+              SELECT 1 FROM alert_events ae
+              WHERE ae.alert_type = 'exception_notified:' || e.id
+          )
+        ORDER BY e.created_at ASC
+        LIMIT :limit
+    """), {"limit": _NEW_EXCEPTION_BATCH_LIMIT}).fetchall()
+
+    for row in rows:
+        exc_id, exc_type, severity, entity_type, entity_id, context_json, created_at = row
+        ledger_id = str(uuid.uuid4())
+        session.add(AlertEvent(
+            id=ledger_id,
+            alert_type=f"exception_notified:{exc_id}",
+            severity=severity or "warning",
+            status="resolved",  # tombstone — nothing to resolve later, just a sent-marker
+            message=f"exception {exc_id} ({exc_type})",
+            last_seen_at=now,
+            created_at=now,
+            resolved_at=now,
+        ))
+        session.flush()
+
+        if is_first_run:
+            continue  # seed the ledger silently, no email for pre-existing backlog
+
+        detail = ""
+        if context_json:
+            try:
+                parts = [f"{k}={v}" for k, v in list(context_json.items())[:5]]
+                detail = " | " + ", ".join(parts)
+            except Exception:
+                pass
+        msg = f"New exception: type={exc_type} entity={entity_type}:{entity_id}{detail}"
+        _send_alert_email(
+            settings=settings, alert_id=exc_id, alert_type="new_exception",
+            severity=severity or "warning", message=msg, now=now, is_resolution=False,
+        )
+
+
+# ── Sales-queue urgent-notice alert (spec/30) ───────────────────────────────
+
+# Mirrors dashboard_metrics._INTENT_SCORES' always-urgent set (score >= 80
+# even with zero recency bonus) — the common case for "this needs a human
+# now." Deliberately narrower than the full recency-boosted definition
+# dashboard_metrics._compute_sales_priority computes (e.g. a failed_booking
+# call < 30 min old can also score >= 80); recomputing that here would mean
+# duplicating the recency math in SQL for an edge case. Revisit if that gap
+# turns out to matter in practice.
+_SALES_QUEUE_URGENT_INTENTS = frozenset({
+    "enrolled", "callback_request", "callback_with_time",
+    "re_engaged", "human_transfer_request",
+})
+_SALES_QUEUE_URGENT_INTENTS_SQL = ",".join(f"'{i}'" for i in sorted(_SALES_QUEUE_URGENT_INTENTS))
+_SALES_QUEUE_SCAN_WINDOW_DAYS = 1
+
+# Per Kes (2026-09-11): Rose owns admissions questions, Taiwo owns
+# payment/IPBC questions. Free keyword match against the transcript — not a
+# controlled vocabulary, easy to extend if a real transcript gets misrouted.
+_ADMISSIONS_KEYWORDS = (
+    "admission", "admissions", "enroll", "enrollment", "apply", "application",
+    "program", "cohort", "curriculum", "start date", "requirement", "prerequisite",
+    "scholarship", "orientation", "class schedule",
+)
+_PAYMENT_KEYWORDS = (
+    "payment", "ipbc", "invoice", "bill", "billing", "refund", "installment",
+    "tuition", "balance", "financing", "loan", "deposit", "autopay", "auto pay",
+    "credit card",
+)
+
+
+def _route_sales_queue_recipients(settings: Any, transcript: str | None) -> list[str]:
+    """
+    Decide who gets the urgent-sales-queue email for one lead.
+
+    Priority: an explicit name mention ("can I talk to Rose") always wins,
+    per Kes's instruction — routes to that person regardless of topic.
+    Otherwise route by topic keyword (admissions -> Rose, payment/IPBC ->
+    Taiwo; both keyword sets hit -> both). If neither the name nor a topic
+    keyword matches, default to both — an unclassified urgent lead is safer
+    over-notified than silently dropped.
+    """
+    text_lower = (transcript or "").lower()
+
+    named = []
+    if re.search(r"\brose\b", text_lower):
+        named.append(settings.alert_email_rose)
+    if re.search(r"\btaiwo\b", text_lower):
+        named.append(settings.alert_email_taiwo)
+    if named:
+        return named
+
+    recipients = []
+    if any(kw in text_lower for kw in _ADMISSIONS_KEYWORDS):
+        recipients.append(settings.alert_email_rose)
+    if any(kw in text_lower for kw in _PAYMENT_KEYWORDS):
+        recipients.append(settings.alert_email_taiwo)
+    if recipients:
+        return recipients
+
+    return [settings.alert_email_rose, settings.alert_email_taiwo]
+
+
+def _sales_queue_routing_reason(transcript: str | None) -> str:
+    """Human-readable version of _route_sales_queue_recipients' logic, for
+    the "why this reached you" line in the friendly email. Kept as a
+    separate small function rather than changing that one's return shape,
+    to avoid disturbing its existing callers/tests."""
+    text_lower = (transcript or "").lower()
+
+    named = []
+    if re.search(r"\brose\b", text_lower):
+        named.append("Rose")
+    if re.search(r"\btaiwo\b", text_lower):
+        named.append("Taiwo")
+    if named:
+        return f"the caller asked for {' and '.join(named)} by name"
+
+    admissions_hit = any(kw in text_lower for kw in _ADMISSIONS_KEYWORDS)
+    payment_hit = any(kw in text_lower for kw in _PAYMENT_KEYWORDS)
+    if admissions_hit and payment_hit:
+        return "the call touched both admissions and payment/IPBC topics"
+    if admissions_hit:
+        return "the call sounded admissions-related"
+    if payment_hit:
+        return "the call sounded payment/IPBC-related"
+    return "the topic wasn't clear from the transcript, so both Rose and Taiwo are included"
+
+
+def _evaluate_sales_queue_urgent(session: Session, settings: Any, now: datetime) -> None:
+    """
+    Email Rose and/or Taiwo once per lead when it enters "urgent" sales
+    priority (spec/30), until a rep logs a sales_outcome for that contact.
+
+    If Cora already has a pending launch_outbound_call job for this contact
+    (e.g. callback_with_time extracted a specific promised time, or any of
+    the other urgent intents fell back to a scheduled retry), its run_at is
+    included in the message so Rose/Taiwo know a callback is already booked
+    and when — not just that the lead is urgent. This only covers callbacks
+    Cora itself scheduled; an appointment booked directly in GHL's own
+    calendar (not through a Cora phone call) is invisible to Cora — see
+    spec/22's "out of scope" note on GHL-native appointment ingestion.
+
+    Dedup uses alert_events with alert_type=f"sales_queue_urgent:{contact_id}"
+    — an active row means already notified and still unresolved; a resolved
+    row means a *prior* urgent episode was closed out, so a fresh urgent
+    call after that re-alerts (new active row, same alert_type).
+
+    Gated by settings.alert_sales_queue_enabled (default False) — this is
+    the one alert type that emails people other than Kes.
+    """
+    if not settings.alert_sales_queue_enabled:
+        return
+
+    from app.models.alert_event import AlertEvent
+
+    window_start = now - timedelta(days=_SALES_QUEUE_SCAN_WINDOW_DAYS)
+    rows = session.execute(text(f"""
+        SELECT DISTINCT ON (ce.contact_id)
+            ce.contact_id, ce.detected_intent, ce.transcript,
+            COALESCE(ce.start_time_utc, ce.created_at) AS call_time,
+            ls.sales_outcome,
+            sj.run_at AS next_callback_at,
+            sj.payload_json->>'intent_reason' AS next_callback_reason,
+            COALESCE(ls.normalized_phone, ce.contact_id) AS phone,
+            NULLIF(TRIM(ce.raw_payload_json->>'Name'), '') AS lead_name
+        FROM call_events ce
+        LEFT JOIN lead_state ls ON ls.contact_id = ce.contact_id
+        LEFT JOIN LATERAL (
+            SELECT run_at, payload_json
+            FROM scheduled_jobs
+            WHERE job_type = 'launch_outbound_call'
+              AND status IN ('pending', 'claimed', 'running')
+              AND payload_json->>'contact_id' = ce.contact_id
+            ORDER BY run_at ASC
+            LIMIT 1
+        ) sj ON true
+        WHERE ce.detected_intent IN ({_SALES_QUEUE_URGENT_INTENTS_SQL})
+          AND COALESCE(ce.duration_seconds, 0) >= 30
+          AND ce.transcript IS NOT NULL AND ce.transcript != ''
+          AND COALESCE(ce.start_time_utc, ce.created_at) >= :window_start
+        ORDER BY ce.contact_id, COALESCE(ce.start_time_utc, ce.created_at) DESC
+    """), {"window_start": window_start}).fetchall()
+
+    for row in rows:
+        (contact_id, intent, transcript, call_time, sales_outcome,
+         next_callback_at, next_callback_reason, phone, lead_name) = row
+        alert_type = f"sales_queue_urgent:{contact_id}"
+
+        existing = session.execute(
+            text("""
+                SELECT id, status FROM alert_events
+                WHERE alert_type = :t ORDER BY created_at DESC LIMIT 1
+            """),
+            {"t": alert_type},
+        ).fetchone()
+
+        if sales_outcome:
+            if existing and existing[1] == "active":
+                session.execute(
+                    text("UPDATE alert_events SET status = 'resolved', resolved_at = :now WHERE id = :id"),
+                    {"now": now, "id": existing[0]},
+                )
+            continue
+
+        if existing and existing[1] == "active":
+            continue  # already notified for this lead, not yet resolved
+
+        recipients = _route_sales_queue_recipients(settings, transcript)
+        routing_reason = _sales_queue_routing_reason(transcript)
+        call_time_str = call_time.isoformat() if hasattr(call_time, "isoformat") else str(call_time)
+
+        callback_note = ""
+        if next_callback_at is not None:
+            cb_str = (
+                next_callback_at.isoformat() if hasattr(next_callback_at, "isoformat")
+                else str(next_callback_at)
+            )
+            reason_str = f" (reason: {next_callback_reason})" if next_callback_reason else ""
+            callback_note = (
+                f"Cora already has a follow-up call scheduled for {cb_str} UTC{reason_str} "
+                f"— no need to book a separate one."
+            )
+
+        # Internal audit-trail message (alert_events row), distinct from the
+        # friendly email body sent to Rose/Taiwo below.
+        msg = (
+            f"Urgent sales-queue lead — contact_id={contact_id} intent={intent} "
+            f"call_time={call_time_str}. {callback_note} Routed to: {', '.join(recipients)} "
+            f"({routing_reason})."
+        ).strip()
+        alert_id = str(uuid.uuid4())
+        session.add(AlertEvent(
+            id=alert_id, alert_type=alert_type, severity="warning", status="active",
+            message=msg, last_seen_at=now, created_at=now,
+        ))
+        session.flush()
+
+        transcript_excerpt = (transcript or "").strip()[:400]
+        if len(transcript or "") > 400:
+            transcript_excerpt += "..."
+        dashboard_url = f"{settings.frontend_url}/lead/{contact_id}"
+
+        _send_sales_queue_urgent_email(
+            settings=settings, to_addrs=recipients,
+            lead_name=lead_name or "", phone=phone, intent=intent,
+            call_time_str=call_time_str, transcript_excerpt=transcript_excerpt,
+            routing_reason=routing_reason, callback_note=callback_note,
+            dashboard_url=dashboard_url,
+        )
+        session.execute(
+            text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
+            {"now": now, "id": alert_id},
+        )
+
+
 # ── SMTP email sender ─────────────────────────────────────────────────────────
+
+def _smtp_send(settings: Any, to_addrs: list[str], subject: str, body: str, log_label: str) -> None:
+    """
+    Low-level SMTP send, shared by every alert email (generic system alerts
+    and the friendly sales-queue template). Non-fatal: exceptions are
+    logged, never raised. Does nothing if smtp_enabled is False or
+    from/recipients are missing.
+    """
+    if not settings.smtp_enabled:
+        logger.debug("alerting: SMTP disabled — skipping email for %s", log_label)
+        return
+
+    from_addr = settings.alert_email_from
+    to_addrs = [a.strip() for a in to_addrs if a and a.strip()]
+    if not from_addr or not to_addrs:
+        logger.warning(
+            "alerting: ALERT_EMAIL_FROM or recipient list not configured; skipping email for %s",
+            log_label,
+        )
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = from_addr
+    msg["To"] = ", ".join(to_addrs)
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+            if settings.smtp_use_tls:
+                server.starttls()
+            if settings.smtp_username and settings.smtp_password:
+                server.login(settings.smtp_username, settings.smtp_password)
+            server.sendmail(from_addr, to_addrs, msg.as_string())
+        logger.info("alerting: email sent for %s (to=%d recipient(s))", log_label, len(to_addrs))
+    except Exception as exc:
+        logger.error("alerting: SMTP send failed for %s: %s", log_label, exc)
+
 
 def _send_alert_email(
     settings: Any,
@@ -663,23 +1010,21 @@ def _send_alert_email(
     message: str,
     now: datetime,
     is_resolution: bool,
+    to_override: list[str] | None = None,
 ) -> None:
     """
-    Send an alert or resolution email via SMTP.
-    Non-fatal: exceptions are logged; no raise.
-    Does nothing if smtp_enabled is False or required settings are missing.
-    """
-    if not settings.smtp_enabled:
-        logger.debug("alerting: SMTP disabled — skipping email for %s", alert_type)
-        return
+    Send a generic system-alert email (queue lag, exception spike,
+    new_exception, etc.) via SMTP.
 
-    from_addr = settings.alert_email_from
-    to_addr = settings.alert_email_to
-    if not from_addr or not to_addr:
-        logger.warning(
-            "alerting: ALERT_EMAIL_FROM or ALERT_EMAIL_TO not configured; skipping email"
-        )
-        return
+    to_override: explicit recipient list, bypassing settings.alert_email_to.
+    """
+    if to_override is not None:
+        to_addrs = to_override
+    else:
+        # alert_email_to is documented as comma-separated for multiple
+        # recipients — must split before handing to smtplib, which treats a
+        # single un-split string as one (invalid) RCPT TO address.
+        to_addrs = (settings.alert_email_to or "").split(",")
 
     subject_prefix = "[RESOLVED]" if is_resolution else f"[{severity.upper()}]"
     subject = f"{subject_prefix} Cora Alert: {alert_type}"
@@ -697,19 +1042,47 @@ def _send_alert_email(
     ]
     body = "\n".join(body_lines)
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-    msg.attach(MIMEText(body, "plain"))
+    _smtp_send(settings, to_addrs, subject, body, log_label=alert_type)
 
-    try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
-            if settings.smtp_use_tls:
-                server.starttls()
-            if settings.smtp_username and settings.smtp_password:
-                server.login(settings.smtp_username, settings.smtp_password)
-            server.sendmail(from_addr, [to_addr], msg.as_string())
-        logger.info("alerting: email sent for %s (alert_id=%s)", alert_type, alert_id)
-    except Exception as exc:
-        logger.error("alerting: SMTP send failed for %s: %s", alert_type, exc)
+
+def _send_sales_queue_urgent_email(
+    settings: Any,
+    *,
+    to_addrs: list[str],
+    lead_name: str,
+    phone: str,
+    intent: str,
+    call_time_str: str,
+    transcript_excerpt: str,
+    routing_reason: str,
+    callback_note: str,
+    dashboard_url: str,
+) -> None:
+    """
+    Friendly, human-facing email for Rose/Taiwo (not Cora operators) — no
+    "Alert ID" / "log in to the dashboard" system-alert framing. Per Kes,
+    2026-09-11.
+    """
+    # Plain hyphen, not an em dash — keeps the Subject header pure ASCII so
+    # it isn't RFC 2047 (quoted-printable) encoded by the email library.
+    subject = f"Urgent lead needs follow-up - {lead_name or phone}"
+
+    body_lines = [
+        f"{lead_name or 'A lead'} needs a follow-up from you.",
+        "",
+        f"Phone: {phone}",
+        f"Called: {call_time_str}",
+        f"Why this reached you: {routing_reason}",
+    ]
+    if callback_note:
+        body_lines.append(callback_note.strip())
+    body_lines += [
+        "",
+        "What they said:",
+        f'"{transcript_excerpt}"',
+        "",
+        f"Full details: {dashboard_url}",
+    ]
+    body = "\n".join(body_lines)
+
+    _smtp_send(settings, to_addrs, subject, body, log_label=f"sales_queue_urgent:{intent}")

@@ -298,6 +298,14 @@ class Settings(BaseSettings):
     alert_email_from: Optional[str] = None
     alert_email_to: Optional[str] = None  # comma-separated
 
+    # Sales-queue urgent-notice routing (spec/30). Per Kes, 2026-09-11: Rose
+    # handles admissions questions, Taiwo handles payment/IPBC questions.
+    alert_email_rose: str = "roselen@colaberry.com"
+    alert_email_taiwo: str = "taiwo@colaberry.com"
+    # Kes confirmed the routing/wording 2026-09-11 — on by default. This is
+    # the one alert type that emails people other than Kes (Rose/Taiwo).
+    alert_sales_queue_enabled: bool = True
+
     # Alert thresholds
     alert_queue_lag_threshold_seconds: int = 300
     alert_error_rate_threshold: float = 0.20
