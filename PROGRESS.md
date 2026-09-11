@@ -1949,3 +1949,25 @@ change). Verified directly against the live loaded prompts post-deploy:
 `_load_campaign_prompt('Cold Lead')` → 1 `training.colaberry.com` (the new documenting-rule
 sentence only) / 6 `myfreeaiclass.com`. All 13 containers healthy, `/health` OK, no errors in
 logs since restart.
+
+### Follow-up same session — cold leads who convert mid-call (`3c31a33`)
+
+Kes asked: on a Cold Lead call, if the caller decides they're ready to enroll, which site do
+they get? The first pass above had made Cold Lead unconditionally `www.myfreeaiclass.com`
+(including a rule explicitly forbidding training.colaberry.com on that campaign) — too rigid.
+Confirmed via AskUserQuestion: a cold lead who converts mid-call should be handled the same as a
+ready warm lead (training.colaberry.com + Admissions handoff), not forced through the free
+preview funnel just because of campaign type.
+
+Updated `synthflow-cold-lead-prompt.md`: Website field now notes the default/exception the same
+way as the warm-lead prompt; Section 4 gained an explicit "If they say they're ready to enroll
+now" branch (previously had only the free-start pitch, no ready-to-convert branch at all — a
+real content gap, not just a URL issue); end-of-call summary and Additional Rules updated to
+match. Also softened `colaberry-knowledge-base.md`'s About-Colaberry line, which had the same
+"cold lead → always myfreeaiclass.com" absolutism.
+
+Deployed (`git pull && docker compose up -d --build` on Hetzner). Verified post-deploy:
+`_load_campaign_prompt('Cold Lead')` → 5 `training.colaberry.com` / 7 `myfreeaiclass.com`,
+contains the new "ready to enroll now" branch text. All containers healthy, no new errors (one
+`AbandonedJobError` in worker-quality logs is the routine artifact of restarting a worker
+mid-job during deploy, unrelated to this change).
