@@ -3,8 +3,8 @@
 | Area | Status |
 |---|---|
 | Pre-call urgent-escalation check (`app/core/escalation_guard.py`) | **DONE.** `check_urgent_unresolved()` — 10 unit tests, all passing. |
-| `enter_campaign()` gate | **DONE.** Skips campaign entry, logs a `warning`-severity `outbound_suppressed_urgent_escalation` exception, no jobs scheduled/cancelled. |
-| `launch_outbound_call_job()` gate | **DONE.** Belt-and-suspenders — cancels the job + logs the same exception type. Catches jobs scheduled before the escalation occurred, or entered via a path other than `enter_campaign()`. |
+| `enter_campaign()` gate | **DONE.** Skips campaign entry, logs a `warning`-level line, no jobs scheduled/cancelled. As of 2026-09-11, log-only — no `exceptions` row (see below). |
+| `launch_outbound_call_job()` gate | **DONE.** Belt-and-suspenders — cancels the job + logs the same warning. Catches jobs scheduled before the escalation occurred, or entered via a path other than `enter_campaign()`. As of 2026-09-11, log-only — no `exceptions` row (see below). |
 | GHL-native (non-Cora) escalation signal ingestion (tags/appointments polled from GHL) | **NOT STARTED — explicitly deferred.** See Out-of-scope. |
 
 ## Self-contained problem statement
@@ -89,8 +89,18 @@ non-`None`.
   includes `re_engaged`, which has the opposite suppression semantics.
 - **Must not** require a schema change — this reads existing `call_events`/`lead_state`
   columns only.
-- **Must not** silently drop a suppressed lead — every suppression creates an
-  auditable `exceptions` row (`entity_type="lead"`, `entity_id=contact_id`).
+- **Must not** silently drop a suppressed lead — every suppression is logged
+  at `warning` level with `contact_id`, `job_id`/`campaign`, `detected_intent`,
+  and `call_time`. (Revised 2026-09-11: no longer creates an `exceptions` row
+  — Kes asked for this to stop surfacing as a dashboard alert. Suppression is
+  expected behavior an operator can't action from the alert; a sales rep
+  clears it via the Sales Queue regardless of whether it was ever surfaced.
+  Same treatment as the `do_not_call` and `outbound_suppressed_student` guards
+  in the same files. The log line remains the audit trail — nothing reads it
+  automatically, so if this needs to become actionable again (e.g. a report
+  of leads currently suppressed), query `call_events`/`lead_state` directly
+  via `check_urgent_unresolved()`'s own logic rather than re-adding an
+  exceptions row.)
 - **Escalation trigger:** if a future change wants this guard to also consult
   a GHL-native (non-Cora-call) signal, treat that as a new, separately-scoped
   ticket — do not bolt unverified GHL API calls onto this guard without first
@@ -101,4 +111,5 @@ non-`None`.
 each of the four urgent intents, a non-urgent intent, 31-days-stale,
 29-days-fresh boundary, resolved-by-rep, most-recent-call-wins) +
 `tests/unit/test_campaigns.py` (skip-on-unresolved, proceed-on-resolved) +
-`tests/unit/test_outbound_jobs.py` (cancel-on-unresolved, proceed-on-none).
+`tests/unit/test_outbound_jobs.py` (`test_unresolved_escalation_cancels_job_without_raising_exception`,
+`test_no_escalation_passes_guard`).

@@ -397,22 +397,18 @@ def launch_outbound_call_job(job_id: str) -> None:
         # dial time to catch contacts GHL (or a carrier-side spam flag synced
         # into GHL) has already tagged, independent of Cora's own do_not_call
         # state. See PROGRESS.md 2026-07-17 finding #3.
+        # Logged, not raised as an exception (revised 2026-09-11, see PROGRESS.md
+        # — same treatment as the do_not_call / enrolled-student / urgent-escalation
+        # guards): expected suppression an operator can't action, not a dashboard
+        # alert. The log line is the audit trail.
         if _has_spam_likely_tag(contact_id, settings):
-            logger.info(
+            logger.warning(
                 "launch_outbound_call_job: 'spam likely' GHL tag — cancelling | "
                 "contact_id=%s job_id=%s",
                 contact_id, job_id,
             )
             from app.worker.claim import cancel_job
             cancel_job(session, job.id)
-            create_exception(
-                session,
-                type="outbound_suppressed_spam_likely_tag",
-                severity="warning",
-                context={"contact_id": contact_id, "job_id": job_id, "campaign_name": campaign_name},
-                entity_type="lead",
-                entity_id=contact_id,
-            )
             session.commit()
             return
 
@@ -423,7 +419,10 @@ def launch_outbound_call_job(job_id: str) -> None:
         from app.core.escalation_guard import check_urgent_unresolved
         escalation = check_urgent_unresolved(session, contact_id)
         if escalation is not None:
-            logger.info(
+            # Logged, not raised as an exception — same treatment as the
+            # do_not_call guard above: expected suppression an operator can't
+            # action, not a dashboard alert. The log line is the audit trail.
+            logger.warning(
                 "launch_outbound_call_job: urgent unresolved escalation — cancelling | "
                 "contact_id=%s job_id=%s detected_intent=%s call_time=%s",
                 contact_id, job_id,
@@ -431,19 +430,6 @@ def launch_outbound_call_job(job_id: str) -> None:
             )
             from app.worker.claim import cancel_job
             cancel_job(session, job.id)
-            create_exception(
-                session,
-                type="outbound_suppressed_urgent_escalation",
-                severity="warning",
-                context={
-                    "contact_id": contact_id,
-                    "job_id": job_id,
-                    "campaign_name": campaign_name,
-                    **escalation,
-                },
-                entity_type="lead",
-                entity_id=contact_id,
-            )
             session.commit()
             return
 

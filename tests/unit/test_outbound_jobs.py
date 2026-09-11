@@ -611,10 +611,13 @@ def test_not_do_not_call_passes_guard(
 @patch("app.worker.jobs.outbound_jobs.get_sync_session")
 @patch("app.worker.jobs.outbound_jobs.claim_job")
 @patch("app.worker.jobs.outbound_jobs.mark_running")
-def test_spam_likely_tag_cancels_job_and_raises_exception(
+def test_spam_likely_tag_cancels_job_without_raising_exception(
     mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
     mock_worker_id, mock_create_exc, mock_is_dnc, mock_has_spam, mock_cancel,
 ):
+    """spam-likely suppression cancels the job and commits, but does NOT create
+    an exception row — expected suppression an operator can't action, logged
+    not alerted. Same treatment as the do_not_call guard (revised 2026-09-11)."""
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
     mock_session = MagicMock()
@@ -629,10 +632,8 @@ def test_spam_likely_tag_cancels_job_and_raises_exception(
         launch_outbound_call_job(mock_job.id)
 
     mock_mark_running.assert_not_called()
-    mock_create_exc.assert_called_once()
-    exc_call = mock_create_exc.call_args
-    assert exc_call.kwargs["type"] == "outbound_suppressed_spam_likely_tag"
-    assert exc_call.kwargs["severity"] == "warning"
+    mock_cancel.assert_called_once()
+    mock_create_exc.assert_not_called()
     mock_session.commit.assert_called_once()
 
 
@@ -714,10 +715,13 @@ def test_has_spam_likely_tag_fails_open_on_ghl_error():
 @patch("app.worker.jobs.outbound_jobs.get_sync_session")
 @patch("app.worker.jobs.outbound_jobs.claim_job")
 @patch("app.worker.jobs.outbound_jobs.mark_running")
-def test_unresolved_escalation_cancels_job_and_raises_exception(
+def test_unresolved_escalation_cancels_job_without_raising_exception(
     mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
     mock_worker_id, mock_create_exc, mock_check_urgent, mock_is_dnc, mock_cancel,
 ):
+    """Escalation suppression cancels the job and commits, but does NOT create
+    an exception row — expected suppression an operator can't action, logged
+    not alerted. Same treatment as the do_not_call guard."""
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
 
     mock_session = MagicMock()
@@ -737,13 +741,10 @@ def test_unresolved_escalation_cancels_job_and_raises_exception(
     with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
         launch_outbound_call_job(mock_job.id)
 
-    # Guard fired: job cancelled, exception created, Synthflow never reached
+    # Guard fired: job cancelled, no exception, Synthflow never reached
     mock_mark_running.assert_not_called()
-    mock_create_exc.assert_called_once()
-    exc_call = mock_create_exc.call_args
-    assert exc_call.kwargs["type"] == "outbound_suppressed_urgent_escalation"
-    assert exc_call.kwargs["severity"] == "warning"
-    assert exc_call.kwargs["context"]["detected_intent"] == "callback_with_time"
+    mock_cancel.assert_called_once()
+    mock_create_exc.assert_not_called()
     mock_session.commit.assert_called_once()
 
 

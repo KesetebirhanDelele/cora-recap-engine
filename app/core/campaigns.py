@@ -142,24 +142,14 @@ def enter_campaign(
     from app.core.escalation_guard import check_urgent_unresolved
     escalation = check_urgent_unresolved(session, lead.contact_id)
     if escalation is not None:
-        logger.info(
+        # Logged, not raised as an exception — expected suppression an
+        # operator can't action, not a dashboard alert. The log line is the
+        # audit trail. See launch_outbound_call_job()'s matching guard.
+        logger.warning(
             "enter_campaign: urgent unresolved escalation — skipping entry | "
             "contact_id=%s campaign=%s detected_intent=%s call_time=%s",
             lead.contact_id, campaign_name,
             escalation["detected_intent"], escalation["call_time"],
-        )
-        from app.worker.exceptions import create_exception
-        create_exception(
-            session,
-            type="outbound_suppressed_urgent_escalation",
-            severity="warning",
-            context={
-                "contact_id": lead.contact_id,
-                "campaign_type": campaign_type,
-                **escalation,
-            },
-            entity_type="lead",
-            entity_id=lead.contact_id,
         )
         return
 
