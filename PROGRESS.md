@@ -1912,3 +1912,40 @@ in production.
 7 new tests in `test_dashboard_v2.py` (5 for the delay sweep, 2 for conditional resolution
 email) + existing suites all still pass. Full suite: 1278 passed / 7 pre-existing unrelated
 failures (unchanged). Deployed, healthy, no errors.
+
+## Session: 2026-09-11 — training.colaberry.com vs myfreeaiclass.com by lead type (`fix/training-url-lead-type-routing`, `825267e`)
+
+A prior session (same day) did a blanket find/replace of `training.colaberry.com` →
+`www.myfreeaiclass.com` across `docs/colaberry-knowledge-base.md`,
+`docs/synthflow-cold-lead-prompt.md`, and `docs/synthflow-warm-lead-prompt.md`. That was too
+broad — Kes clarified the actual policy: **`training.colaberry.com` is the default site for most
+cases; `www.myfreeaiclass.com` (free, no-commitment preview) is only correct for Cold Lead calls
+or for a caller who is undecided/unsure/still exploring.**
+
+Fixed by lead type:
+- **Cold Lead prompt** (`synthflow-cold-lead-prompt.md`): no functional change — every mention
+  was already `www.myfreeaiclass.com`, which is correct since Cold Lead calls are re-engaging a
+  lapsed prospect and should always lead with the free, no-pressure preview. Added an explicit
+  rule line under Additional Rules documenting this is intentional, not an oversight, so a future
+  session doesn't "fix" it back to training.colaberry.com by mistake.
+- **New Lead (warm) prompt** (`synthflow-warm-lead-prompt.md`): now defaults to
+  `training.colaberry.com` (Website field, primary-goals bullet, end-of-call summary, additional
+  rules) and only uses `www.myfreeaiclass.com` in the branches that were already conditioned on
+  "lead isn't ready to commit" / "wants to explore first" — those branches were left as-is since
+  they were already correctly scoped, just missing the training.colaberry.com counterpart for the
+  "ready" branch.
+- **Knowledge base** (`colaberry-knowledge-base.md`): not campaign-specific and not read by any
+  runtime code (only `synthflow-cold-lead-prompt.md`/`synthflow-warm-lead-prompt.md` are loaded
+  via `_load_campaign_prompt`) — kept as a human/GHL reference doc. Updated the "About Colaberry"
+  and "How to Enroll" sections to state training.colaberry.com as the default with the cold-lead/
+  undecided exception called out explicitly, since a manual GHL knowledge-base sync would
+  otherwise carry the same wrong default forward.
+
+**Deployed:** merged `fix/training-url-lead-type-routing` → `feat/ghl-call-conversation-sync`
+(`825267e`), pushed, `git pull && docker compose up -d --build` on Hetzner (rebuild needed —
+`_load_campaign_prompt` is `@lru_cache`d per-process, so only a fresh process picks up the file
+change). Verified directly against the live loaded prompts post-deploy:
+`_load_campaign_prompt('New Lead')` → 5 `training.colaberry.com` / 8 `myfreeaiclass.com`;
+`_load_campaign_prompt('Cold Lead')` → 1 `training.colaberry.com` (the new documenting-rule
+sentence only) / 6 `myfreeaiclass.com`. All 13 containers healthy, `/health` OK, no errors in
+logs since restart.
