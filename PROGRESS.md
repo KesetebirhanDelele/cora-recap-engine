@@ -1757,8 +1757,73 @@ verified by calling `_load_campaign_prompt()` directly on the server for both ca
 references, 7 new in New Lead / 5 new in Cold Lead (matches source file counts exactly). Next
 call placed on either campaign will use the corrected URL.
 
-### Still open
+### Still open (at the time of writing — see follow-up section below for resolution)
 - The stale `+15082722326` `alert_events` row (see incident above) — needs Kes's go-ahead for
   the one-row UPDATE.
 - Whether any *other* `ALERT_EMAIL_TO`-style address elsewhere in `.env` has a similar typo was
   not audited — only this one was caught, because it happened to come up.
+
+---
+
+## 2026-09-11 (continued again) — sales_queue_urgent redesigned fire-once; routing bug fixed (caller's-words-only, default-to-Rose)
+
+### Fire-once redesign (`fix/sales-queue-email-fire-once-no-resolution-tracking`, `f40f574`)
+Kes: "the system should just send one time email and not check if it has been addressed or not
+since there is a different mechanism to do that" (the Sales Queue itself). Removed the
+active/resolved lifecycle entirely — `alert_events` now acts as a permanent fire-once tombstone
+per contact_id (`status='resolved'` at creation, mirrors `exception_notified:{id}`'s pattern).
+
+One nuance surfaced and fixed in the same pass: "don't keep checking after sending" and "don't
+alert me about things already resolved" are two different moments, not a contradiction. Query
+now filters `ls.sales_outcome IS NULL` at detection time (skip a lead a rep already resolved
+before this cycle even runs) but never re-checks it afterward to gate a resend. Reconciles both
+of Kes's asks without dropping either.
+
+**Manual cleanup, same session:** stale `+15082722326` row required a `DELETE` (not `UPDATE`)
+under the new any-row-blocks-forever dedup — old `UPDATE ... status='resolved'` plan wouldn't
+have worked under the new design. Deleted, verified the corrected email resent automatically on
+the next cycle (`email_sent_at` populated, routed to both Rose and Taiwo — routing bug below not
+yet fixed at this point).
+
+### Dashboard Alert-tile leak, found by Kes
+A *different* lead (`+15716259625`, human_transfer_request) showed up on the dashboard's Alert
+tile as an "Urgent sales-queue lead" notice — Kes: "I should not get these... alerts on the
+Alert tile." Root cause: that row was created at 17:07 UTC, a few minutes *before* the fire-once
+fix deployed (~17:53), so it still carried `status='active'` from the old design, which both the
+`/dashboard/alerts?status=active` endpoint and `dashboard_metrics.active_alerts` count. New rows
+(post-fix) are written `status='resolved'` from the start and don't have this problem. One-row
+`UPDATE ... status='resolved'` on that specific leftover; confirmed `active_alerts` count back
+to 0. No code change needed — a transition artifact, not a bug in the new design.
+
+### Routing bug — real live send went to both Rose AND Taiwo (`fix/sales-queue-routing-caller-words-only`, `6633990`)
+Kes caught this from an actual inbox screenshot: `+15082722326`'s corrected-template email
+(from the fire-once resend above) still went to **both** Rose and Taiwo, reason logged as "the
+call touched both admissions and payment/IPBC topics." Root cause, found by pulling the real
+transcript: the caller never said anything about payment. The only "payment" mention was **Cora's
+own scripted line** — *"no payment, no pressure,"* describing the free Explorer preview —
+boilerplate present on nearly every call, both campaigns (see the prompt-URL-swap section above;
+same two files). "Admissions" was likewise only in Cora's own line ("a follow-up with
+Admissions"), not the caller's words. The keyword matcher had been scanning the whole transcript,
+bot lines included.
+
+**Fix:** new `_extract_caller_turns()` isolates `"human:"`-prefixed lines before any keyword/name
+matching (falls back to the raw transcript if no such lines exist — fail open, not silent).
+Also changed the no-signal fallback from "send to both" to **Rose only** — Kes confirmed routing
+should be strictly either/or; Sales Queue leads are inherently admissions-track calls by
+construction, Taiwo's domain is the narrower exception. Verified against the real
+`+15082722326` transcript directly on the server post-deploy: now routes to Rose only, reason
+"the topic wasn't clear from what the caller said, defaulting to admissions." The already-sent
+both-recipient email can't be retracted; only affects sends after this deploy.
+
+### Current state
+`tests/unit/test_alerting.py`: 31 cases. Full suite: 1271 passed / 7 pre-existing unrelated
+failures (confirmed unchanged via `git stash`, as in every prior redeploy this session).
+`sales_queue_urgent` is live, fire-once, routes on caller's words only, defaults to Rose when
+unclear. `new_exception` unaffected by any of this round's changes.
+
+### Still open
+- Whether any *other* `ALERT_EMAIL_TO`-style address elsewhere in `.env` has a similar typo was
+  not audited.
+- The transcript-classification approach (`_extract_caller_turns` + keyword lists) is a
+  heuristic, not a real NLU classifier — worth revisiting if a future transcript still
+  misroutes despite excluding Cora's own lines.
