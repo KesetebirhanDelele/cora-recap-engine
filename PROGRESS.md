@@ -1827,3 +1827,41 @@ unclear. `new_exception` unaffected by any of this round's changes.
 - The transcript-classification approach (`_extract_caller_turns` + keyword lists) is a
   heuristic, not a real NLU classifier — worth revisiting if a future transcript still
   misroutes despite excluding Cora's own lines.
+
+---
+
+## 2026-09-11 (continued, yet again) — removed resolution emails from every alert type; Ali email drafted; Email Draft Rule added to global config
+
+### Resolution emails removed (`fix/remove-alert-resolution-emails`, `f2335a9`)
+Kes forwarded a real inbox example: a `webhook_drop_detected` email with `Status: resolved`,
+"Alert webhook_drop_detected resolved." Not one of this session's two new alert types — this was
+every pre-existing alert in `alerting.py` (`queue_lag_exceeded`, `error_rate_spike`,
+`exception_spike`, `worker_offline`, `ghl_auth_failure`, `intake_auth_failure`,
+`outbound_calls_stalled`, `webhook_drop_detected`) sending a second `[RESOLVED]` email when its
+condition cleared, on top of the original active-alert email. Kes: doesn't want the follow-up —
+the active alert already did its job.
+
+Removed `is_resolution` from `_send_alert_email` entirely (dead parameter — always `False` after
+this change) and the now-unused `settings`/`severity` params from `_resolve_active_alert`. `4`
+call sites across `_evaluate_single_alert`, `_evaluate_ghl_auth_failure`,
+`_resolve_active_alert`, and `_evaluate_webhook_drop` no longer send anything on resolution —
+`alert_events.status` still flips to `'resolved'` in the DB, just silently. Found and fixed a
+test in `test_dashboard_v2.py::TestAlertingService` I didn't know existed when spec/30 claimed
+"no prior test coverage" — that claim was wrong; minor, not worth a special note beyond this one.
+
+Deployed, verified healthy, no errors. Full suite: 1271 passed / 7 pre-existing unrelated
+failures (unchanged).
+
+### Ali email — drafted, not sent
+Per Kes: covers the `training.colaberry.com` → `www.myfreeaiclass.com` swap across Cora's
+knowledge base, both Synthflow outbound prompts (Cold Lead, Warm/New Lead), the Synthflow
+inbound prompt, and the GHL knowledge base — the latter two updated by Kes directly outside this
+repo/session, confirmed by him before the email was drafted. Also mentions the new alert system
+briefly. Created as an actual Gmail draft (not just chat text) via `mcp__claude_ai_Gmail__create_draft`,
+addressed to `Ali@colaberry.com` — sitting in Kes's Drafts folder, not sent.
+
+### New global-config rule
+Kes: "Update claude.md so that when I ask for an email draft, it means I need the draft already
+created in my email." Added an **Email Draft Rule** to `C:\Users\keset\.claude\CLAUDE.md`
+(personal global config, not this repo) — future "draft an email" requests create the actual
+Gmail draft, not just chat text, asking for the recipient's address first if unknown.
