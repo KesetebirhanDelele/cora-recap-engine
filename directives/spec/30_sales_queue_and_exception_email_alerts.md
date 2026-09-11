@@ -5,6 +5,7 @@
 | Per-exception email (`new_exception`) | **DONE.** One email per newly-opened `exceptions` row, any type/severity, capped at 20/cycle. To Kes. |
 | Sales-queue urgent-notice email (`sales_queue_urgent`) | **DONE, enabled.** One email per lead entering "urgent" sales priority, routed to Rose and/or Taiwo by topic keyword or by name, using a friendly human-facing template (not the generic system-alert one). Fires exactly once per lead, ever — not tracked against resolution (revised 2026-09-11, see below). Gated by `ALERT_SALES_QUEUE_ENABLED` (default `true` as of 2026-09-11, Kes confirmed both routing and template) — the flag exists so it *can* be switched off without a redeploy if needed; this is the one alert type in the system that emails people other than Kes. |
 | `ALERT_EMAIL_TO` multi-recipient bug | **FIXED.** Was documented as comma-separated but never split before handing to `smtplib`. |
+| Resolution emails (all alert types) | **REMOVED, 2026-09-11.** Every alert type in `alerting.py` — not just the two new ones — used to send a second `[RESOLVED]` email when its condition cleared. Kes: he doesn't want a follow-up email for something already resolved; the active alert already did its job. `is_resolution` parameter removed from `_send_alert_email` entirely (was always `False` after this change); `_resolve_active_alert`'s now-unused `settings`/`severity` params removed too. Status transitions in `alert_events` are unaffected — only the email send was cut. |
 
 ## Self-contained problem statement
 

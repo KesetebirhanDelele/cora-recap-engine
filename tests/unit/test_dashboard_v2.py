@@ -357,7 +357,6 @@ class TestAlertingService:
                 severity="critical",
                 message="Test alert",
                 now=datetime.now(tz=timezone.utc),
-                is_resolution=False,
             )
         mock_smtp.assert_not_called()
 

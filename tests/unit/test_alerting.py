@@ -184,7 +184,6 @@ def test_send_alert_email_splits_comma_separated_recipients(mock_smtp_cls):
     _send_alert_email(
         settings=settings, alert_id="a1", alert_type="queue_lag_exceeded",
         severity="critical", message="test", now=datetime.now(tz=timezone.utc),
-        is_resolution=False,
     )
 
     assert mock_server.sendmail.call_count == 1
@@ -204,7 +203,7 @@ def test_send_alert_email_to_override_bypasses_default_recipient(mock_smtp_cls):
     _send_alert_email(
         settings=settings, alert_id="a1", alert_type="sales_queue_urgent",
         severity="warning", message="test", now=datetime.now(tz=timezone.utc),
-        is_resolution=False, to_override=["roselen@colaberry.com"],
+        to_override=["roselen@colaberry.com"],
     )
 
     to_addrs = mock_server.sendmail.call_args[0][1]
@@ -217,7 +216,7 @@ def test_send_alert_email_skips_when_smtp_disabled(mock_smtp_cls):
     from datetime import datetime, timezone
     _send_alert_email(
         settings=settings, alert_id="a1", alert_type="x", severity="warning",
-        message="test", now=datetime.now(tz=timezone.utc), is_resolution=False,
+        message="test", now=datetime.now(tz=timezone.utc),
     )
     mock_smtp_cls.assert_not_called()
 

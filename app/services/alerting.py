@@ -239,15 +239,17 @@ def _evaluate_single_alert(
         session.add(row)
         session.flush()
         _send_alert_email(settings=settings, alert_id=alert_id, alert_type=alert_type,
-                          severity=defn["severity"], message=msg, now=now,
-                          is_resolution=False)
+                          severity=defn["severity"], message=msg, now=now)
         # Mark email_sent_at
         session.execute(
             text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
             {"now": now, "id": alert_id},
         )
     else:
-        # Condition cleared — resolve any active row
+        # Condition cleared — resolve any active row. Per Kes (2026-09-11):
+        # no resolution email, status update only. The active alert already
+        # told them about the problem; a follow-up "it's fine now" email is
+        # noise, not signal.
         if existing:
             session.execute(
                 text("""
@@ -256,16 +258,6 @@ def _evaluate_single_alert(
                     WHERE alert_type = :alert_type AND status = 'active'
                 """),
                 {"now": now, "alert_type": alert_type},
-            )
-            resolve_msg = f"Alert {alert_type} resolved (value={value})"
-            _send_alert_email(
-                settings=settings,
-                alert_id=existing[0],
-                alert_type=alert_type,
-                severity=defn["severity"],
-                message=resolve_msg,
-                now=now,
-                is_resolution=True,
             )
 
 
@@ -318,12 +310,13 @@ def _evaluate_ghl_auth_failure(
         session.add(row_obj)
         session.flush()
         _send_alert_email(settings=settings, alert_id=alert_id, alert_type=alert_type,
-                          severity="critical", message=msg, now=now, is_resolution=False)
+                          severity="critical", message=msg, now=now)
         session.execute(
             text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
             {"now": now, "id": alert_id},
         )
     else:
+        # No resolution email — see _evaluate_single_alert's matching comment.
         if existing:
             session.execute(
                 text("""
@@ -333,10 +326,6 @@ def _evaluate_ghl_auth_failure(
                 """),
                 {"now": now, "alert_type": alert_type},
             )
-            _send_alert_email(settings=settings, alert_id=existing[0],
-                              alert_type=alert_type, severity="critical",
-                              message=f"Alert {alert_type} resolved", now=now,
-                              is_resolution=True)
 
 
 # ── Shared upsert / resolve helpers (used by the checks below) ────────────────
@@ -389,7 +378,7 @@ def _upsert_active_alert(
     ))
     session.flush()
     _send_alert_email(settings=settings, alert_id=alert_id, alert_type=alert_type,
-                      severity=severity, message=message, now=now, is_resolution=False)
+                      severity=severity, message=message, now=now)
     session.execute(
         text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
         {"now": now, "id": alert_id},
@@ -398,14 +387,14 @@ def _upsert_active_alert(
 
 def _resolve_active_alert(
     session: Session,
-    settings: Any,
     now: datetime,
     *,
     alert_type: str,
-    severity: str,
 ) -> None:
-    """Resolve any active row for alert_type + send one resolution email.
-    No-op when nothing is active."""
+    """Resolve any active row for alert_type. No-op when nothing is active.
+    No resolution email — see _evaluate_single_alert's matching comment
+    (2026-09-11): the active alert already told them about the problem, a
+    follow-up "it's fine now" email is noise."""
     existing = session.execute(
         text("""
             SELECT id FROM alert_events
@@ -423,9 +412,6 @@ def _resolve_active_alert(
         """),
         {"now": now, "t": alert_type},
     )
-    _send_alert_email(settings=settings, alert_id=existing[0], alert_type=alert_type,
-                      severity=severity, message=f"Alert {alert_type} resolved",
-                      now=now, is_resolution=True)
 
 
 # ── Lead-intake auth-failure alert ───────────────────────────────────────────
@@ -465,7 +451,7 @@ def _evaluate_intake_auth_failure(
             current_value=float(count), threshold=1.0,
         )
     else:
-        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        _resolve_active_alert(session, now, alert_type=alert_type)
 
 
 # ── Outbound-call stall alert ────────────────────────────────────────────────
@@ -494,7 +480,7 @@ def _evaluate_outbound_stall(
         from app.core.mode_flags import get_mode_flags
         flags = get_mode_flags(session, settings)
         if flags.system_paused or flags.outbound_campaigns_paused:
-            _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+            _resolve_active_alert(session, now, alert_type=alert_type)
             return
     except Exception as exc:
         logger.warning("outbound_stall: mode-flag read failed, continuing: %s", exc)
@@ -511,7 +497,7 @@ def _evaluate_outbound_stall(
         logger.warning("outbound_stall: active-window check failed, assuming active: %s", exc)
         any_active = True
     if not any_active:
-        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        _resolve_active_alert(session, now, alert_type=alert_type)
         return
 
     hours = int(getattr(settings, "alert_outbound_stall_hours", 4) or 4)
@@ -538,7 +524,7 @@ def _evaluate_outbound_stall(
             current_value=0.0, threshold=1.0,
         )
     else:
-        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        _resolve_active_alert(session, now, alert_type=alert_type)
 
 
 # ── Webhook drop alert ────────────────────────────────────────────────────────
@@ -650,13 +636,14 @@ def _evaluate_webhook_drop(
         session.flush()
         _send_alert_email(
             settings=settings, alert_id=alert_id, alert_type=alert_type,
-            severity="warning", message=msg, now=now, is_resolution=False,
+            severity="warning", message=msg, now=now,
         )
         session.execute(
             text("UPDATE alert_events SET email_sent_at = :now WHERE id = :id"),
             {"now": now, "id": alert_id},
         )
     else:
+        # No resolution email — see _evaluate_single_alert's matching comment.
         if existing:
             session.execute(
                 text("""
@@ -665,12 +652,6 @@ def _evaluate_webhook_drop(
                     WHERE alert_type = :alert_type AND status = 'active'
                 """),
                 {"now": now, "alert_type": alert_type},
-            )
-            _send_alert_email(
-                settings=settings, alert_id=existing[0], alert_type=alert_type,
-                severity="warning",
-                message=f"Alert {alert_type} resolved",
-                now=now, is_resolution=True,
             )
 
 
@@ -743,7 +724,7 @@ def _evaluate_new_exceptions(session: Session, settings: Any, now: datetime) -> 
         msg = f"New exception: type={exc_type} entity={entity_type}:{entity_id}{detail}"
         _send_alert_email(
             settings=settings, alert_id=exc_id, alert_type="new_exception",
-            severity=severity or "warning", message=msg, now=now, is_resolution=False,
+            severity=severity or "warning", message=msg, now=now,
         )
 
 
@@ -1059,12 +1040,14 @@ def _send_alert_email(
     severity: str,
     message: str,
     now: datetime,
-    is_resolution: bool,
     to_override: list[str] | None = None,
 ) -> None:
     """
     Send a generic system-alert email (queue lag, exception spike,
-    new_exception, etc.) via SMTP.
+    new_exception, etc.) via SMTP. Only ever sent for a new/active alert —
+    no resolution email (removed 2026-09-11 per Kes: the active alert
+    already told them about the problem, a follow-up "it's fine now" email
+    is noise, not signal).
 
     to_override: explicit recipient list, bypassing settings.alert_email_to.
     """
@@ -1076,14 +1059,12 @@ def _send_alert_email(
         # single un-split string as one (invalid) RCPT TO address.
         to_addrs = (settings.alert_email_to or "").split(",")
 
-    subject_prefix = "[RESOLVED]" if is_resolution else f"[{severity.upper()}]"
-    subject = f"{subject_prefix} Cora Alert: {alert_type}"
+    subject = f"[{severity.upper()}] Cora Alert: {alert_type}"
 
     body_lines = [
         f"Alert ID: {alert_id}",
         f"Type: {alert_type}",
         f"Severity: {severity}",
-        f"Status: {'resolved' if is_resolution else 'active'}",
         f"Message: {message}",
         f"Time: {now.isoformat()}",
         "",
