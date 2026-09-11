@@ -6,7 +6,7 @@ _Source of truth for Cora (AI Admissions Assistant). Each section is written to 
 
 ## About Colaberry
 
-Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com**.
+Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **www.myfreeaiclass.com**.
 
 ---
 
@@ -29,7 +29,7 @@ The AI Systems Architect Accelerator is built to fit around a full-time job: it 
 | Class clock times | Confirmed with enrolled students; specific times not yet published |
 | Start date | Rolling enrollment — no fixed start date, begin anytime |
 
-All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create a free account at training.colaberry.com and begin exploring the material immediately.
+All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create a free account at www.myfreeaiclass.com and begin exploring the material immediately.
 
 ---
 
@@ -89,7 +89,7 @@ Scholarships are **not currently available** for the AI Systems Architect Accele
 
 ## How to Enroll / Getting Started
 
-The easiest way to get started with the AI Systems Architect Accelerator is to **create a free account at training.colaberry.com**. There is no payment and no commitment for the free Explorer plan, and a new learner can explore the material right away.
+The easiest way to get started with the AI Systems Architect Accelerator is to **create a free account at www.myfreeaiclass.com**. There is no payment and no commitment for the free Explorer plan, and a new learner can explore the material right away.
 
 When a learner is ready for full access — all 12 weeks, live classes, projects, mentorship, internship, and certification prep — upgrading takes just a couple of clicks from inside their account, and access unlocks as soon as payment clears.
 
