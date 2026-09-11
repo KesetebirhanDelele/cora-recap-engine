@@ -508,6 +508,86 @@ class TestDelayedAlertEmails:
             _send_pending_delayed_alert_emails(session, settings, now)
         mock_smtp.assert_not_called()
 
+    def test_resolution_email_sent_when_previously_notified(self, session):
+        """Per Kes (2026-09-11, revised): an alert that DID notify (crossed
+        its delay and emailed, or was never delay-eligible) gets a
+        resolution email when it clears -- closure on something you know
+        about."""
+        from app.models.alert_event import AlertEvent
+        from app.services.alerting import _evaluate_single_alert
+
+        settings = self._make_settings()
+        now = datetime.now(tz=timezone.utc)
+        session.add(AlertEvent(
+            id="was-notified-id", alert_type="queue_lag_exceeded", severity="critical",
+            status="active", message="Lag 500s > 300s", last_seen_at=now,
+            created_at=now - timedelta(seconds=1000), email_sent_at=now - timedelta(seconds=100),
+        ))
+        session.flush()
+
+        defn = {
+            "alert_type": "queue_lag_exceeded",
+            "severity": "critical",
+            "metric_key": "queue_lag_seconds",
+            "threshold_setting": "alert_queue_lag_threshold_seconds",
+            "condition": "gt",
+            "message_template": "Lag {value:.0f}s > {threshold:.0f}s",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value.__enter__ = MagicMock(return_value=mock_server)
+            mock_smtp.return_value.__exit__ = MagicMock(return_value=False)
+            _evaluate_single_alert(
+                session=session, settings=settings, defn=defn,
+                health={"queue_lag_seconds": 10.0},  # below threshold -> resolved
+                now=now, dedup_window=timedelta(seconds=3600),
+            )
+        mock_server.sendmail.assert_called_once()
+        sent_body = mock_server.sendmail.call_args[0][2]
+        assert "RESOLVED" in sent_body
+
+        row = session.execute(
+            text("SELECT status FROM alert_events WHERE id = 'was-notified-id'")
+        ).fetchone()
+        assert row[0] == "resolved"
+
+    def test_resolution_email_not_sent_when_never_notified(self, session):
+        """An alert that self-resolved before ever crossing its delay
+        (email_sent_at still NULL) must resolve silently -- no email at
+        all, not even a resolution one."""
+        from app.models.alert_event import AlertEvent
+        from app.services.alerting import _evaluate_single_alert
+
+        settings = self._make_settings()
+        now = datetime.now(tz=timezone.utc)
+        session.add(AlertEvent(
+            id="never-notified-id", alert_type="queue_lag_exceeded", severity="critical",
+            status="active", message="Lag 500s > 300s", last_seen_at=now,
+            created_at=now - timedelta(seconds=100), email_sent_at=None,
+        ))
+        session.flush()
+
+        defn = {
+            "alert_type": "queue_lag_exceeded",
+            "severity": "critical",
+            "metric_key": "queue_lag_seconds",
+            "threshold_setting": "alert_queue_lag_threshold_seconds",
+            "condition": "gt",
+            "message_template": "Lag {value:.0f}s > {threshold:.0f}s",
+        }
+        with patch("smtplib.SMTP") as mock_smtp:
+            _evaluate_single_alert(
+                session=session, settings=settings, defn=defn,
+                health={"queue_lag_seconds": 10.0},
+                now=now, dedup_window=timedelta(seconds=3600),
+            )
+        mock_smtp.assert_not_called()
+
+        row = session.execute(
+            text("SELECT status FROM alert_events WHERE id = 'never-notified-id'")
+        ).fetchone()
+        assert row[0] == "resolved"  # still resolves in the DB, just silently
+
 
 class TestIntakeAuthFailureAlert:
     """alerting._evaluate_intake_auth_failure — driven by open
