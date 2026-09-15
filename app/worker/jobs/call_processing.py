@@ -488,15 +488,29 @@ def process_call_event(job_id: str) -> None:
                 return
 
             # 5. Route by normalized status
+            #
+            # campaign_name: use call_event.campaign_name (resolved by
+            # _resolve_outbound_campaign for outbound calls — see its
+            # docstring) rather than the raw payload.get("campaign_name").
+            # Synthflow's self-reported campaign_name is unreliable for
+            # outbound calls (New Lead and Cold Lead share one physical
+            # workflow, so it always says "New Lead" regardless of which
+            # campaign actually placed the call). call_event.campaign_name
+            # falls back to the raw payload value itself when resolution
+            # found no matching launch record, so this is never less correct
+            # than the old behavior. Confirmed 2026-09-15: passing the raw
+            # payload value here mislabeled Cold Lead voicemail-tier retries
+            # as "New Lead" downstream — see PROGRESS.md.
+            resolved_campaign_name = call_event.campaign_name or payload.get("campaign_name")
             if call_status in _COMPLETED_STATUSES:
                 _route_to_call_through(
                     session, job, call_id, contact_id, call_event.id, settings,
-                    campaign_name=payload.get("campaign_name"),
+                    campaign_name=resolved_campaign_name,
                 )
             elif call_status in _VOICEMAIL_STATUSES:
                 _route_to_voicemail(
                     session, job, call_id, contact_id, call_event.id, settings,
-                    campaign_name=payload.get("campaign_name"),
+                    campaign_name=resolved_campaign_name,
                     lead_name=payload.get("lead_name", "") or payload.get("name", ""),
                 )
             elif call_status in _FAILED_STATUSES:
@@ -545,7 +559,7 @@ def process_call_event(job_id: str) -> None:
                 )
                 _route_to_call_through(
                     session, job, call_id, contact_id, call_event.id, settings,
-                    campaign_name=payload.get("campaign_name"),
+                    campaign_name=resolved_campaign_name,
                 )
 
             complete_job(session, job)

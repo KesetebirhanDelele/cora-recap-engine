@@ -442,6 +442,83 @@ def test_process_call_event_voicemail_routes_correctly(session):
         mock_ct.assert_not_called()
 
 
+def test_process_call_event_voicemail_uses_resolved_campaign_not_raw_payload(session):
+    """
+    Regression test for the 2026-09-15 Cold Lead mislabeling bug: when
+    _resolve_outbound_campaign has already corrected call_event.campaign_name
+    (e.g. a real Cold Lead call whose Synthflow webhook self-reports
+    campaign_name="New Lead"), process_call_event must forward that
+    corrected value to _route_to_voicemail — not the raw, unreliable
+    payload.get("campaign_name") — since it seeds process_voicemail_tier's
+    payload and propagates through every subsequent voicemail-tier retry.
+    """
+    from app.worker.jobs.call_processing import process_call_event
+
+    call_id = str(uuid.uuid4())
+    payload = {
+        "call_id": call_id,
+        "call_status": "hangup_on_voicemail",
+        "campaign_name": "New Lead",  # Synthflow's self-reported (wrong) value
+    }
+    job = _make_mock_job(payload)
+
+    with (
+        patch("app.worker.jobs.call_processing.get_sync_session") as mock_sess_ctx,
+        patch("app.worker.jobs.call_processing.claim_job", return_value=job),
+        patch("app.worker.jobs.call_processing.mark_running"),
+        patch("app.worker.jobs.call_processing.complete_job"),
+        patch("app.worker.jobs.call_processing.fail_job"),
+        patch("app.worker.jobs.call_processing._create_call_event") as mock_create,
+        patch("app.worker.jobs.call_processing._route_to_voicemail") as mock_vm,
+        patch("app.worker.jobs.call_processing._route_to_call_through") as mock_ct,
+        patch("app.worker.jobs.call_processing.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.call_processing.get_settings"),
+    ):
+        mock_sess_ctx.return_value.__enter__ = lambda s, *a: MagicMock()
+        mock_sess_ctx.return_value.__exit__ = MagicMock(return_value=False)
+        # Simulates _resolve_outbound_campaign having already corrected this
+        # to "Cold Lead" based on Cora's own launch record.
+        mock_create.return_value = MagicMock(id="ce-1", campaign_name="Cold Lead")
+
+        process_call_event("job-1")
+
+        mock_vm.assert_called_once()
+        assert mock_vm.call_args.kwargs["campaign_name"] == "Cold Lead"
+        mock_ct.assert_not_called()
+
+
+def test_process_call_event_falls_back_to_raw_payload_when_unresolved(session):
+    """When call_event.campaign_name is falsy (no launch record found —
+    _resolve_outbound_campaign returned None), fall back to the raw payload
+    value rather than passing None along."""
+    from app.worker.jobs.call_processing import process_call_event
+
+    call_id = str(uuid.uuid4())
+    payload = {"call_id": call_id, "call_status": "completed", "campaign_name": "Inbound"}
+    job = _make_mock_job(payload)
+
+    with (
+        patch("app.worker.jobs.call_processing.get_sync_session") as mock_sess_ctx,
+        patch("app.worker.jobs.call_processing.claim_job", return_value=job),
+        patch("app.worker.jobs.call_processing.mark_running"),
+        patch("app.worker.jobs.call_processing.complete_job"),
+        patch("app.worker.jobs.call_processing.fail_job"),
+        patch("app.worker.jobs.call_processing._create_call_event") as mock_create,
+        patch("app.worker.jobs.call_processing._route_to_voicemail") as mock_vm,
+        patch("app.worker.jobs.call_processing._route_to_call_through") as mock_ct,
+        patch("app.worker.jobs.call_processing.get_worker_id", return_value="w1"),
+        patch("app.worker.jobs.call_processing.get_settings"),
+    ):
+        mock_sess_ctx.return_value.__enter__ = lambda s, *a: MagicMock()
+        mock_sess_ctx.return_value.__exit__ = MagicMock(return_value=False)
+        mock_create.return_value = MagicMock(id="ce-2", campaign_name=None)
+
+        process_call_event("job-1")
+
+        mock_ct.assert_called_once()
+        assert mock_ct.call_args.kwargs["campaign_name"] == "Inbound"
+
+
 def test_process_call_event_completed_routes_to_call_through(session):
     from app.worker.jobs.call_processing import process_call_event
 
