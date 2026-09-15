@@ -1971,3 +1971,58 @@ Deployed (`git pull && docker compose up -d --build` on Hetzner). Verified post-
 contains the new "ready to enroll now" branch text. All containers healthy, no new errors (one
 `AbandonedJobError` in worker-quality logs is the routine artifact of restarting a worker
 mid-job during deploy, unrelated to this change).
+
+## Session: 2026-09-14/15 — InternalComment 401 triage, disguised-timeout retry fix, new_exception first-run alert bug
+
+**Branch**: `feat/ghl-call-conversation-sync` (worked directly, no feature branch cut — small,
+isolated fixes; not yet committed as of this entry)
+
+### 1. Triaged a `internal_comment_note_failed` alert (job_id=4ffedaf0-8a98-405b-996e-f91d60e26d5a)
+
+Root cause was **not** a bad `GHL_CONVERSATIONS_API_KEY` (confirmed non-empty in
+`worker-callbacks`, no pattern of repeated 401s in 72h of logs). GHL's backend occasionally
+reports its own internal command timeout as `HTTP 401 {"statusCode":401,"message":"Command timed
+out"}` instead of a 5xx. `app/adapters/ghl_internal_comment.py`'s retry loop only treated
+`{429,500,502,503,504}`/timeouts as retryable, so this one-off transient GHL error went straight
+to `scheduled_jobs.status='failed'` with zero retries.
+
+**Fix**: added `_is_disguised_timeout_401()` — retries a 401 only when the body exactly matches
+that shape; any other 401 body (a real bad-token rejection) still fails immediately, no retry.
+Two new tests in `test_ghl_internal_comment_adapter.py`. Manually requeued the stuck job
+(reset `scheduled_jobs` row to `pending`, `run_at=now()`) — it completed successfully on retry,
+confirming the transient diagnosis. The `exceptions` row (`4437ceb1-...`) this created is still
+`status='open'` — nothing auto-resolves an exception when its underlying job later succeeds on a
+requeue; left as-is (Kes would resolve/ignore it in the dashboard), not in scope of this fix.
+
+### 2. Found and fixed why no email arrived for that exception
+
+`_evaluate_new_exceptions` (spec/30, `app/services/alerting.py`) is supposed to email once per
+newly-opened exception, any type/severity. It used a single `is_first_run` boolean (ledger of
+`exception_notified:*` rows completely empty = first run = seed every currently-open exception
+silently, no email, to avoid a backlog flood on first deploy). This was, in fact, the *first
+time this evaluator had ever run against an open exception* since it shipped 2026-09-11
+(`79fcfcf`) — confirmed via `alert_events`: exactly one `exception_notified:*` row exists in the
+whole system, created at the moment this incident's exception was processed. So the InternalComment
+failure — a brand-new, live exception — got misclassified as "pre-existing backlog" and silently
+swallowed, purely due to bad luck of being the first exception the feature ever saw.
+
+**Fix (per Kes: exceptions represent permanent failures — nothing in this codebase auto-retries
+a failed scheduled_job or auto-resolves an exception, confirmed by reading
+`app/worker/exceptions.py` — so there's no self-healing case to wait out here, unlike the
+aggregate health-metric alerts which debounce via `_ALERT_EMAIL_DELAY_SECONDS` because those
+genuinely can self-clear):** replaced the `is_first_run` flag with a per-exception age check —
+`_NEW_EXCEPTION_BACKLOG_CUTOFF_SECONDS = 300`. An exception already older than 5 minutes the
+first time it's seen is backlog (silent); anything newer emails immediately, regardless of
+whether the ledger was empty a moment ago. This also closes a second latent flood risk the old
+flag never covered: after any metrics-worker downtime, a pile of accumulated old exceptions
+would previously all email at once on catch-up (ledger already non-empty by then) — age-based
+backlog detection suppresses that too. Four tests in `test_alerting.py` cover: old exception on
+first-ever sight (silent), fresh exception on first-ever sight (emails — the actual regression),
+downtime-catchup backlog batch (silent), no open rows (no-op).
+
+### Status as of this entry
+
+Both fixes implemented and tested locally (`pytest tests/unit/test_ghl_internal_comment_adapter.py`
+8/8 pass, `pytest tests/unit/test_alerting.py` 32/32 pass, full suite 1259 passed / 7 pre-existing
+unrelated failures confirmed via `git stash` baseline diff). **Not yet committed or deployed** —
+Kes has not yet given the go-ahead to commit per the Pre-Ship Debrief Rule.

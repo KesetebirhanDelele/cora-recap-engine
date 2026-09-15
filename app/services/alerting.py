@@ -767,24 +767,50 @@ def _evaluate_webhook_drop(
 # up over the next few cycles.
 _NEW_EXCEPTION_BATCH_LIMIT = 20
 
+# An exception already older than this by the time it's first seen is
+# treated as pre-existing backlog (seed the ledger, no email) rather than a
+# live event. See _evaluate_new_exceptions docstring for why this replaced
+# a first-run flag.
+_NEW_EXCEPTION_BACKLOG_CUTOFF_SECONDS = 300
+
 
 def _evaluate_new_exceptions(session: Session, settings: Any, now: datetime) -> None:
     """
     Email once for every newly-opened exceptions row (spec/30), any
-    type/severity. Dedup uses alert_events as a per-exception notified-ledger
+    type/severity. Every row in `exceptions` already represents a permanent
+    failure — nothing in this codebase auto-retries a failed scheduled_job
+    or auto-resolves an exception (see app/worker/exceptions.py: only
+    operator dashboard actions call resolve_exception/ignore_exception), so
+    unlike the aggregate health-metric alerts above (which debounce via
+    _ALERT_EMAIL_DELAY_SECONDS because they genuinely can self-clear), there
+    is no self-healing grace period here — every exception this evaluator
+    decides is "live" emails immediately.
+
+    Dedup uses alert_events as a per-exception notified-ledger
     (alert_type=f"exception_notified:{exception_id}") rather than a schema
     change to `exceptions` — same trick as _evaluate_sales_queue_urgent.
 
-    First-ever run seeds the ledger for every currently-open exception
-    without emailing (avoids a backlog flood the first time this ships or
-    redeploys after downtime) — detected by the ledger being completely
-    empty.
+    Backlog vs. live event is decided per-exception by age, not by whether
+    this is the evaluator's first-ever run: an exception is "backlog" (seed
+    the ledger silently, no email) only if it's already older than
+    _NEW_EXCEPTION_BACKLOG_CUTOFF_SECONDS by the time it's first seen. A
+    single first-run boolean (the previous design) can't tell apart two
+    different situations:
+      - a real backlog flood on first deploy (old exceptions — correctly
+        silent), vs.
+      - a genuinely brand-new exception that happens to be the very first
+        one this evaluator ever sees (must still email — this is exactly
+        what got silently swallowed on 2026-09-14, job_id=4ffedaf0-...,
+        the internal_comment_note_failed exception that started this).
+    Per-exception age also closes a related gap the flag never covered: if
+    the metrics worker is ever down for a while and comes back to a pile of
+    exceptions that accumulated during the outage, a first-run flag would
+    already read False (ledger non-empty from before the outage) and would
+    email every accumulated exception at once — the exact flood this
+    feature exists to prevent, just triggered by downtime instead of first
+    deploy. Age-based backlog detection handles both cases uniformly.
     """
     from app.models.alert_event import AlertEvent
-
-    is_first_run = session.execute(text("""
-        SELECT 1 FROM alert_events WHERE alert_type LIKE 'exception_notified:%' LIMIT 1
-    """)).fetchone() is None
 
     rows = session.execute(text("""
         SELECT e.id, e.type, e.severity, e.entity_type, e.entity_id, e.context_json, e.created_at
@@ -813,8 +839,17 @@ def _evaluate_new_exceptions(session: Session, settings: Any, now: datetime) -> 
         ))
         session.flush()
 
-        if is_first_run:
-            continue  # seed the ledger silently, no email for pre-existing backlog
+        # Raw SQL rows come back as naive datetimes representing UTC — same
+        # convention _evaluate_single_alert uses for existing[1] above.
+        # Missing created_at fails toward alerting (age 0 -> treated as
+        # live), matching this module's established "fail toward alerting"
+        # convention (see _evaluate_outbound_stall).
+        age_seconds = (
+            (now - created_at.replace(tzinfo=timezone.utc)).total_seconds()
+            if created_at is not None else 0.0
+        )
+        if age_seconds > _NEW_EXCEPTION_BACKLOG_CUTOFF_SECONDS:
+            continue  # pre-existing backlog, not a live event — stay silent
 
         detail = ""
         if context_json:

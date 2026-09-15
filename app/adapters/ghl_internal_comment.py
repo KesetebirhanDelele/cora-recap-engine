@@ -48,6 +48,29 @@ _VERSION_HEADER = "2021-07-28"
 _SEPARATOR = "\n\n--------------------------\n\n"
 
 
+def _is_disguised_timeout_401(resp: httpx.Response) -> bool:
+    """
+    GHL occasionally reports its own backend command timeout as HTTP 401
+    with body {"statusCode":401,"message":"Command timed out"} instead of
+    a 5xx — confirmed 2026-09-14 (job_id=4ffedaf0-8a98-405b-996e-f91d60e26d5a,
+    call_event_id=1ce247b3-2c49-4447-ac3a-66efa61ba9be): the write failed
+    on first attempt with this exact body, then succeeded immediately on a
+    bare requeue with no credential change. Treat only this specific shape
+    as transient; any other 401 body is a real auth rejection and must
+    raise, not retry — retrying a genuine bad-token 401 would just waste
+    the retry budget on every future write.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return (
+        isinstance(body, dict)
+        and body.get("statusCode") == 401
+        and "timed out" in str(body.get("message", "")).lower()
+    )
+
+
 class GhlInternalCommentError(RuntimeError):
     """Raised when a GHL InternalComment write fails after all retries."""
 
@@ -81,7 +104,10 @@ class GhlInternalCommentClient:
             try:
                 resp = self._http.request(method, path, **kwargs)
 
-                if resp.status_code in _RETRYABLE_STATUS:
+                retryable = resp.status_code in _RETRYABLE_STATUS or (
+                    resp.status_code == 401 and _is_disguised_timeout_401(resp)
+                )
+                if retryable:
                     if attempt < self.settings.ghl_retry_max:
                         logger.warning(
                             "GHL InternalComment transient error | status=%d attempt=%d/%d path=%s",

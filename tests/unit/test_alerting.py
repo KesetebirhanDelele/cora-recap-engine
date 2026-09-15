@@ -333,36 +333,44 @@ def _mock_session_dispatch(fetchall_by_query=None, fetchone_by_query=None):
 
 
 @patch("app.services.alerting._send_alert_email")
-def test_new_exceptions_first_run_seeds_without_emailing(mock_send):
-    from datetime import datetime, timezone
+def test_new_exceptions_old_exception_seeds_without_emailing(mock_send):
+    """Backlog (created well before the cutoff) stays silent — regardless of
+    ledger state, which no longer matters at all to this decision."""
+    from datetime import datetime, timedelta, timezone
     settings = _make_settings()
+    now = datetime.now(tz=timezone.utc)
+    old_created_at = (now - timedelta(hours=2)).replace(tzinfo=None)
     session = _mock_session_dispatch(
-        fetchone_by_query={"exception_notified:%": None},  # ledger empty -> first run
         fetchall_by_query={
             "FROM exceptions": [
-                ("exc-1", "call_analysis_failed", "critical", "call", "call-1", {"error": "x"}, None),
+                ("exc-1", "call_analysis_failed", "critical", "call", "call-1", {"error": "x"}, old_created_at),
             ]
         },
     )
-    _evaluate_new_exceptions(session, settings, datetime.now(tz=timezone.utc))
+    _evaluate_new_exceptions(session, settings, now)
 
     session.add.assert_called_once()
     mock_send.assert_not_called()
 
 
 @patch("app.services.alerting._send_alert_email")
-def test_new_exceptions_subsequent_run_emails_once(mock_send):
+def test_new_exceptions_fresh_exception_emails_even_on_very_first_run(mock_send):
+    """Regression test for 2026-09-14: an exception created moments ago must
+    email immediately even when it's the very first exception this
+    evaluator has ever seen (ledger completely empty) — the old is_first_run
+    flag silently swallowed exactly this case."""
     from datetime import datetime, timezone
     settings = _make_settings()
+    now = datetime.now(tz=timezone.utc)
+    fresh_created_at = now.replace(tzinfo=None)
     session = _mock_session_dispatch(
-        fetchone_by_query={"exception_notified:%": (1,)},  # ledger non-empty -> not first run
         fetchall_by_query={
             "FROM exceptions": [
-                ("exc-2", "send_sms_failed", "warning", "lead", "+15551234567", {"error": "timeout"}, None),
+                ("exc-2", "send_sms_failed", "warning", "lead", "+15551234567", {"error": "timeout"}, fresh_created_at),
             ]
         },
     )
-    _evaluate_new_exceptions(session, settings, datetime.now(tz=timezone.utc))
+    _evaluate_new_exceptions(session, settings, now)
 
     session.add.assert_called_once()
     mock_send.assert_called_once()
@@ -374,11 +382,34 @@ def test_new_exceptions_subsequent_run_emails_once(mock_send):
 
 
 @patch("app.services.alerting._send_alert_email")
+def test_new_exceptions_downtime_catchup_backlog_stays_silent(mock_send):
+    """A pile of old exceptions discovered after the metrics worker comes
+    back from downtime must stay silent even though the ledger is already
+    non-empty (simulated here — ledger state is no longer consulted at
+    all) — the flood case the old is_first_run flag didn't cover."""
+    from datetime import datetime, timedelta, timezone
+    settings = _make_settings()
+    now = datetime.now(tz=timezone.utc)
+    old_created_at = (now - timedelta(hours=6)).replace(tzinfo=None)
+    session = _mock_session_dispatch(
+        fetchall_by_query={
+            "FROM exceptions": [
+                ("exc-3", "ghl_write_failed", "critical", "call", "call-3", {"error": "x"}, old_created_at),
+                ("exc-4", "ghl_write_failed", "critical", "call", "call-4", {"error": "x"}, old_created_at),
+            ]
+        },
+    )
+    _evaluate_new_exceptions(session, settings, now)
+
+    assert session.add.call_count == 2
+    mock_send.assert_not_called()
+
+
+@patch("app.services.alerting._send_alert_email")
 def test_new_exceptions_no_open_rows_no_email(mock_send):
     from datetime import datetime, timezone
     settings = _make_settings()
     session = _mock_session_dispatch(
-        fetchone_by_query={"exception_notified:%": (1,)},
         fetchall_by_query={"FROM exceptions": []},
     )
     _evaluate_new_exceptions(session, settings, datetime.now(tz=timezone.utc))
