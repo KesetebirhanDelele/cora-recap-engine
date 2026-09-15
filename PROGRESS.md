@@ -2024,5 +2024,49 @@ downtime-catchup backlog batch (silent), no open rows (no-op).
 
 Both fixes implemented and tested locally (`pytest tests/unit/test_ghl_internal_comment_adapter.py`
 8/8 pass, `pytest tests/unit/test_alerting.py` 32/32 pass, full suite 1259 passed / 7 pre-existing
-unrelated failures confirmed via `git stash` baseline diff). **Not yet committed or deployed** —
-Kes has not yet given the go-ahead to commit per the Pre-Ship Debrief Rule.
+unrelated failures confirmed via `git stash` baseline diff). Committed `309bb47`, pushed, deployed
+to Hetzner (`git pull && docker compose up -d --build`) — all 13 containers healthy, `/health` 200,
+no errors in `worker-callbacks` logs post-restart.
+
+### Follow-up same session — verified April New Lead VM tiers exhausted; found and fixed Cold Lead → "New Lead" mislabeling (`a54d163`)
+
+Kes asked to verify the April 2026 New Lead cohort's voicemail tiers were fully exhausted (no
+leads still stuck cycling through retries 5 months later). Confirmed: 35 April New Lead leads,
+zero `process_voicemail_tier`/`launch_outbound_call` jobs in `pending`/`claimed`/`running` for
+any of them — everything terminal. One already-known, already-resolved item surfaced (the
+2026-07-16 Cold Lead webhook failure from the 2026-07-17 session, unrelated to April). No new
+issues in the April cohort itself.
+
+Follow-up ("any more new leads in general pending calls") surfaced a real, currently-live bug:
+89 (later 104 by the time of the fix) pending `launch_outbound_call`/`send_sms`/`send_email` jobs
+carried `payload_json.campaign_name = "New Lead"` while the lead's actual `lead_state.campaign_name`
+was `"Cold Lead"` — 100% of the sample, including a lead created as Cold Lead *that same day*.
+Two real consequences: (1) `outbound_jobs.py`'s slot-bumping logic treats `"new lead"` as
+priority — these mislabeled Cold Lead jobs were getting undue scheduling priority; (2) the
+Cold-Lead-only pause control checks the job's own payload `campaign_name` — pausing Cold Lead
+specifically would **not** have stopped these particular calls (confirmed not currently biting;
+`cold_lead_campaign_paused` was `false` at the time).
+
+**Root cause**, found by tracing one contact's full call/job history: `_resolve_outbound_campaign()`
+(the existing 2026-08-24 fix for Synthflow's unreliable self-reported `Agent`/`campaign_name` on
+outbound calls — New Lead and Cold Lead share one physical Synthflow workflow, so Synthflow's
+webhook always says "New Lead" regardless of which campaign actually placed the call) correctly
+repairs `call_events.campaign_name`, but `app/worker/jobs/call_processing.py`'s three
+`_route_to_voicemail`/`_route_to_call_through` call sites (process_call_event, lines ~494/499/548)
+kept passing the raw, uncorrected `payload.get("campaign_name")` instead. That wrong value seeds
+`process_voicemail_tier`'s payload, which `voicemail_jobs.py` prefers over `lead_state.campaign_name`
+when scheduling the next retry — so the mislabel propagates through every subsequent voicemail-tier
+retry and its SMS/email follow-ups.
+
+**Fix:** all three call sites now use `call_event.campaign_name or payload.get("campaign_name")`
+(falls back to the raw value only when `_resolve_outbound_campaign` found no matching launch
+record — e.g. inbound calls, unaffected). Two new regression tests in `test_call_processing.py`.
+Full suite: 1261 passed, same 7 pre-existing unrelated failures.
+
+**Production backfill:** 104 already-scheduled `pending`/`claimed` jobs (92 → 104 by the time
+Kes approved, as more got mis-scheduled by the still-live bug in between) had their
+`payload_json.campaign_name` corrected from `"New Lead"` to `"Cold Lead"` via a direct
+`jsonb_set` UPDATE, scoped to jobs where `lead_state.campaign_name = 'Cold Lead'` — verified
+zero mismatches remain after.
+
+Committed `a54d163`, pushed, deployed to Hetzner — all containers healthy, `/health` 200.
