@@ -19,9 +19,12 @@ Unresolved external IDs (config-driven, not hard-coded):
     happens at write time via resolve_field_id() from a fetched contact.
 
 Retry policy:
-  Retries on 429, 500, 502, 503, 504 and httpx.TimeoutException.
+  Retries on 429, 500, 502, 503, 504, httpx.TimeoutException, and GHL's
+  disguised-timeout 401 (body {"statusCode":401,"message":"Command timed
+  out"} — see _is_disguised_timeout_401).
   Bounded by settings.ghl_retry_max. Delay doubles per attempt (2^n seconds).
-  Non-retryable errors (4xx except 429) raise immediately.
+  Non-retryable errors (4xx except 429 and the disguised 401 above) raise
+  immediately.
 """
 from __future__ import annotations
 
@@ -37,6 +40,32 @@ logger = logging.getLogger(__name__)
 
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _VERSION_HEADER = "2021-07-28"
+
+
+def _is_disguised_timeout_401(resp: httpx.Response) -> bool:
+    """
+    GHL occasionally reports its own backend command timeout as HTTP 401
+    with body {"statusCode":401,"message":"Command timed out"} instead of
+    a 5xx — confirmed 2026-09-14 against GhlInternalCommentClient
+    (job_id=4ffedaf0-8a98-405b-996e-f91d60e26d5a) and again 2026-09-17
+    against this client's search_contact_by_phone (job_id=
+    b0254520-bda6-48b7-ace2-4c753b5c8bd6): a genuine, long-existing GHL
+    contact got misreported as unresolvable because this exact shape was
+    treated as a permanent auth failure instead of retried, which left the
+    caller writing to the raw phone number as a contact ID and 400ing.
+    Treat only this specific shape as transient; any other 401 body is a
+    real auth rejection and must raise, not retry — retrying a genuine
+    bad-token 401 would just waste the retry budget on every future call.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return False
+    return (
+        isinstance(body, dict)
+        and body.get("statusCode") == 401
+        and "timed out" in str(body.get("message", "")).lower()
+    )
 
 
 class GHLError(RuntimeError):
@@ -130,7 +159,10 @@ class GHLClient:
             try:
                 resp = self._http.request(method, path, headers=headers, **kwargs)
 
-                if resp.status_code in _RETRYABLE_STATUS:
+                retryable = resp.status_code in _RETRYABLE_STATUS or (
+                    resp.status_code == 401 and _is_disguised_timeout_401(resp)
+                )
+                if retryable:
                     if attempt < self.settings.ghl_retry_max:
                         logger.warning(
                             "GHL transient error | status=%d attempt=%d/%d path=%s",

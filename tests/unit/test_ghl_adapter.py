@@ -532,6 +532,41 @@ def test_does_not_retry_on_404():
     assert mock_http.request.call_count == 1  # no retries
 
 
+def test_retries_on_disguised_timeout_401_then_succeeds():
+    """GHL sometimes reports its own backend timeout as a 401 with
+    {"statusCode":401,"message":"Command timed out"} — confirmed live
+    2026-09-17 via search_contact_by_phone (job_id=
+    b0254520-bda6-48b7-ace2-4c753b5c8bd6), same shape previously confirmed
+    2026-09-14 against GhlInternalCommentClient. That specific shape must
+    be retried here too, not treated as a permanent auth failure."""
+    s = _settings(ghl_retry_max=2)
+    client, mock_http = _make_client(s)
+
+    first = _mock_response(401, {"statusCode": 401, "message": "Command timed out"})
+    second = _mock_response(200, {"contacts": []})
+    mock_http.request.side_effect = [first, second]
+
+    with patch("time.sleep"):
+        result = client._request("GET", "/contacts/", _retry_delay=0)
+
+    assert mock_http.request.call_count == 2
+    assert result == {"contacts": []}
+
+
+def test_genuine_401_raises_immediately_without_retrying():
+    """A real auth-rejection 401 (any body other than the disguised-timeout
+    shape) must fail fast — retrying it would just burn the retry budget on
+    every future call once a token is actually bad."""
+    s = _settings(ghl_retry_max=2)
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(401, {"statusCode": 401, "message": "Invalid JWT"})
+
+    with pytest.raises(GHLError, match="401"):
+        client._request("GET", "/contacts/", _retry_delay=0)
+
+    assert mock_http.request.call_count == 1  # no retries
+
+
 def test_raises_ghl_error_after_exhausting_retries():
     s = _settings(ghl_retry_max=2)
     client, mock_http = _make_client(s)

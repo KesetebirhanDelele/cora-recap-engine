@@ -322,6 +322,42 @@ Always dry-run first. Copy scripts into the container with `docker compose cp` s
 
 ---
 
+### WARNING: ghl_vm_message_update_failed
+
+**Symptoms**: Exceptions section shows `ghl_vm_message_update_failed`. Error text is one of:
+- `"Contact with id +1XXXXXXXXXX not found"` (400, phone number in the URL, not a GHL UUID)
+- `"GHL HTTP error: 401 ... Command timed out"` surfacing in `context_json.error` alongside the 400 above
+
+**Root cause (confirmed 2026-09-17, job_id=b0254520-bda6-48b7-ace2-4c753b5c8bd6)**: this is
+**not** a field-ID mismatch. `update_ghl_after_vm_message` resolves a phone-number `contact_id`
+to a real GHL UUID via `search_contact_by_phone` before writing. GHL occasionally reports its own
+backend timeout as `HTTP 401 {"statusCode":401,"message":"Command timed out"}` instead of a 5xx
+(same disguised-timeout shape as `ghl_auth_failure`'s sibling issue in
+`ghl_internal_comment.py`, first found 2026-09-14). `app/adapters/ghl.py`'s `GHLClient._request`
+now retries that exact shape (see `_is_disguised_timeout_401`), same fix already applied to
+`GhlInternalCommentClient`. If phone resolution still fails after retries — genuine no-match or
+any other error — `update_ghl_after_vm_message` fails the job explicitly with "Could not resolve
+GHL contact for phone ..." rather than attempting a write to `/contacts/{phone}` (which always
+400s and used to misreport as a field/API problem).
+
+1. Check the exception's `context_json.error`. If it contains the disguised-timeout 401 shape,
+   this was transient — the retry fix should prevent recurrence; confirm no new occurrences after
+   deploy.
+2. If the error is `"Could not resolve GHL contact for phone ..."`, verify whether the contact
+   actually exists in GHL for that phone number:
+   ```bash
+   python execution/test_scripts/test_ghl_writes.py --phone +1XXXXXXXXXX
+   ```
+   - Contact exists → re-run/retry the exception; if it still fails, check GHL API status and
+     whether the phone number format in our DB (`lead_state.normalized_phone`) matches what GHL
+     has on file for that contact.
+   - Contact does not exist → this lead was never created/synced in GHL; that's a data issue
+     upstream of this job, not a bug in the update path.
+3. Only if the error explicitly mentions field IDs (not contact resolution) does the older
+   `GHL_FIELD_*` env var guidance apply — check settings for `GHL_FIELD_*` env vars in that case.
+
+---
+
 ### WARNING: error_rate_spike
 
 **Symptoms**: Email received; error rate > 20%.
@@ -330,7 +366,7 @@ Always dry-run first. Copy scripts into the container with `docker compose cp` s
 2. Identify the dominant exception type. Common cases:
    - `call_processing_failed`: Synthflow webhook payload issue or Postgres write failure.
    - `crm_task_failed`: GHL API issue (see ghl_auth_failure runbook).
-   - `ghl_vm_message_update_failed`: GHL field ID mismatch (check settings for `GHL_FIELD_*` env vars).
+   - `ghl_vm_message_update_failed`: unresolved GHL contact (phone→UUID search failed/timed out) — see dedicated runbook entry above, not a field-ID mismatch.
    - `send_sms_failed` / `send_email_failed`: OpenAI failure or `generate_vm_followup` timeout.
 3. Retry a batch of exceptions if the root cause is transient (API timeout, network blip).
 4. If root cause is a code bug: fix, deploy, then retry.

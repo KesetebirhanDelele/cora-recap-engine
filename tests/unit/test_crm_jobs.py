@@ -7,6 +7,8 @@ Covers:
   3.  create_crm_task: dedupe — skips when TaskEvent status='created' exists
   4.  create_crm_task: missing call_event_id → fails job + creates exception
   5.  create_crm_task: missing CallEvent row → fails job + creates exception
+  5b. update_ghl_after_vm_message: unresolved phone → fails without writing
+  5c. update_ghl_after_vm_message: exception context carries full retry payload
   6.  send_student_summary: happy path — consent=YES, writes summary + audit
   7.  send_student_summary: consent=NO → completes without writing
   8.  send_student_summary: consent=UNKNOWN → completes without writing
@@ -28,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.models import Base, ScheduledJob
 from app.models.audit import AuditLog
 from app.models.call_event import CallEvent
+from app.models.exception import ExceptionRecord
 from app.models.summary import SummaryResult
 from app.models.task_event import TaskEvent
 
@@ -245,6 +248,88 @@ def test_create_crm_task_missing_call_event_row_fails_job(session):
 
     job_row = session.get(ScheduledJob, job.id)
     assert job_row.status == "failed"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5b: update_ghl_after_vm_message
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_update_ghl_after_vm_message_unresolved_phone_fails_without_writing(session):
+    """
+    contact_id is a phone number and phone resolution finds nothing (GHL
+    search returned None, e.g. real not-found or a swallowed transient
+    error) → job must fail fast with a clear reason instead of attempting
+    a write to /contacts/{phone}, which always 400s. Regression test for
+    job_id=b0254520-bda6-48b7-ace2-4c753b5c8bd6 (2026-09-17): the doomed
+    write used to fire anyway, misreporting a resolution failure as a GHL
+    API/field error.
+    """
+    job = _make_job(session, "update_ghl_after_vm_message", {
+        "contact_id": "+14054632590",
+        "channel": "email",
+        "message_body": "hello",
+        "message_subject": "subject",
+    })
+
+    with (
+        patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
+        patch("app.adapters.ghl.GHLClient.search_contact_by_phone", return_value=None),
+        patch("app.adapters.ghl.GHLClient.update_contact_fields") as mock_update,
+        pytest.raises(RuntimeError, match="Could not resolve GHL contact"),
+    ):
+        mock_sess.return_value.__enter__ = lambda _: session
+        mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+
+        from app.worker.jobs.crm_jobs import update_ghl_after_vm_message
+        update_ghl_after_vm_message(job.id)
+
+    mock_update.assert_not_called()
+    job_row = session.get(ScheduledJob, job.id)
+    assert job_row.status == "failed"
+
+
+def test_update_ghl_after_vm_message_exception_context_carries_full_payload(session):
+    """
+    The exception's context_json becomes the new job's payload_json if an
+    operator clicks Retry Now/Retry Delay (app/services/dashboard.py
+    retry_now/retry_with_delay pass context_json straight through as
+    payload). It must therefore carry every field the job needs to
+    reproduce the original write, not just identifiers — otherwise a retry
+    silently writes blank Message/Support Ticket #2 fields to GHL instead
+    of resending the real VM follow-up content.
+    """
+    job = _make_job(session, "update_ghl_after_vm_message", {
+        "contact_id": "+14055559999",
+        "channel": "email",
+        "message_body": "the real follow-up body",
+        "message_subject": "the real subject",
+        "campaign_name": "Cold Lead",
+    })
+
+    with (
+        patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
+        patch("app.adapters.ghl.GHLClient.search_contact_by_phone", return_value=None),
+        pytest.raises(RuntimeError, match="Could not resolve GHL contact"),
+    ):
+        mock_sess.return_value.__enter__ = lambda _: session
+        mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+
+        from app.worker.jobs.crm_jobs import update_ghl_after_vm_message
+        update_ghl_after_vm_message(job.id)
+
+    from sqlalchemy import select
+    exc_row = session.scalars(
+        select(ExceptionRecord).where(
+            ExceptionRecord.type == "ghl_vm_message_update_failed",
+            ExceptionRecord.entity_id == "+14055559999",
+        )
+    ).first()
+    assert exc_row is not None
+    ctx = exc_row.context_json
+    assert ctx["channel"] == "email"
+    assert ctx["message_body"] == "the real follow-up body"
+    assert ctx["message_subject"] == "the real subject"
+    assert ctx["campaign_name"] == "Cold Lead"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

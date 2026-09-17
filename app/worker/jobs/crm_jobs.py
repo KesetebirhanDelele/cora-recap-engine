@@ -493,6 +493,19 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                         contact_id, _read_exc,
                     )
 
+            # contact_id must be a real GHL UUID before any write is attempted.
+            # If phone resolution above didn't find/couldn't reach a contact,
+            # contact_id is still the raw phone string — writing to
+            # /contacts/{phone} always 400s. Fail the job explicitly instead
+            # of attempting a write that's guaranteed to fail (and would
+            # misreport the exception as a GHL field/API problem rather than
+            # an unresolved-contact problem).
+            if contact_id and _looks_like_phone(contact_id):
+                raise RuntimeError(
+                    f"Could not resolve GHL contact for phone {contact_id} — "
+                    "phone search found no match or failed; skipping write"
+                )
+
             # Ticket #2 carries a brief identifier; Message carries the full body.
             # GHL text fields cap around 2000 chars — truncate to avoid 400 errors.
             _GHL_MSG_MAX = 2000
@@ -570,6 +583,18 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     "job_id": job_id,
                     "error": str(exc),
                     "attempt_count": attempt_count + 1,
+                    # Retry-Now/Retry-Delay re-enqueue this job using this
+                    # context as the new payload — these fields aren't
+                    # re-derivable from anywhere else (the VM follow-up text
+                    # only ever exists in the original job's payload), so
+                    # without them a retry silently writes blank Message/
+                    # Support Ticket #2 fields to the lead's GHL contact
+                    # instead of resending the real content. Regression:
+                    # job_id=b0254520-bda6-48b7-ace2-4c753b5c8bd6 (2026-09-17).
+                    "channel": channel,
+                    "message_body": message_body,
+                    "message_subject": message_subject,
+                    "campaign_name": payload.get("campaign_name", ""),
                 },
                 entity_type="lead",
                 entity_id=contact_id,
