@@ -2070,3 +2070,66 @@ Kes approved, as more got mis-scheduled by the still-live bug in between) had th
 zero mismatches remain after.
 
 Committed `a54d163`, pushed, deployed to Hetzner — all containers healthy, `/health` 200.
+
+---
+
+## Session: 2026-09-17 — `ghl_vm_message_update_failed` triage: disguised-401 gap in core GHL client, doomed-write guard, lossy retry-payload fix (`fix/ghl-disguised-401-contact-resolution`, `033f665`)
+
+Kes brought alert `fc684f56-e7d3-4d01-8eb0-ae80daaafe9c`: `ghl_vm_message_update_failed` for
+`lead:+14054632590`, `GHL HTTP error: 400 /contacts/+14054632590 | Contact with id
++14054632590 not found`.
+
+**Root cause, found via SSH into Hetzner (`ssh root@204.168.245.238`,
+`/opt/cora-recap-engine`) — DB rows + worker logs:**
+`update_ghl_after_vm_message` (`crm_jobs.py`) resolves a phone-number `contact_id` to a real
+GHL UUID via `search_contact_by_phone` before writing. Worker log showed the search hit GHL's
+disguised-timeout 401 (`{"statusCode":401,"message":"Command timed out"}`) — the exact bug
+already fixed once, 3 days earlier, in `GhlInternalCommentClient` (`309bb47`, 2026-09-14) — but
+that fix only patched that one adapter class. `app/adapters/ghl.py`'s core `GHLClient` (used by
+`search_contact_by_phone`, `update_contact_fields`, `get_contact`, etc.) still only retried
+`{429,500,502,503,504}`, so the 401 was treated as permanent, the search "failure" was logged as
+non-fatal and swallowed, `contact_id` was left as the raw phone number, and the code fell
+through unconditionally to `PUT /contacts/+14054632590` → 400. Kes confirmed the GHL contact has
+existed since 2024 — this was purely the transient-401-misclassified-as-permanent bug, not a
+real not-found.
+
+**Also found while tracing how the existing alert would get fixed**: `retry_now`/
+`retry_with_delay` (`app/services/dashboard.py`) re-enqueue a job using the *exception's*
+`context_json` as the new payload, but `update_ghl_after_vm_message`'s exception context only
+ever stored `{contact_id, job_id, error, attempt_count}` — not `channel`/`message_body`/
+`message_subject`/`campaign_name`. Those fields aren't re-derivable from anywhere else (the VM
+follow-up text only exists in the original job's payload). Clicking "Retry Now" on this
+exception type would have silently written **blank** Message / Support Ticket #2 fields to the
+lead's real GHL contact instead of resending the actual follow-up content — a live data-loss bug
+sitting behind a routine-looking dashboard button.
+
+**Fix (branch `fix/ghl-disguised-401-contact-resolution`, commit `033f665`):**
+1. `app/adapters/ghl.py`: ported `_is_disguised_timeout_401` retry handling into the core
+   `GHLClient._request` (previously only in `ghl_internal_comment.py`).
+2. `app/worker/jobs/crm_jobs.py`: `update_ghl_after_vm_message` now fails explicitly
+   (`"Could not resolve GHL contact for phone ..."`) when phone resolution doesn't produce a
+   real contact ID, instead of attempting the doomed write.
+3. `app/worker/jobs/crm_jobs.py`: the exception context now carries the full retry payload
+   (`channel`, `message_body`, `message_subject`, `campaign_name`) so future Retry Now/Delay
+   clicks on this exception type reproduce the real write instead of blanking fields.
+4. `directives/spec/dashboard/11_runbook.md`: added a dedicated `ghl_vm_message_update_failed`
+   entry (previous one-liner wrongly said "GHL field ID mismatch").
+5. New regression tests: `test_ghl_adapter.py` (disguised-401 retried, genuine 401 still fails
+   fast), `test_crm_jobs.py` (unresolved-phone fails without writing; exception context carries
+   full payload). Full suite: 1265 passed, same 7 pre-existing unrelated failures (confirmed via
+   `git stash` diff against pre-change baseline).
+
+**Deploy:** merged to `feat/ghl-call-conversation-sync`, pushed (`033f665`), Hetzner pulled +
+`docker compose up -d --build` — all containers healthy, confirmed `_is_disguised_timeout_401`
+present in the deployed `worker-callbacks` image, no startup errors.
+
+**Existing alert closed out manually** (code fix only prevents *new* occurrences — nothing
+auto-retries on deploy, and this exception's own `context_json` predates fix #3 above so the
+dashboard's Retry Now button would still have blanked its fields): wrote a one-off script run
+inside the `api` container that read the *original* failed job's (`b0254520-bda6-48b7-ace2-4c753b5c8bd6`)
+still-intact `payload_json` and called `schedule_job()` directly with it — same mechanism the
+dashboard retry buttons use, just fed the correct payload. New job
+`ebc4b80b-ad60-4a10-996f-500454089bb3` ran within seconds, resolved the contact, wrote the
+fields, completed clean. Then called `resolve_exception()` directly on `fc684f56...` to close it
+out (exceptions don't auto-resolve when a later job for the same entity succeeds — only explicit
+dashboard actions call `resolve_exception`). Temp scripts removed from the box after.
