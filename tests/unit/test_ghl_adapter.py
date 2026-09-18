@@ -948,3 +948,84 @@ def test_get_message_transcription_requires_credentials():
     client, _ = _make_client(s)
     with pytest.raises(ConfigError):
         client.get_message_transcription("msg-any")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI cold lead tagging — search_contacts / build_tag_payload / add_contact_tag
+# (spec/31)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_search_contacts_posts_filters_and_location_id():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"contacts": [], "total": 0})
+
+    filters = [{"field": "type", "operator": "eq", "value": "lead"}]
+    client.search_contacts(filters, page_limit=50)
+
+    call_args = mock_http.request.call_args
+    assert call_args[0][0] == "POST"
+    assert call_args[0][1] == "/contacts/search"
+    body = call_args.kwargs["json"]
+    assert body["locationId"] == "loc-123"
+    assert body["filters"] == filters
+    assert body["pageLimit"] == 50
+    assert "searchAfter" not in body
+
+
+def test_search_contacts_passes_search_after_cursor():
+    s = _settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"contacts": []})
+
+    cursor = [1234567890, "contact-abc"]
+    client.search_contacts([], search_after=cursor)
+
+    body = mock_http.request.call_args.kwargs["json"]
+    assert body["searchAfter"] == cursor
+
+
+def test_build_tag_payload():
+    s = _settings()
+    client, _ = _make_client(s)
+    assert client.build_tag_payload(["ai cold leads"]) == {"tags": ["ai cold leads"]}
+
+
+def test_add_contact_tag_shadow_does_not_call_httpx():
+    s = _settings(ghl_write_mode="shadow")
+    client, mock_http = _make_client(s)
+
+    result = client.add_contact_tag("cid-1", "ai cold leads")
+
+    mock_http.request.assert_not_called()
+    assert result["shadow"] is True
+    assert result["operation"] == "add_contact_tag"
+
+
+def test_add_contact_tag_live_calls_post_tags():
+    s = _live_settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(200, {"succeeded": True})
+
+    client.add_contact_tag("cid-1", "ai cold leads")
+
+    call_args = mock_http.request.call_args
+    assert call_args[0][0] == "POST"
+    assert call_args[0][1] == "/contacts/cid-1/tags"
+    assert call_args.kwargs["json"] == {"tags": ["ai cold leads"]}
+
+
+def test_add_contact_tag_live_raises_config_error_without_api_key():
+    s = _live_settings(ghl_api_key=None)
+    client, _ = _make_client(s)
+    with pytest.raises(ConfigError):
+        client.add_contact_tag("cid-1", "ai cold leads")
+
+
+def test_add_contact_tag_propagates_non_retryable_error():
+    s = _live_settings()
+    client, mock_http = _make_client(s)
+    mock_http.request.return_value = _mock_response(400, {"message": "Invalid tag"})
+
+    with pytest.raises(GHLError):
+        client.add_contact_tag("cid-1", "ai cold leads")

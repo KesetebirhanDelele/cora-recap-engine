@@ -540,7 +540,26 @@ export interface CardMetricsResponse {
   urgent_leads_count:         MetricPoint;
   scq_calls_24h:              MetricPoint;
   scq_flagged_pct:            MetricPoint;
+  ai_cold_lead_tagging_backlog:     MetricPoint;
+  ai_cold_lead_tagging_tagged_24h:  MetricPoint;
   computed_at:                string;
+}
+
+export interface TagAiColdLeadsRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "completed" | "failed" | "skipped";
+  dry_run: boolean;
+  contacts_scanned: number;
+  contacts_tagged: number;
+  contacts_skipped_already_tagged: number;
+  contacts_failed: number;
+  error_message: string | null;
+}
+
+export interface TagAiColdLeadsRunsResponse {
+  runs: TagAiColdLeadsRun[];
 }
 
 // ── Recent Calls ──────────────────────────────────────────────────────────────

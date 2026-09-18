@@ -1208,6 +1208,15 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
                                     ("unresolved" = no sales_outcome logged and no connected staff callback since)
       scq_calls_24h              — staff_call_quality rows scanned, rolling 24h
       scq_flagged_pct            — % of those flagged (0-100), same window
+      ai_cold_lead_tagging_backlog     — LIVE GHL count of contacts currently
+                                          matching the tagging filter but not
+                                          yet tagged (spec/31) — the one
+                                          metric here that is not a DB query;
+                                          None on any GHL error so a GHL
+                                          outage never breaks the rest of
+                                          this endpoint's response
+      ai_cold_lead_tagging_tagged_24h  — SUM(contacts_tagged) across
+                                          tag_ai_cold_leads_runs, rolling 24h
     """
     from app.config import get_settings
 
@@ -1521,6 +1530,31 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     scq_flagged = scq_row[2] or 0
     scq_flagged_pct = round(scq_flagged / scq_scanned * 100, 1) if scq_scanned else None
 
+    # ── ai_cold_lead_tagging: backlog (live GHL) + tagged/24h (DB) (spec/31) ──
+    ai_cold_lead_backlog: int | None = None
+    try:
+        from app.adapters.ghl import GHLClient
+        from app.services.ai_cold_lead_tagging import build_search_filters
+
+        _acl_settings = get_settings()
+        with GHLClient(settings=_acl_settings) as _acl_client:
+            _acl_result = _acl_client.search_contacts(
+                build_search_filters(_acl_settings), page_limit=1
+            )
+        ai_cold_lead_backlog = _acl_result.get("total")
+        if ai_cold_lead_backlog is None:
+            ai_cold_lead_backlog = len(_acl_result.get("contacts", []))
+    except Exception:
+        # Never let a GHL outage/slowdown break every other card-metric in
+        # this response — this is the one metric here backed by a live
+        # external call rather than a DB query.
+        logger.warning("get_card_metrics: ai_cold_lead_tagging_backlog GHL lookup failed", exc_info=True)
+
+    ai_cold_lead_tagged_24h = int(_scalar(
+        "SELECT COALESCE(SUM(contacts_tagged), 0) FROM tag_ai_cold_leads_runs WHERE started_at >= :w",
+        {"w": w24_start},
+    ) or 0)
+
     def _pt(val: Any, prev: Any) -> dict[str, Any]:
         return {"value": val, "previous_value": prev}
 
@@ -1546,7 +1580,54 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
         "urgent_leads_count":         _pt(urgent_curr,             urgent_prev),
         "scq_calls_24h":              _pt(scq_scanned,             scq_scanned_prev),
         "scq_flagged_pct":            _pt(scq_flagged_pct,         None),
+        "ai_cold_lead_tagging_backlog":    _pt(ai_cold_lead_backlog,    None),
+        "ai_cold_lead_tagging_tagged_24h": _pt(ai_cold_lead_tagged_24h, None),
         "computed_at":                now.isoformat(),
+    }
+
+
+def get_ai_cold_lead_tagging_runs(session: Session, limit: int = 10) -> dict[str, Any]:
+    """
+    Recent run history for the AI cold lead tagging batch job (spec/31).
+
+    Returns {"runs": [...]}, newest first. Empty table returns {"runs": []},
+    not an error — same "zeroed stats when nothing has run yet" contract as
+    the rest of this module's summary endpoints.
+    """
+    def _iso(v: Any) -> str | None:
+        # Postgres (production) returns native datetime objects from a raw
+        # text() query; SQLite (unit tests) returns plain ISO strings — this
+        # module has no other raw-SQL datetime formatting elsewhere to
+        # cross-check against, so handle both rather than assuming Postgres.
+        if v is None:
+            return None
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
+
+    rows = session.execute(text("""
+        SELECT id, started_at, finished_at, status, dry_run,
+               contacts_scanned, contacts_tagged,
+               contacts_skipped_already_tagged, contacts_failed, error_message
+        FROM tag_ai_cold_leads_runs
+        ORDER BY started_at DESC
+        LIMIT :limit
+    """), {"limit": limit}).fetchall()
+
+    return {
+        "runs": [
+            {
+                "id": r.id,
+                "started_at": _iso(r.started_at),
+                "finished_at": _iso(r.finished_at),
+                "status": r.status,
+                "dry_run": r.dry_run,
+                "contacts_scanned": r.contacts_scanned,
+                "contacts_tagged": r.contacts_tagged,
+                "contacts_skipped_already_tagged": r.contacts_skipped_already_tagged,
+                "contacts_failed": r.contacts_failed,
+                "error_message": r.error_message,
+            }
+            for r in rows
+        ]
     }
 
 

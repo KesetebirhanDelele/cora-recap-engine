@@ -37,6 +37,7 @@ import type {
   SaveSettingsRequest,
   SaveSettingsResponse,
   StaffCallQualityResponse,
+  TagAiColdLeadsRunsResponse,
   VoicePerformanceResponse,
   WebhookFailuresResponse,
   WorkerActivityResponse,
@@ -374,6 +375,12 @@ export async function fetchStaffCallQuality(options?: {
   if (options?.from_date) params.from_date = options.from_date;
   if (options?.to_date)   params.to_date   = options.to_date;
   return get<StaffCallQualityResponse>("/dashboard/staff-call-quality", params);
+}
+
+export async function fetchTagAiColdLeadsRuns(limit?: number): Promise<TagAiColdLeadsRunsResponse> {
+  const params: Record<string, string> = {};
+  if (limit) params.limit = String(limit);
+  return get<TagAiColdLeadsRunsResponse>("/dashboard/tag-ai-cold-leads/runs", params);
 }
 
 export async function fetchIntentCalls(options: {

@@ -230,6 +230,48 @@ class GHLClient:
         contacts = result.get("contacts", [])
         return contacts[0] if contacts else None
 
+    def search_contacts(
+        self,
+        filters: list[dict],
+        *,
+        page_limit: int = 100,
+        search_after: list[Any] | None = None,
+    ) -> dict:
+        """
+        Search GHL contacts with an advanced filter (POST /contacts/search).
+
+        filters: list of {"field", "operator", "value"} objects, ANDed
+            together by GHL. Confirmed live 2026-09-18 (spec/31) — not every
+            documented operator works on every field (e.g. date fields only
+            accept "range", not "lt"/"gt"/"gte"/"lte" despite those being
+            generally valid operators); verify new filter combinations live
+            before trusting them.
+
+        search_after: pagination cursor — pass the `searchAfter` value
+            (a [epoch_ms, contact_id] pair) from the last contact of the
+            previous page. Confirmed live: each contact in the response
+            carries its own `searchAfter` for this purpose.
+
+        Returns the raw response dict ({"contacts": [...], ...}) rather than
+        unwrapping it, since callers need each contact's own `searchAfter`
+        to continue paginating.
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info(
+            "GHL search_contacts | location_id=%s filter_fields=%s page_limit=%s",
+            self.settings.ghl_location_id,
+            [f.get("field") for f in filters],
+            page_limit,
+        )
+        body: dict[str, Any] = {
+            "locationId": self.settings.ghl_location_id,
+            "filters": filters,
+            "pageLimit": page_limit,
+        }
+        if search_after is not None:
+            body["searchAfter"] = search_after
+        return self._request("POST", "/contacts/search", json=body)
+
     def get_conversations_by_contact(self, contact_id: str, limit: int = 20) -> list[dict]:
         """
         Return the list of GHL conversations for a contact (newest first).
@@ -516,6 +558,10 @@ class GHLClient:
         """Build the request body for a GHL contact note append."""
         return {"body": content}
 
+    def build_tag_payload(self, tags: list[str]) -> dict:
+        """Build the request body for a GHL contact tag add."""
+        return {"tags": tags}
+
     # ── Write operations (shadow-gated) ───────────────────────────────────────
     #
     # All three write methods accept an optional `mode_flags` parameter.
@@ -612,6 +658,39 @@ class GHLClient:
             self.settings.validate_for_ghl_writes()
         logger.info("GHL append_note | contact_id=%s", contact_id)
         return self._request("POST", f"/contacts/{contact_id}/notes", json=payload)
+
+    def add_contact_tag(
+        self,
+        contact_id: str,
+        tag: str,
+        *,
+        mode_flags: Any = None,
+    ) -> dict:
+        """
+        Add a tag to a GHL contact.
+
+        Shadow mode (default): logs payload, returns shadow response dict.
+        Live mode: calls GHL POST /contacts/{id}/tags.
+
+        This is a bulk-capable write path (one call per contact, potentially
+        hundreds/thousands per run — spec/31). mode_flags should include the
+        dedicated ai_cold_lead_tagging_enabled gate checked by the caller
+        BEFORE this method is ever invoked; this method's own gate is the
+        standard shadow/live check shared with every other write method.
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
+                    When supplied, overrides settings.ghl_writes_enabled.
+        """
+        payload = self.build_tag_payload([tag])
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
+            return self._shadow_write("add_contact_tag", contact_id, payload)
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
+        logger.info("GHL add_contact_tag | contact_id=%s tag=%r", contact_id, tag)
+        return self._request("POST", f"/contacts/{contact_id}/tags", json=payload)
 
     # ── Shadow write helper ───────────────────────────────────────────────────
 

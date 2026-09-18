@@ -214,6 +214,29 @@ class Settings(BaseSettings):
     # output.
     staff_call_quality_scan_enabled: bool = False
 
+    # ── AI cold lead tagging (spec/31) ───────────────────────────────────────
+    # Off by default — deploying this code must not silently start bulk-
+    # tagging thousands of real GHL contacts. This flag is checked in the
+    # service layer (run_tagging_cycle) BEFORE any add_contact_tag call, in
+    # addition to (not instead of) the existing ghl_write_mode/shadow gate.
+    # Deliberately independent of ghl_writes_enabled: bulk-tagging is a
+    # bigger blast radius than the one-off writes that flag already guards.
+    ai_cold_lead_tagging_enabled: bool = False
+    ai_cold_lead_tagging_tag: str = "ai cold leads"
+    # Comma-separated — parsed at call time, same convention as
+    # cold_lead_active_days below.
+    ai_cold_lead_tagging_exclude_tags: str = (
+        "business lead,colaberry employee,invalid phone number,not a lead,"
+        "spam,marketing contact,international lead,warm lead,"
+        "ai cold leads,ai cold leads ii"
+    )
+    ai_cold_lead_tagging_lookback_days: int = 30
+    # Per-run safety cap — verified live 2026-09-18 that ~1,591 contacts
+    # currently match the filter (spec/31); cap the first live runs so a
+    # misconfigured filter can't bulk-tag thousands in one cycle before
+    # anyone has seen a few days of run history.
+    ai_cold_lead_tagging_batch_cap: int = 500
+
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"
     prompt_version_call_analysis: str = "v1"

@@ -286,6 +286,21 @@ def get_staff_call_quality(
     return _get_scq(session, limit=limit, from_date=from_date, to_date=to_date)
 
 
+@router.get("/tag-ai-cold-leads/runs")
+def get_tag_ai_cold_leads_runs(
+    limit: int = Query(default=10, le=100),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Recent run history for the AI cold lead tagging batch job (spec/31).
+
+    Returns zeroed/empty when the job hasn't run yet (expected until
+    AI_COLD_LEAD_TAGGING_ENABLED is turned on and a cycle has completed).
+    """
+    from app.services.dashboard_metrics import get_ai_cold_lead_tagging_runs as _get_runs
+    return _get_runs(session, limit=limit)
+
+
 @router.get("/intent-calls")
 def get_intent_calls(
     intent: str = Query(..., description="detected_intent value to drill into"),
@@ -1469,6 +1484,7 @@ _ALLOWED_MODE_KEYS = frozenset({
     "system_paused",
     "outbound_campaigns_paused",
     "cold_lead_campaign_paused",
+    "ai_cold_lead_tagging_enabled",
 })
 
 _BOOL_MODE_KEYS = frozenset({
@@ -1482,6 +1498,7 @@ _BOOL_MODE_KEYS = frozenset({
     "system_paused",
     "outbound_campaigns_paused",
     "cold_lead_campaign_paused",
+    "ai_cold_lead_tagging_enabled",
 })
 
 

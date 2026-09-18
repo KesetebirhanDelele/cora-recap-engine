@@ -45,6 +45,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
       { href: "/conversion-funnel",   title: "Sales Queue",         icon: "📞", description: "Priority-ranked calls with scoring, recording & outcome logging.", category: "analytics" },
       { href: "/campaign-overview",   title: "Scheduled Actions",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
       { href: "/staff-call-quality",  title: "Staff Call Quality",  icon: "🎧", description: "Sales-rep & support-staff calls, transcribed & scored.", category: "analytics" },
+      { href: "/ai-cold-lead-tagging", title: "AI Cold Lead Tagging", icon: "🏷️", description: "Daily tagging of stale leads — activity & backlog.", category: "analytics" },
     ],
   },
   {

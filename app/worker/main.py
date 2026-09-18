@@ -76,6 +76,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "rebalance_call_slots":       "rq_default_queue",
     "auto_webhook_recovery":      "rq_default_queue",
     "staff_call_quality_scan":    "rq_quality_queue",
+    "ai_cold_lead_tagging_scan":  "rq_quality_queue",
 }
 
 # Per-job-type RQ work-horse timeout override, in seconds. Omitted job types
@@ -86,6 +87,11 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
 # once its lease expires (spec/29, observed 2026-09-10).
 _JOB_TIMEOUT_SECONDS: dict[str, int] = {
     "staff_call_quality_scan": 900,
+    # A full paginated /contacts/search sweep across this location's ~15,700
+    # contacts plus one tag-write per match (up to ai_cold_lead_tagging_
+    # batch_cap per cycle) can run well past RQ's 180s default — same
+    # failure mode as staff_call_quality_scan above (spec/29, spec/31).
+    "ai_cold_lead_tagging_scan": 1800,
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -204,6 +210,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.outbound_jobs import launch_outbound_call_job
     from app.worker.jobs.slot_rebalancer import rebalance_call_slots_job
     from app.worker.jobs.staff_call_quality_jobs import staff_call_quality_scan_job
+    from app.worker.jobs.ai_cold_lead_tagging_jobs import ai_cold_lead_tagging_scan_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
     from app.worker.jobs.webhook_recovery_jobs import auto_webhook_recovery_job
 
@@ -237,6 +244,8 @@ def get_job_registry() -> dict[str, object]:
         "auto_webhook_recovery": auto_webhook_recovery_job,
         # Staff (sales rep / support staff) call quality analysis (spec/23)
         "staff_call_quality_scan": staff_call_quality_scan_job,
+        # AI cold lead tagging — daily batch job (spec/31)
+        "ai_cold_lead_tagging_scan": ai_cold_lead_tagging_scan_job,
     }
 
 
@@ -316,6 +325,14 @@ def run() -> None:
             logger.info("Staff call quality scanner ensured on startup")
         except Exception as exc:
             logger.warning("Could not ensure staff call quality scanner on startup: %s", exc)
+
+        # Ensure the AI cold lead tagging scan is scheduled on startup (spec/31).
+        try:
+            from app.worker.jobs.ai_cold_lead_tagging_jobs import start_ai_cold_lead_tagging_scanner
+            start_ai_cold_lead_tagging_scanner()
+            logger.info("AI cold lead tagging scanner ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure AI cold lead tagging scanner on startup: %s", exc)
 
     try:
         import redis
