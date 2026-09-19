@@ -18,7 +18,8 @@ Alert types (all thresholds settings-driven):
                           job is pending/claimed/running with run_at in the
                           past) and 0 have completed in
                           ALERT_OUTBOUND_STALL_HOURS, during an active,
-                          unpaused campaign window
+                          unpaused campaign window that's been open for at
+                          least WINDOW_BUFFER_HOURS (post-sleep grace period)
   duplicate_rate_spike  — (not yet computable; reserved for future metric)
   new_exception         — (spec/30) one email per newly-opened exceptions row,
                           any type/severity — the per-incident counterpart to
@@ -570,6 +571,15 @@ def _evaluate_outbound_stall(
     launch_outbound_call row is ever created, so there's no backlog to
     detect here. That specific case is covered separately by
     intake_auth_failure above, which fires on the 401 itself.
+
+    Post-wake grace (2026-09-19): the alert won't fire until the most
+    recently woken active campaign has been open for at least
+    WINDOW_BUFFER_HOURS. Without this, "zero completions in
+    ALERT_OUTBOUND_STALL_HOURS" was trivially true the instant a window
+    reopened after an overnight or weekend sleep — no call could have
+    completed while every campaign was asleep — so the alert paged and
+    self-resolved within 90 seconds of wake-up on a healthy pipeline
+    (2026-09-19 dabea8f5 incident, backlog of 1 lead).
     """
     alert_type = "outbound_calls_stalled"
     severity = "critical"
@@ -586,16 +596,36 @@ def _evaluate_outbound_stall(
 
     # Outside every campaign's active window (nights / weekends) → expected quiet.
     # Fail toward alerting: if the window check errors, assume active.
+    most_recent_wake: datetime | None = None
     try:
-        from app.core.campaign_schedule import is_campaign_active
-        any_active = (
-            is_campaign_active("New Lead", now, settings, session=session)
-            or is_campaign_active("Cold Lead", now, settings, session=session)
+        from app.core.campaign_schedule import (
+            WINDOW_BUFFER_HOURS,
+            current_window_start,
+            is_campaign_active,
         )
+        any_active = False
+        wake_times = []
+        for campaign in ("New Lead", "Cold Lead"):
+            if is_campaign_active(campaign, now, settings, session=session):
+                any_active = True
+                opened = current_window_start(campaign, now, settings, session=session)
+                if opened is not None:
+                    wake_times.append(opened)
+        if wake_times:
+            most_recent_wake = max(wake_times)
     except Exception as exc:
         logger.warning("outbound_stall: active-window check failed, assuming active: %s", exc)
         any_active = True
     if not any_active:
+        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        return
+
+    # Just woke from an overnight/weekend sleep → give the pipeline
+    # WINDOW_BUFFER_HOURS to work through any backlog that piled up while
+    # asleep before treating it as a stall. Without this, "zero completions
+    # in the last N hours" is trivially true the instant the window reopens,
+    # since no call could have completed while every campaign was asleep.
+    if most_recent_wake is not None and now - most_recent_wake < timedelta(hours=WINDOW_BUFFER_HOURS):
         _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
         return
 

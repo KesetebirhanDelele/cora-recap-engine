@@ -14,9 +14,10 @@ Window values are read from the app_config table first (runtime-editable via
 the dashboard Settings page), falling back to Settings fields (.env), then
 to the hard-coded defaults below.
 
-Rescheduled calls land _WINDOW_BUFFER_HOURS into the window (default: 1 hour)
+Rescheduled calls land WINDOW_BUFFER_HOURS into the window (default: 1 hour)
 so they avoid the very start of the window when infrastructure may not yet be
-fully warmed up (e.g. Synthflow voice agent startup).
+fully warmed up (e.g. Synthflow voice agent startup). The same constant is
+reused by alerting.py's outbound-stall check as a post-wake grace period.
 
 Configured via dashboard Settings page or .env:
   NEW_LEAD_ACTIVE_DAYS        — comma-separated weekday numbers (default: all days)
@@ -38,8 +39,9 @@ logger = logging.getLogger(__name__)
 
 # How many hours past the window start rescheduled calls are placed.
 # Avoids the very edge of the window where Synthflow may silently drop
-# calls if the voice agent is not yet fully active.
-_WINDOW_BUFFER_HOURS = 1
+# calls if the voice agent is not yet fully active. Also reused by
+# alerting.py as the outbound-stall alert's post-wake grace period.
+WINDOW_BUFFER_HOURS = 1
 
 # Normalise all known campaign name variants to a canonical key
 _CAMPAIGN_KEY: dict[str, str] = {
@@ -199,8 +201,8 @@ def next_active_window_start(
     local_now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
     active_days, start_hour, end_hour = _get_window(campaign_name, settings, session)
 
-    # Buffered start: land _WINDOW_BUFFER_HOURS into the window, capped at end_hour - 1.
-    buffered_start = min(start_hour + _WINDOW_BUFFER_HOURS, end_hour - 1)
+    # Buffered start: land WINDOW_BUFFER_HOURS into the window, capped at end_hour - 1.
+    buffered_start = min(start_hour + WINDOW_BUFFER_HOURS, end_hour - 1)
 
     # Already active — return unchanged (don't shift mid-window calls)
     if local_now.weekday() in active_days and start_hour <= local_now.hour < end_hour:
@@ -223,3 +225,31 @@ def next_active_window_start(
         campaign_name,
     )
     return local_now + timedelta(days=1)
+
+
+def current_window_start(
+    campaign_name: str,
+    now: datetime,
+    settings: Settings,
+    contact_tz: str | None = None,
+    session=None,
+) -> datetime | None:
+    """
+    Return when *today's* active window opened (start_hour, local time), if
+    `now` is currently inside it. Returns None if the campaign is not
+    currently active.
+
+    Used to clamp stall-detection lookbacks so they don't reach back across
+    an overnight or weekend sleep period the campaign was never awake for —
+    unlike `next_active_window_start`, which answers "when does the next
+    window open" (and returns `now` unchanged if already active), this
+    answers "when did the current window begin."
+    """
+    tz = ZoneInfo(contact_tz or settings.default_timezone)
+    local_now = now.astimezone(tz) if now.tzinfo else now.replace(tzinfo=tz)
+    active_days, start_hour, end_hour = _get_window(campaign_name, settings, session)
+
+    if local_now.weekday() not in active_days or not (start_hour <= local_now.hour < end_hour):
+        return None
+
+    return local_now.replace(hour=start_hour, minute=0, second=0, microsecond=0)

@@ -41,6 +41,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.campaign_schedule import (
+    current_window_start,
     get_contact_timezone,
     is_campaign_active,
     next_active_window_start,
@@ -290,6 +291,56 @@ def test_contact_tz_used_for_reschedule():
     # Result should be in Eastern timezone
     eastern = ZoneInfo("America/New_York")
     assert result.tzinfo.key == eastern.key  # type: ignore[attr-defined]
+
+
+# ---------------------------------------------------------------------------
+# current_window_start
+# ---------------------------------------------------------------------------
+
+def test_current_window_start_returns_none_when_inactive():
+    """Monday 6 AM → before window opens → None (not currently active)."""
+    now = _dt(weekday=0, hour=6)
+    assert current_window_start("New Lead", now, _settings()) is None
+
+
+def test_current_window_start_returns_none_on_inactive_day():
+    """Cold Lead on Saturday → not an active day → None."""
+    now = _dt(weekday=5, hour=10)
+    assert current_window_start("Cold Lead", now, _settings()) is None
+
+
+def test_current_window_start_returns_todays_start_hour():
+    """Monday 10 AM, inside window → returns Monday 8 AM (unbuffered start)."""
+    now = _dt(weekday=0, hour=10, minute=45)
+    result = current_window_start("New Lead", now, _settings())
+    assert result.weekday() == 0
+    assert result.hour == 8
+    assert result.minute == 0
+
+
+def test_current_window_start_at_exact_open():
+    """Monday 8:00 AM, right at open → returns itself (rounded to the hour)."""
+    now = _dt(weekday=0, hour=8)
+    result = current_window_start("New Lead", now, _settings())
+    assert result == now
+
+
+def test_current_window_start_is_timezone_aware():
+    now = _dt(weekday=0, hour=10)
+    result = current_window_start("New Lead", now, _settings())
+    assert result.tzinfo is not None
+
+
+def test_current_window_start_uses_contact_tz():
+    """
+    Monday 21:30 Chicago = Monday 22:30 New York → inactive in Eastern
+    (past 22:00 end hour) → None despite being active in Chicago.
+    """
+    now = _dt(weekday=0, hour=21, minute=30, tz=CHICAGO)
+    assert current_window_start("New Lead", now, _settings()) is not None
+    assert current_window_start(
+        "New Lead", now, _settings(), contact_tz="America/New_York"
+    ) is None
 
 
 # ---------------------------------------------------------------------------

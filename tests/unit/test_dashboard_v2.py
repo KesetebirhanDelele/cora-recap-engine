@@ -700,14 +700,16 @@ class TestOutboundStallAlert:
     def test_fires_when_backlog_and_no_completions(self, session):
         self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, self._settings())
         assert self._count(session) == 1
 
     def test_silent_when_no_backlog(self, session):
         """Zero completions but also zero leads waiting — a quiet queue, not a stall."""
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, self._settings())
         assert self._count(session) == 0
 
@@ -715,14 +717,16 @@ class TestOutboundStallAlert:
         self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags",
                    return_value=self._flags(outbound_campaigns_paused=True)), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, self._settings())
         assert self._count(session) == 0
 
     def test_silent_outside_active_window(self, session):
         self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=False):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=False), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, self._settings())
         assert self._count(session) == 0
 
@@ -730,7 +734,8 @@ class TestOutboundStallAlert:
         self._add_backlog(session)
         self._add_completion(session, minutes_ago=30)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, self._settings())
         assert self._count(session) == 0
 
@@ -738,7 +743,8 @@ class TestOutboundStallAlert:
         self._add_backlog(session)
         self._add_completion(session, minutes_ago=5 * 60)  # 5h ago, window is 4h
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, self._settings())
         assert self._count(session) == 1
 
@@ -747,11 +753,58 @@ class TestOutboundStallAlert:
         now = datetime.now(tz=timezone.utc)
         self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
-             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start", return_value=None):
             self._run(session, settings, now=now)
             assert self._count(session) == 1
             self._add_completion(session, minutes_ago=1)
             self._run(session, settings, now=now + timedelta(minutes=2))
+        assert self._count(session) == 0
+
+    # ── Post-wake grace period (2026-09-19) ─────────────────────────────────
+    # A campaign window that just opened after an overnight/weekend sleep
+    # shouldn't page the instant a backlog is visible — see the dabea8f5
+    # incident (paged and self-resolved within 90s) in alerting.py's
+    # _evaluate_outbound_stall docstring.
+
+    def test_silent_during_post_wake_grace_period(self, session):
+        """Window opened 10 minutes ago (< WINDOW_BUFFER_HOURS) — too soon to judge."""
+        now = datetime.now(tz=timezone.utc)
+        self._add_backlog(session)
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - timedelta(minutes=10)):
+            self._run(session, self._settings(), now=now)
+        assert self._count(session) == 0
+
+    def test_fires_once_grace_period_elapses(self, session):
+        """Window opened 90 minutes ago (>= WINDOW_BUFFER_HOURS=1) — fair to judge."""
+        now = datetime.now(tz=timezone.utc)
+        self._add_backlog(session)
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - timedelta(minutes=90)):
+            self._run(session, self._settings(), now=now)
+        assert self._count(session) == 1
+
+    def test_grace_period_uses_most_recently_woken_campaign(self, session):
+        """New Lead woke 10 min ago, Cold Lead woke 3h ago — still within grace
+        (the more recent wake governs), so the alert stays silent."""
+        now = datetime.now(tz=timezone.utc)
+        self._add_backlog(session)
+
+        def fake_current_window_start(campaign_name, *args, **kwargs):
+            if campaign_name == "New Lead":
+                return now - timedelta(minutes=10)
+            return now - timedelta(hours=3)
+
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start",
+                   side_effect=fake_current_window_start):
+            self._run(session, self._settings(), now=now)
         assert self._count(session) == 0
 
 
