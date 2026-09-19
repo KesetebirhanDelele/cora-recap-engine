@@ -643,9 +643,13 @@ class TestIntakeAuthFailureAlert:
 
 
 class TestOutboundStallAlert:
-    """alerting._evaluate_outbound_stall — leads overdue a call, with zero
-    launch_outbound_call completions, during an active, unpaused campaign
-    window. Does NOT fire on a genuinely empty queue (no backlog)."""
+    """alerting._evaluate_outbound_stall — leads overdue a call since before
+    "now - ALERT_OUTBOUND_STALL_HOURS", with zero launch_outbound_call
+    completions in that same window, during an active, unpaused campaign
+    whose current wake session is itself at least that old. Does NOT fire
+    on a genuinely empty queue, a just-turned-overdue lead, or right after
+    wake-up (sleep carryover or same-day pileup — either way, needs the
+    full window before it counts as a real stall)."""
 
     def _settings(self):
         s = MagicMock()
@@ -673,8 +677,12 @@ class TestOutboundStallAlert:
         ))
         session.flush()
 
-    def _add_backlog(self, session, minutes_overdue=10, status="pending"):
-        """A lead waiting on a call: run_at in the past, not yet completed."""
+    def _add_backlog(self, session, minutes_overdue=5 * 60, status="pending"):
+        """A lead waiting on a call: run_at in the past, not yet completed.
+        Defaults to 5h overdue (past the 4h ALERT_OUTBOUND_STALL_HOURS
+        default) so callers testing other branches don't need to think
+        about the overdue-duration threshold unless that's what they're
+        testing."""
         from app.models.scheduled_job import ScheduledJob
         now = datetime.now(tz=timezone.utc)
         session.add(ScheduledJob(
@@ -697,20 +705,28 @@ class TestOutboundStallAlert:
             session, settings, now or datetime.now(tz=timezone.utc), timedelta(seconds=3600),
         )
 
+    # Old-enough wake time so the sleep-aware gate doesn't interfere with
+    # tests that aren't specifically exercising it.
+    _LONG_AWAKE = timedelta(hours=6)
+
     def test_fires_when_backlog_and_no_completions(self, session):
+        now = datetime.now(tz=timezone.utc)
         self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
-             patch("app.core.campaign_schedule.current_window_start", return_value=None):
-            self._run(session, self._settings())
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
+            self._run(session, self._settings(), now=now)
         assert self._count(session) == 1
 
     def test_silent_when_no_backlog(self, session):
         """Zero completions but also zero leads waiting — a quiet queue, not a stall."""
+        now = datetime.now(tz=timezone.utc)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
-             patch("app.core.campaign_schedule.current_window_start", return_value=None):
-            self._run(session, self._settings())
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
+            self._run(session, self._settings(), now=now)
         assert self._count(session) == 0
 
     def test_silent_when_outbound_campaigns_paused(self, session):
@@ -731,21 +747,25 @@ class TestOutboundStallAlert:
         assert self._count(session) == 0
 
     def test_silent_when_recent_completion_exists(self, session):
+        now = datetime.now(tz=timezone.utc)
         self._add_backlog(session)
         self._add_completion(session, minutes_ago=30)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
-             patch("app.core.campaign_schedule.current_window_start", return_value=None):
-            self._run(session, self._settings())
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
+            self._run(session, self._settings(), now=now)
         assert self._count(session) == 0
 
     def test_ignores_stale_completion_older_than_window(self, session):
+        now = datetime.now(tz=timezone.utc)
         self._add_backlog(session)
         self._add_completion(session, minutes_ago=5 * 60)  # 5h ago, window is 4h
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
-             patch("app.core.campaign_schedule.current_window_start", return_value=None):
-            self._run(session, self._settings())
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
+            self._run(session, self._settings(), now=now)
         assert self._count(session) == 1
 
     def test_resolves_when_calls_resume(self, session):
@@ -754,51 +774,60 @@ class TestOutboundStallAlert:
         self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
-             patch("app.core.campaign_schedule.current_window_start", return_value=None):
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
             self._run(session, settings, now=now)
             assert self._count(session) == 1
             self._add_completion(session, minutes_ago=1)
             self._run(session, settings, now=now + timedelta(minutes=2))
         assert self._count(session) == 0
 
-    # ── Post-wake grace period (2026-09-19) ─────────────────────────────────
-    # A campaign window that just opened after an overnight/weekend sleep
-    # shouldn't page the instant a backlog is visible — see the dabea8f5
-    # incident (paged and self-resolved within 90s) in alerting.py's
-    # _evaluate_outbound_stall docstring.
+    # ── Sleep-aware thresholds (2026-09-19, round 2) ────────────────────────
+    # A lead only counts as backlog if it's been overdue since before the
+    # cutoff (now - ALERT_OUTBOUND_STALL_HOURS) AND the campaign's current
+    # wake session is itself at least that old — see the "Sleep-aware
+    # thresholds" note in alerting.py's _evaluate_outbound_stall docstring.
+    # Covers two real incidents: dabea8f5 (paged 90s after wake on a
+    # backlog that piled up overnight) and the 2026-09-19 Saturday flapping
+    # (15 pages in one afternoon from Cold Lead jobs sitting overdue for
+    # seconds while being rescheduled off a closed day).
 
-    def test_silent_during_post_wake_grace_period(self, session):
-        """Window opened 10 minutes ago (< WINDOW_BUFFER_HOURS) — too soon to judge."""
+    def test_silent_when_campaign_recently_woke_despite_old_backlog(self, session):
+        """Window opened 1h ago (< 4h threshold), but the lead has been
+        overdue 10h (sleep carryover) — still too soon to judge; the
+        pipeline hasn't had its fair 4 hours yet."""
         now = datetime.now(tz=timezone.utc)
-        self._add_backlog(session)
+        self._add_backlog(session, minutes_overdue=10 * 60)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
              patch("app.core.campaign_schedule.current_window_start",
-                   return_value=now - timedelta(minutes=10)):
+                   return_value=now - timedelta(hours=1)):
             self._run(session, self._settings(), now=now)
         assert self._count(session) == 0
 
-    def test_fires_once_grace_period_elapses(self, session):
-        """Window opened 90 minutes ago (>= WINDOW_BUFFER_HOURS=1) — fair to judge."""
+    def test_fires_once_campaign_awake_full_threshold(self, session):
+        """Window opened 5h ago (>= 4h threshold), lead overdue 5h, zero
+        completions — fair to judge, and it's a real stall."""
         now = datetime.now(tz=timezone.utc)
-        self._add_backlog(session)
+        self._add_backlog(session, minutes_overdue=5 * 60)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
              patch("app.core.campaign_schedule.current_window_start",
-                   return_value=now - timedelta(minutes=90)):
+                   return_value=now - timedelta(hours=5)):
             self._run(session, self._settings(), now=now)
         assert self._count(session) == 1
 
-    def test_grace_period_uses_most_recently_woken_campaign(self, session):
-        """New Lead woke 10 min ago, Cold Lead woke 3h ago — still within grace
-        (the more recent wake governs), so the alert stays silent."""
+    def test_wake_gate_uses_most_recently_woken_campaign(self, session):
+        """New Lead woke 1h ago, Cold Lead woke 6h ago — the more recent
+        wake (New Lead) governs, so it's still too soon despite Cold Lead
+        having been awake for hours."""
         now = datetime.now(tz=timezone.utc)
-        self._add_backlog(session)
+        self._add_backlog(session, minutes_overdue=10 * 60)
 
         def fake_current_window_start(campaign_name, *args, **kwargs):
             if campaign_name == "New Lead":
-                return now - timedelta(minutes=10)
-            return now - timedelta(hours=3)
+                return now - timedelta(hours=1)
+            return now - timedelta(hours=6)
 
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
@@ -806,6 +835,33 @@ class TestOutboundStallAlert:
                    side_effect=fake_current_window_start):
             self._run(session, self._settings(), now=now)
         assert self._count(session) == 0
+
+    def test_silent_when_backlog_overdue_less_than_threshold(self, session):
+        """Reproduces the 2026-09-19 Saturday flapping: a lead becomes due
+        just 2 minutes ago (e.g. a Cold Lead job about to be rescheduled
+        off a closed day) — nowhere near the 4h bar, even though the
+        campaign's been awake for hours and there are no recent
+        completions. Must not count as backlog."""
+        now = datetime.now(tz=timezone.utc)
+        self._add_backlog(session, minutes_overdue=2)
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
+            self._run(session, self._settings(), now=now)
+        assert self._count(session) == 0
+
+    def test_fires_when_backlog_overdue_at_least_threshold(self, session):
+        """Symmetric case: overdue by just past the 4h bar, campaign long
+        awake, zero completions — a real stall, must fire."""
+        now = datetime.now(tz=timezone.utc)
+        self._add_backlog(session, minutes_overdue=4 * 60 + 1)
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True), \
+             patch("app.core.campaign_schedule.current_window_start",
+                   return_value=now - self._LONG_AWAKE):
+            self._run(session, self._settings(), now=now)
+        assert self._count(session) == 1
 
 
 # ── Pipeline trace service ─────────────────────────────────────────────────────

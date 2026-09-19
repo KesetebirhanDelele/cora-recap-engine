@@ -14,12 +14,15 @@ Alert types (all thresholds settings-driven):
   ghl_auth_failure      — open exceptions of type 'ghl_auth_failed' >= 1
   intake_auth_failure   — open exceptions of type 'intake_auth_failed' >= 1
                           (GHL lead-intake webhook rejecting on auth)
-  outbound_calls_stalled — leads are overdue a call (a launch_outbound_call
-                          job is pending/claimed/running with run_at in the
-                          past) and 0 have completed in
-                          ALERT_OUTBOUND_STALL_HOURS, during an active,
-                          unpaused campaign window that's been open for at
-                          least WINDOW_BUFFER_HOURS (post-sleep grace period)
+  outbound_calls_stalled — leads have been overdue a call (a
+                          launch_outbound_call job pending/claimed/running,
+                          run_at since before "now - ALERT_OUTBOUND_STALL_HOURS")
+                          and 0 have completed in that same window, during
+                          an active, unpaused campaign whose current wake
+                          session is also at least ALERT_OUTBOUND_STALL_HOURS
+                          old (so sleep-carryover backlogs and same-day
+                          pileups both get the full window to clear before
+                          paging)
   duplicate_rate_spike  — (not yet computable; reserved for future metric)
   new_exception         — (spec/30) one email per newly-opened exceptions row,
                           any type/severity — the per-incident counterpart to
@@ -572,14 +575,35 @@ def _evaluate_outbound_stall(
     detect here. That specific case is covered separately by
     intake_auth_failure above, which fires on the 401 itself.
 
-    Post-wake grace (2026-09-19): the alert won't fire until the most
-    recently woken active campaign has been open for at least
-    WINDOW_BUFFER_HOURS. Without this, "zero completions in
-    ALERT_OUTBOUND_STALL_HOURS" was trivially true the instant a window
-    reopened after an overnight or weekend sleep — no call could have
-    completed while every campaign was asleep — so the alert paged and
-    self-resolved within 90 seconds of wake-up on a healthy pipeline
-    (2026-09-19 dabea8f5 incident, backlog of 1 lead).
+    Sleep-aware thresholds (2026-09-19, two rounds):
+
+    1. "Zero completions in ALERT_OUTBOUND_STALL_HOURS" was trivially true
+       the instant a window reopened after an overnight/weekend sleep — no
+       call could have completed while every campaign was asleep — so the
+       alert paged and self-resolved within 90 seconds of wake-up on a
+       healthy pipeline (dabea8f5 incident, backlog of 1 lead). A first fix
+       added a short post-wake grace period.
+
+    2. That grace period didn't cover the backlog side: a lead due right
+       before sleep (e.g. 9:58pm, window closes 10pm) sat "overdue" all
+       night on a pure wall-clock basis, so once the short grace elapsed it
+       could immediately look like a real stall despite the pipeline having
+       had zero real chance yet. Separately, Cold Lead (Mon–Fri only) jobs
+       that come due on a closed day (e.g. Saturday) sit briefly overdue —
+       seconds, not hours — before the scheduler reschedules them to the
+       next active day; the naive "overdue at all" check on `run_at <= now`
+       misread that reschedule handoff as a stalled backlog, firing and
+       resolving every 5-15 minutes for hours on a healthy Saturday.
+
+    Both are fixed by a single rule, replacing the standalone grace period:
+    a lead only counts as backlog if it's been overdue since *before* the
+    current window opened — i.e. `run_at <= now - hours` AND the campaign's
+    current wake session itself is at least `hours` old. Either condition
+    alone reproduces one of the two bugs above; together, a lead can never
+    look stalled until the pipeline has had a full, genuine `hours` of
+    awake time to work through it, regardless of whether the backlog is a
+    sleep carryover or a same-day pileup, and the seconds-long Cold Lead
+    reschedule handoff never gets close to that bar either way.
     """
     alert_type = "outbound_calls_stalled"
     severity = "critical"
@@ -598,11 +622,7 @@ def _evaluate_outbound_stall(
     # Fail toward alerting: if the window check errors, assume active.
     most_recent_wake: datetime | None = None
     try:
-        from app.core.campaign_schedule import (
-            WINDOW_BUFFER_HOURS,
-            current_window_start,
-            is_campaign_active,
-        )
+        from app.core.campaign_schedule import current_window_start, is_campaign_active
         any_active = False
         wake_times = []
         for campaign in ("New Lead", "Cold Lead"):
@@ -620,41 +640,43 @@ def _evaluate_outbound_stall(
         _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
         return
 
-    # Just woke from an overnight/weekend sleep → give the pipeline
-    # WINDOW_BUFFER_HOURS to work through any backlog that piled up while
-    # asleep before treating it as a stall. Without this, "zero completions
-    # in the last N hours" is trivially true the instant the window reopens,
-    # since no call could have completed while every campaign was asleep.
-    if most_recent_wake is not None and now - most_recent_wake < timedelta(hours=WINDOW_BUFFER_HOURS):
+    hours = int(getattr(settings, "alert_outbound_stall_hours", 4) or 4)
+    cutoff = now - timedelta(hours=hours)
+
+    # Campaign's current wake session isn't old enough yet → whatever
+    # backlog exists hasn't had its full, fair `hours` to clear (sleep
+    # carryover or same-day pileup, doesn't matter which). Resolve rather
+    # than fire — see the docstring's "Sleep-aware thresholds" note.
+    if most_recent_wake is not None and most_recent_wake > cutoff:
         _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
         return
 
-    hours = int(getattr(settings, "alert_outbound_stall_hours", 4) or 4)
-    window_start = now - timedelta(hours=hours)
     completions = int(session.execute(
         text("""
             SELECT COUNT(*) FROM scheduled_jobs
             WHERE job_type = 'launch_outbound_call'
               AND status = 'completed'
-              AND updated_at >= :w
+              AND updated_at >= :cutoff
         """),
-        {"w": window_start},
+        {"cutoff": cutoff},
     ).scalar() or 0)
 
     if completions > 0:
         _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
         return
 
-    # Leads actually waiting on a call right now? If nobody's overdue, a
-    # quiet queue is the expected reason for zero completions, not a stall.
+    # Leads overdue since before the current window opened? A lead that
+    # became due seconds ago (e.g. a Cold Lead job about to be rescheduled
+    # off a closed day) isn't a stall — only one overdue since before the
+    # cutoff, same as the completions lookback above, counts as backlog.
     backlog = int(session.execute(
         text("""
             SELECT COUNT(*) FROM scheduled_jobs
             WHERE job_type = 'launch_outbound_call'
               AND status IN ('pending', 'claimed', 'running')
-              AND run_at <= :now
+              AND run_at <= :cutoff
         """),
-        {"now": now},
+        {"cutoff": cutoff},
     ).scalar() or 0)
 
     if backlog == 0:
