@@ -1,6 +1,7 @@
 import { fetchHealth, fetchCardMetrics } from "@/lib/api";
 import SystemStatusBar from "@/components/SystemStatusBar";
-import NavigationCard, { type NavCategory } from "@/components/NavigationCard";
+import { type NavCategory } from "@/components/NavigationCard";
+import DashboardTabs, { type ResolvedNavGroup } from "@/components/DashboardTabs";
 import { computeIndicator } from "@/lib/indicators";
 import type { HealthResponse, CardMetricsResponse } from "@/types";
 
@@ -16,11 +17,10 @@ interface NavItem {
   badgeCritical?: boolean;
 }
 
-const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: NavItem[] }[] = [
+const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] = [
   {
     label: "Operations",
     category: "operations",
-    cols: 4,
     items: [
       { href: "/activity",        title: "Live Activity",       icon: "⚡",  description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
       { href: "/exceptions",      title: "Exceptions Monitor",  icon: "⚠️",  description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
@@ -35,10 +35,6 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
   {
     label: "Analytics",
     category: "analytics",
-    // 3 cols (not 2) — 5 items now fit in 2 rows (3+2) instead of 3, staying
-    // within the group's fixed-height budget (see the height:320 container
-    // in HomePage below) the same way Operations (4 cols / 8 items) does.
-    cols: 3,
     items: [
       { href: "/voice-performance-v2", title: "Voice Performance", icon: "🎙️", description: "Date-filtered trends, WoW & call efficiency.", category: "analytics" },
       { href: "/engagement-analysis",  title: "Engagement Analysis", icon: "🤖", description: "Intent, consent & engagement metrics.", category: "analytics" },
@@ -51,7 +47,6 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
   {
     label: "System",
     category: "system",
-    cols: 2,
     items: [
       { href: "/system-controls",   title: "System Controls",  icon: "🎛️", description: "Shadow/live mode, GHL writes & system pause.", category: "system" },
       { href: "/crm-health",        title: "CRM Health",       icon: "🔗", description: "GHL task & VM update rates.",       category: "system" },
@@ -59,12 +54,6 @@ const NAV_GROUPS: { label: string; category: NavCategory; cols: number; items: N
     ],
   },
 ];
-
-const ACCENT: Record<NavCategory, string> = {
-  operations: "#f59e0b",
-  analytics:  "#3b82f6",
-  system:     "#8b5cf6",
-};
 
 function getBadge(item: NavItem, health: HealthResponse): number | undefined {
   if (!item.badgeKey) return undefined;
@@ -74,6 +63,26 @@ function getBadge(item: NavItem, health: HealthResponse): number | undefined {
   }
   const v = health[item.badgeKey as keyof HealthResponse];
   return typeof v === "number" && v > 0 ? v : undefined;
+}
+
+function resolveGroups(
+  health: HealthResponse | null,
+  cardMetrics: CardMetricsResponse | null,
+): ResolvedNavGroup[] {
+  return NAV_GROUPS.map((group) => ({
+    label: group.label,
+    category: group.category,
+    items: group.items.map((item) => ({
+      href: item.href,
+      title: item.title,
+      icon: item.icon,
+      description: item.description,
+      category: item.category,
+      badge: health ? getBadge(item, health) : undefined,
+      badgeCritical: item.badgeCritical,
+      indicator: computeIndicator(item.href, cardMetrics),
+    })),
+  }));
 }
 
 export default async function HomePage() {
@@ -141,88 +150,8 @@ export default async function HomePage() {
         <SystemStatusBar health={health} healthError={healthError} />
       </div>
 
-      {/* ── Navigation groups ────────────────────────────────────────────── */}
-      <div
-        style={{
-          flexShrink: 0,
-          height: 320,
-          padding: "0 1.5rem 0.875rem",
-          display: "grid",
-          gridTemplateColumns: "6fr 4fr 2fr",
-          gap: "0.75rem",
-          overflow: "hidden",
-        }}
-      >
-        {NAV_GROUPS.map((group) => (
-          <section
-            key={group.label}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              minHeight: 0,
-              overflow: "hidden",
-            }}
-          >
-            {/* Group label */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.5rem",
-                marginBottom: "0.5rem",
-                flexShrink: 0,
-              }}
-            >
-              <span
-                style={{
-                  width: 3,
-                  height: 12,
-                  borderRadius: 2,
-                  background: ACCENT[group.category],
-                  display: "inline-block",
-                  flexShrink: 0,
-                }}
-              />
-              <span
-                style={{
-                  fontSize: "0.78rem",
-                  fontWeight: 700,
-                  color: "#64748b",
-                  textTransform: "uppercase" as const,
-                  letterSpacing: "0.07em",
-                }}
-              >
-                {group.label}
-              </span>
-            </div>
-
-            {/* Cards grid */}
-            <div
-              style={{
-                flex: 1,
-                minHeight: 0,
-                display: "grid",
-                gridTemplateColumns: `repeat(${group.cols}, 1fr)`,
-                gap: "0.5rem",
-              }}
-            >
-              {group.items.map((item) => (
-                <NavigationCard
-                  key={item.href}
-                  href={item.href}
-                  title={item.title}
-                  icon={item.icon}
-                  description={item.description}
-                  category={item.category}
-                  badge={health ? getBadge(item, health) : undefined}
-                  badgeCritical={item.badgeCritical}
-                  indicator={computeIndicator(item.href, cardMetrics)}
-                />
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
+      {/* ── Navigation (tabs: Operations / Analytics / System) ─────────────── */}
+      <DashboardTabs groups={resolveGroups(health, cardMetrics)} />
     </div>
   );
 }
