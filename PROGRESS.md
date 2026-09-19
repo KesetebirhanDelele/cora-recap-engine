@@ -2188,3 +2188,62 @@ step (`docker compose build $NO_CACHE api dashboard-api frontend
 worker-default worker-ai worker-callbacks worker-retries worker-quality`)
 should include `migrate` too, or a future migration will silently
 reproduce this exact incident.
+
+## Session: 2026-09-19 — outbound_calls_stalled false-positive fix: post-wake grace period (`fix/outbound-stall-sleep-grace-period`, `d9932eb`)
+
+### Trigger
+Alert `dabea8f5-6022-467d-b0d2-296479c0cdff` (critical) fired at 17:35:21 UTC
+("1 lead(s) overdue a call with zero completions in the last 4h") and
+self-resolved at 17:36:51 UTC — 90 seconds later, on a healthy pipeline.
+Kes: the 4h trigger window doesn't account for campaign sleep (overnight /
+weekend) — reported false positive, asked for a proposal.
+
+### Root cause
+`_evaluate_outbound_stall` (`app/services/alerting.py`) checks "zero
+`launch_outbound_call` completions in `ALERT_OUTBOUND_STALL_HOURS` (4h)"
+against a plain wall-clock lookback, gated only by whether the campaign
+window is active *right now* (`is_campaign_active`, a point-in-time check).
+The instant a window reopens after being asleep, "zero completions in the
+last 4h" is trivially true — no call could have completed while every
+campaign was asleep — so a normal backlog that piles up overnight/weekend
+looks identical to a real stall for the first few minutes after wake-up.
+
+### Fix
+Two pieces, `app/core/campaign_schedule.py` + `app/services/alerting.py`:
+- New `current_window_start()` — returns when *today's* active window
+  opened (or `None` if not currently active), unlike the existing
+  `next_active_window_start()` which answers "when does the *next* window
+  open."
+- `_evaluate_outbound_stall` now computes the most-recently-woken active
+  campaign's wake time and stays silent (resolves any active alert instead
+  of firing) if that's less than `WINDOW_BUFFER_HOURS` (1h — the same
+  constant already used for rescheduled-call placement, renamed from
+  private `_WINDOW_BUFFER_HOURS` to public since it's now shared) ago.
+- **Explicitly did not** clamp the 4h completions lookback itself to the
+  wake time — a first pass tried that and it was backwards: shrinking the
+  lookback window right after wake makes "zero completions" *more* likely
+  to be true, not less. Only the grace gate was needed. Kes confirmed the
+  fixed ~60–90 min buffer approach over tying the grace to the full 4h
+  threshold (AskUserQuestion).
+
+Tests: 6 new in `tests/unit/test_campaign_schedule.py` for
+`current_window_start`; `tests/unit/test_dashboard_v2.py`'s existing
+`TestOutboundStallAlert` tests patched to also mock `current_window_start`
+(returning `None`, preserving prior behavior exactly — avoids wall-clock
+flakiness) + 3 new tests for the grace period itself. Full suite:
+1319 passed / 7 pre-existing unrelated failures (confirmed via `git
+stash`), `ruff check` clean on all 4 changed files (confirmed pre-existing
+findings elsewhere in `test_dashboard_v2.py` via the same stash check).
+
+### Deployed
+Merged `fix/outbound-stall-sleep-grace-period` → `feat/ghl-call-conversation-sync`
+(fast-forward, no divergence, no PR needed per this repo's branching
+model), pushed, redeployed Hetzner via `scripts/deploy.sh` — all 13
+services up, both health checks `ok`, migration step ran clean (no new
+migration in this change), confirmed the new code imports cleanly inside
+the live `api` container.
+
+### Not yet done
+No `/directives` spec doc exists for this alert to update (its design
+rationale lives in `alerting.py`'s docstrings, which were updated
+in-place). If one should exist, needs a follow-up.
