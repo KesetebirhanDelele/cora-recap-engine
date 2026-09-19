@@ -105,6 +105,15 @@ def test_exception_path_fails_job_and_still_reschedules(
 
     ai_cold_lead_tagging_scan_job("job-1")
 
+    # Regression guard (2026-09-18 production incident): a failed flush
+    # inside run_tagging_cycle leaves the real session's transaction
+    # aborted — fail_job/_reschedule must not touch it again without a
+    # rollback first, or they raise PendingRollbackError and the job is
+    # left permanently stuck with no next run ever scheduled. This mock
+    # session can't reproduce that cascade itself (MagicMock doesn't model
+    # SQLAlchemy's transaction state machine), so assert the rollback call
+    # directly as the contract that prevents it.
+    session.rollback.assert_called_once()
     mock_fail.assert_called_once()
     assert mock_fail.call_args.kwargs["reason"] == "boom"
     mock_create_exc.assert_called_once()
