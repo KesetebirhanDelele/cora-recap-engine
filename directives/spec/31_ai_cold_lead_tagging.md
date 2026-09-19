@@ -4,7 +4,9 @@
 |---|---|
 | GHL `/contacts/search` filter semantics for all 5 criteria | **VERIFIED LIVE 2026-09-18** against production, read-only. |
 | Pagination cursor (`searchAfter`) | **VERIFIED LIVE 2026-09-18** — confirmed round-trip, zero page overlap. |
-| Adapter methods, service module, worker job, migration, dashboard tile | SPEC — not implemented. |
+| Adapter methods, service module, worker job, migration, dashboard tile | **IMPLEMENTED, deployed 2026-09-18** (`329bdc5`, fix `3e03b6d`). |
+| 5-contact canary (real GHL writes, manual one-off, `batch_cap=5`) | **DONE 2026-09-19** — verified independently in GHL; all 5 tagged correctly, 0 failures. |
+| `ai_cold_lead_tagging_enabled` | **LIVE as of 2026-09-19** (flipped via `/dashboard/mode`, operator `claude-code`, approved by Kes after canary review). Daily job now runs for real, capped at `ai_cold_lead_tagging_batch_cap=500`/cycle. |
 
 ---
 

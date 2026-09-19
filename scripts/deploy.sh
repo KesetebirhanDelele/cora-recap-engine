@@ -48,12 +48,19 @@ git pull --ff-only
 
 echo ""
 echo "==> [2/5] Building images..."
-# Rebuilds: api, dashboard-api, frontend, all workers (default/ai/callbacks/retries/quality).
+# Rebuilds: api, dashboard-api, frontend, all workers (default/ai/callbacks/retries/quality),
+# and migrate. `migrate` was omitted here until 2026-09-19 -- it has its own
+# image (build: . in docker-compose.yml, not shared with `api`), so a new
+# migration's code would silently run against a STALE migrate image at
+# step 4 below, appearing to succeed while leaving the DB behind the newly
+# deployed app code. Caused a real incident (~30-40 min of every dashboard
+# card-metric 500ing) on the AI-cold-lead-tagging deploy -- see PROGRESS.md
+# 2026-09-18/19. Always rebuild migrate alongside everything else.
 # postgres, redis, pgbouncer, adminer use upstream images (docker compose pull handles those).
 docker compose pull postgres redis adminer 2>/dev/null || true
 # shellcheck disable=SC2086
 docker compose build $NO_CACHE \
-  api dashboard-api frontend \
+  api dashboard-api frontend migrate \
   worker-default worker-ai worker-callbacks worker-retries worker-quality
 
 echo ""
