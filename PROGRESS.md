@@ -2247,3 +2247,74 @@ the live `api` container.
 No `/directives` spec doc exists for this alert to update (its design
 rationale lives in `alerting.py`'s docstrings, which were updated
 in-place). If one should exist, needs a follow-up.
+
+## Session: 2026-09-19 (continued) — same alert kept false-firing; sleep-aware threshold replaces the grace period (`fix/outbound-stall-sleep-aware-threshold`, `e4af0eb`)
+
+### Trigger
+Kes: "getting the alert almost every 1-5 minutes" — the grace-period fix
+above didn't hold. Pulled live `alert_events` history: **15 fires in
+~6.5 hours** the same Saturday, clustering to every 5-9 min by late
+afternoon, each firing and self-resolving in 90-270s.
+
+### Root cause (confirmed against live production data)
+Two distinct bugs, both in `_evaluate_outbound_stall`'s backlog query
+(`run_at <= now`, no minimum overdue duration):
+
+1. **Sleep carryover, still broken.** The 1h grace period from the
+   earlier fix only gated on how long the *campaign* had been awake, not
+   on how long any given *lead* had actually been overdue. A lead due at
+   9:58pm (before a 10pm window close) sits at 10h overdue by an 8am
+   wake-up; the 1h grace clears by 9am, and that lead — still nowhere
+   near having a fair chance — could immediately look like a real stall.
+
+2. **New failure mode, unrelated to sleep timing.** Today is Saturday.
+   Cold Lead's window is Mon-Fri only; New Lead runs every day. Traced a
+   live example: a Cold Lead job for `+18643372797` came due at
+   `19:26:15`, got cancelled and rescheduled to Monday `16:00 UTC` by
+   `19:26:23` — an 8-second handoff. The alert's backlog query has no
+   minimum overdue duration, so that 8-second window was enough for a
+   60s metrics-cycle tick to occasionally catch it as "1 lead overdue,"
+   combined with genuinely low weekend New-Lead completion volume (confirmed
+   zero completions in a 2h+ stretch at the time), to fire the alert.
+   45 Cold Lead jobs were queuing through this exact cancel+reschedule
+   pattern that afternoon — one every ~75s (call-pacing stagger) — which
+   is what produced the 5-9 minute cadence.
+
+Kes caught a further gap before implementation: even a naive "require 4h
+overdue" backlog filter would still misfire on the *first* bug, since raw
+wall-clock overdue time doesn't stop accumulating during sleep — a lead
+overdue 10h at wake would immediately clear a 4h bar the moment the (much
+shorter) wake-grace elapsed.
+
+### Fix
+Replaced the standalone 1h grace period with one unified rule in
+`_evaluate_outbound_stall`: a lead only counts as backlog if
+`run_at <= now - ALERT_OUTBOUND_STALL_HOURS` **and** the campaign's
+current wake session (`current_window_start`, added in the prior fix) is
+itself at least that old. Both the completions lookback and the backlog
+query now share the same `cutoff = now - hours` value. This one rule
+covers all three cases:
+- Sleep carryover: wake session too young → resolves regardless of how
+  overdue the lead looks on paper.
+- Same-day pileup: wake session old enough, lead genuinely overdue past
+  the cutoff → fires (unchanged real-stall behavior).
+- Reschedule-handoff noise: lead overdue by seconds, never gets near the
+  cutoff → never counts as backlog, regardless of campaign wake time.
+
+`tests/unit/test_dashboard_v2.py::TestOutboundStallAlert`: rewrote the 3
+grace-period tests (threshold changed from a fixed 1h to the full
+`ALERT_OUTBOUND_STALL_HOURS`) and added 2 new tests reproducing the
+Saturday reschedule-blip scenario directly (overdue-by-2-minutes must not
+count; overdue-by-4h01m must). 12/12 pass. Full suite: 1321 passed / 7
+pre-existing unrelated failures (unchanged baseline). `ruff check` clean
+on both changed files (same 6 pre-existing findings elsewhere in
+`test_dashboard_v2.py`, confirmed via `git stash`).
+
+### Deployed
+Merged `fix/outbound-stall-sleep-aware-threshold` → `feat/ghl-call-conversation-sync`
+(fast-forward), pushed, redeployed Hetzner via `scripts/deploy.sh` — all
+13 services up, both health checks `ok`, no new migration. Confirmed the
+new code imports cleanly in the live `api` container. One alert row was
+active at deploy time (`cfcd2e48`, created 20:35:26 UTC) — verifying it
+resolves under the new logic on the next metrics cycle rather than
+lingering.
