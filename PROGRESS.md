@@ -2133,3 +2133,58 @@ dashboard retry buttons use, just fed the correct payload. New job
 fields, completed clean. Then called `resolve_exception()` directly on `fc684f56...` to close it
 out (exceptions don't auto-resolve when a later job for the same entity succeeds — only explicit
 dashboard actions call `resolve_exception`). Temp scripts removed from the box after.
+
+## Session: 2026-09-18/19 — AI cold lead tagging feature built, deployed, and a same-day production incident fixed (spec/31, `329bdc5`, `3e03b6d`)
+
+**What was built:** a daily batch job that tags GHL contacts matching a
+verified filter (`type=lead`, `dnd=false`, `phone wildcard "+1*"`, not
+carrying one of 10 exclusion tags, `lastActivity` >30 days ago) as
+`ai cold leads`, plus a dashboard tile (`/ai-cold-lead-tagging`) showing
+backlog (live GHL count) and recent activity. Full spec and the live
+filter-verification record (run read-only against production before any
+adapter code was written): `directives/spec/31_ai_cold_lead_tagging.md`.
+1,594 contacts currently match, as of 2026-09-18.
+
+**Safety design:** dedicated `ai_cold_lead_tagging_enabled` ModeFlag
+(default **False**, independent of the shared `ghl_write_mode` — which
+was already `live` in production for other features going into this).
+Checked in `run_tagging_cycle` before any `add_contact_tag` call. New
+`tag_ai_cold_leads_runs` table logs one row per cycle (dry_run flag,
+scanned/tagged/skipped/failed counts).
+
+**Deploy incident (2026-09-18, ~30–40 min window):** `scripts/deploy.sh`
+does not include the `migrate` service in its image-build list (existing
+latent bug, not introduced this session) — so migration `0023` didn't
+apply even though the new `api`/`dashboard-api`/`worker-*` code (which
+queries the new `tag_ai_cold_leads_runs` table inside `get_card_metrics`)
+was already live. Result: **`GET /dashboard/card-metrics` 500'd for every
+nav-card indicator on the main dashboard**, not just the new tile, until
+fixed. Separately, the daily job itself ran against the missing table,
+and because the worker job's exception handler didn't call
+`session.rollback()` before `fail_job`/`_reschedule`, the aborted
+transaction cascaded and the job was left stuck in `running` status with
+no next run ever scheduled (a `scheduled_jobs` row from this incident,
+`e4fb3d92-...`, is still sitting inert in `running` — harmless, a fresh
+job already runs independently, and it'll self-clear via
+`recover_expired_claims()` around 2026-09-19 23:37 UTC if nobody bothers).
+
+**Fix:** rebuilt+ran the `migrate` image manually to bring the DB to
+`0023`; added `session.rollback()` to the job's exception handler
+(commit `3e03b6d`) plus decoupled the claim lease (1h) from the daily
+reschedule interval (24h) so a genuinely stuck claim self-heals in an
+hour, not a day. Redeployed; confirmed clean: a "skipped" (flag-off) run
+completed in 11ms, `card-metrics`/`tag-ai-cold-leads/runs` endpoints and
+the new dashboard page all verified healthy from outside.
+
+**Not yet done — next step:** a canary live run. Plan (already discussed
+with Kes): temporarily set `ai_cold_lead_tagging_batch_cap=5`, flip
+`ai_cold_lead_tagging_enabled=true` for exactly one cycle, verify those 5
+specific contacts in GHL before/after, then raise the cap back up.
+Nothing has been live-written to GHL yet — needs Kes's explicit go-ahead
+before flipping that flag, given the incident above.
+
+**Known follow-up, not fixed this session:** `scripts/deploy.sh`'s build
+step (`docker compose build $NO_CACHE api dashboard-api frontend
+worker-default worker-ai worker-callbacks worker-retries worker-quality`)
+should include `migrate` too, or a future migration will silently
+reproduce this exact incident.
