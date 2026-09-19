@@ -1,7 +1,7 @@
 import { fetchHealth, fetchCardMetrics } from "@/lib/api";
 import SystemStatusBar from "@/components/SystemStatusBar";
 import { type NavCategory } from "@/components/NavigationCard";
-import DashboardTabs, { type ResolvedNavGroup } from "@/components/DashboardTabs";
+import DashboardSections, { type ResolvedNavGroup } from "@/components/DashboardSections";
 import { computeIndicator } from "@/lib/indicators";
 import type { HealthResponse, CardMetricsResponse } from "@/types";
 
@@ -19,6 +19,18 @@ interface NavItem {
 
 const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] = [
   {
+    label: "Analytics",
+    category: "analytics",
+    items: [
+      { href: "/voice-performance-v2", title: "Voice Performance", icon: "🎙️", description: "Date-filtered trends, WoW & call efficiency.", category: "analytics" },
+      { href: "/engagement-analysis",  title: "Engagement Analysis", icon: "🤖", description: "Intent, consent & engagement metrics.", category: "analytics" },
+      { href: "/conversion-funnel",   title: "Sales Queue",         icon: "📞", description: "Priority-ranked calls with scoring, recording & outcome logging.", category: "analytics" },
+      { href: "/campaign-overview",   title: "Scheduled Actions",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
+      { href: "/staff-call-quality",  title: "Staff Call Quality",  icon: "🎧", description: "Sales-rep & support-staff calls, transcribed & scored.", category: "analytics" },
+      { href: "/ai-cold-lead-tagging", title: "AI Cold Lead Tagging", icon: "🏷️", description: "Daily tagging of stale leads — activity & backlog.", category: "analytics" },
+    ],
+  },
+  {
     label: "Operations",
     category: "operations",
     items: [
@@ -30,18 +42,6 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
       { href: "/lead-lifecycle",  title: "Lead Lifecycle",      icon: "🗺️", description: "Per-lead journey: campaign, VM tier, touchpoints & finalization.", category: "operations" },
       { href: "/settings",        title: "Settings",            icon: "⚙", description: "Calling windows, delays & brand identity.", category: "operations" },
       { href: "/db-explorer",     title: "DB Explorer",         icon: "🗄️", description: "Browse tables and run SQL queries.", category: "operations" },
-    ],
-  },
-  {
-    label: "Analytics",
-    category: "analytics",
-    items: [
-      { href: "/voice-performance-v2", title: "Voice Performance", icon: "🎙️", description: "Date-filtered trends, WoW & call efficiency.", category: "analytics" },
-      { href: "/engagement-analysis",  title: "Engagement Analysis", icon: "🤖", description: "Intent, consent & engagement metrics.", category: "analytics" },
-      { href: "/conversion-funnel",   title: "Sales Queue",         icon: "📞", description: "Priority-ranked calls with scoring, recording & outcome logging.", category: "analytics" },
-      { href: "/campaign-overview",   title: "Scheduled Actions",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
-      { href: "/staff-call-quality",  title: "Staff Call Quality",  icon: "🎧", description: "Sales-rep & support-staff calls, transcribed & scored.", category: "analytics" },
-      { href: "/ai-cold-lead-tagging", title: "AI Cold Lead Tagging", icon: "🏷️", description: "Daily tagging of stale leads — activity & backlog.", category: "analytics" },
     ],
   },
   {
@@ -102,8 +102,7 @@ export default async function HomePage() {
   return (
     <div
       style={{
-        height: "100vh",
-        overflow: "hidden",
+        minHeight: "100vh",
         display: "flex",
         flexDirection: "column",
         background: "#f1f5f9",
@@ -150,8 +149,8 @@ export default async function HomePage() {
         <SystemStatusBar health={health} healthError={healthError} />
       </div>
 
-      {/* ── Navigation (tabs: Operations / Analytics / System) ─────────────── */}
-      <DashboardTabs groups={resolveGroups(health, cardMetrics)} />
+      {/* ── Navigation (stacked sections: Analytics / Operations / System) ──── */}
+      <DashboardSections groups={resolveGroups(health, cardMetrics)} />
     </div>
   );
 }
