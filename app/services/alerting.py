@@ -14,8 +14,10 @@ Alert types (all thresholds settings-driven):
   ghl_auth_failure      — open exceptions of type 'ghl_auth_failed' >= 1
   intake_auth_failure   — open exceptions of type 'intake_auth_failed' >= 1
                           (GHL lead-intake webhook rejecting on auth)
-  outbound_calls_stalled — 0 launch_outbound_call completions in
-                          ALERT_OUTBOUND_STALL_HOURS during an active,
+  outbound_calls_stalled — leads are overdue a call (a launch_outbound_call
+                          job is pending/claimed/running with run_at in the
+                          past) and 0 have completed in
+                          ALERT_OUTBOUND_STALL_HOURS, during an active,
                           unpaused campaign window
   duplicate_rate_spike  — (not yet computable; reserved for future metric)
   new_exception         — (spec/30) one email per newly-opened exceptions row,
@@ -551,14 +553,23 @@ def _evaluate_outbound_stall(
     dedup_window: timedelta,
 ) -> None:
     """
-    Fire when zero outbound calls have been placed for
-    ALERT_OUTBOUND_STALL_HOURS while a campaign is inside its active window
-    and outbound calling is not paused.
+    Fire when leads are overdue a call — a launch_outbound_call job is
+    pending/claimed/running with run_at in the past — and zero have
+    completed in ALERT_OUTBOUND_STALL_HOURS, while a campaign is inside its
+    active window and outbound calling is not paused.
 
     Cora's core output is outbound calls, and nothing else alerts on their
     absence: a broken upstream trigger produces no failed job and no
     exception, so the pipeline can flatline silently (it did, 12 days,
-    Aug–Sep 2026). This is the backstop for that whole class of failure.
+    Aug–Sep 2026). This is the backstop for that whole class of failure —
+    scoped to "leads are actually waiting," not merely "it's calling hours,"
+    so a genuinely empty queue (no leads currently need contacting) stays
+    silent instead of paging on quiet days. Note this scoping reintroduces
+    part of the original blind spot: if GHL's trigger fails before a lead
+    ever reaches Cora (the exact 2026-09-08 failure mode), no
+    launch_outbound_call row is ever created, so there's no backlog to
+    detect here. That specific case is covered separately by
+    intake_auth_failure above, which fires on the 401 itself.
     """
     alert_type = "outbound_calls_stalled"
     severity = "critical"
@@ -600,19 +611,37 @@ def _evaluate_outbound_stall(
         {"w": window_start},
     ).scalar() or 0)
 
-    if completions == 0:
-        _upsert_active_alert(
-            session, settings, now,
-            alert_type=alert_type, severity=severity,
-            message=(
-                f"No outbound calls completed in the last {hours}h during an active "
-                f"campaign window. Check the GHL workflow triggers, the "
-                f"/v1/webhooks/leads intake endpoint, and the Synthflow Make Call workflow."
-            ),
-            current_value=0.0, threshold=1.0,
-        )
-    else:
+    if completions > 0:
         _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        return
+
+    # Leads actually waiting on a call right now? If nobody's overdue, a
+    # quiet queue is the expected reason for zero completions, not a stall.
+    backlog = int(session.execute(
+        text("""
+            SELECT COUNT(*) FROM scheduled_jobs
+            WHERE job_type = 'launch_outbound_call'
+              AND status IN ('pending', 'claimed', 'running')
+              AND run_at <= :now
+        """),
+        {"now": now},
+    ).scalar() or 0)
+
+    if backlog == 0:
+        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        return
+
+    _upsert_active_alert(
+        session, settings, now,
+        alert_type=alert_type, severity=severity,
+        message=(
+            f"{backlog} lead(s) overdue a call with zero completions in the last "
+            f"{hours}h during an active campaign window. Check the GHL workflow "
+            f"triggers, the /v1/webhooks/leads intake endpoint, and the Synthflow "
+            f"Make Call workflow."
+        ),
+        current_value=0.0, threshold=1.0,
+    )
 
 
 # ── Webhook drop alert ────────────────────────────────────────────────────────

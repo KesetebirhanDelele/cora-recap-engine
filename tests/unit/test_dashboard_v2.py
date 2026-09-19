@@ -643,8 +643,9 @@ class TestIntakeAuthFailureAlert:
 
 
 class TestOutboundStallAlert:
-    """alerting._evaluate_outbound_stall — no launch_outbound_call completions
-    during an active, unpaused campaign window."""
+    """alerting._evaluate_outbound_stall — leads overdue a call, with zero
+    launch_outbound_call completions, during an active, unpaused campaign
+    window. Does NOT fire on a genuinely empty queue (no backlog)."""
 
     def _settings(self):
         s = MagicMock()
@@ -672,6 +673,19 @@ class TestOutboundStallAlert:
         ))
         session.flush()
 
+    def _add_backlog(self, session, minutes_overdue=10, status="pending"):
+        """A lead waiting on a call: run_at in the past, not yet completed."""
+        from app.models.scheduled_job import ScheduledJob
+        now = datetime.now(tz=timezone.utc)
+        session.add(ScheduledJob(
+            id=str(uuid.uuid4()), job_type="launch_outbound_call",
+            entity_type="lead", entity_id="+15550002222",
+            run_at=now - timedelta(minutes=minutes_overdue), status=status,
+            version=1, created_at=now - timedelta(minutes=minutes_overdue),
+            updated_at=now - timedelta(minutes=minutes_overdue),
+        ))
+        session.flush()
+
     def _count(self, session):
         return session.execute(
             text("SELECT COUNT(*) FROM alert_events WHERE alert_type = 'outbound_calls_stalled' AND status = 'active'")
@@ -683,13 +697,22 @@ class TestOutboundStallAlert:
             session, settings, now or datetime.now(tz=timezone.utc), timedelta(seconds=3600),
         )
 
-    def test_fires_when_no_completions_in_window(self, session):
+    def test_fires_when_backlog_and_no_completions(self, session):
+        self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
             self._run(session, self._settings())
         assert self._count(session) == 1
 
+    def test_silent_when_no_backlog(self, session):
+        """Zero completions but also zero leads waiting — a quiet queue, not a stall."""
+        with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
+             patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            self._run(session, self._settings())
+        assert self._count(session) == 0
+
     def test_silent_when_outbound_campaigns_paused(self, session):
+        self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags",
                    return_value=self._flags(outbound_campaigns_paused=True)), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
@@ -697,12 +720,14 @@ class TestOutboundStallAlert:
         assert self._count(session) == 0
 
     def test_silent_outside_active_window(self, session):
+        self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=False):
             self._run(session, self._settings())
         assert self._count(session) == 0
 
     def test_silent_when_recent_completion_exists(self, session):
+        self._add_backlog(session)
         self._add_completion(session, minutes_ago=30)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
@@ -710,6 +735,7 @@ class TestOutboundStallAlert:
         assert self._count(session) == 0
 
     def test_ignores_stale_completion_older_than_window(self, session):
+        self._add_backlog(session)
         self._add_completion(session, minutes_ago=5 * 60)  # 5h ago, window is 4h
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
@@ -719,6 +745,7 @@ class TestOutboundStallAlert:
     def test_resolves_when_calls_resume(self, session):
         settings = self._settings()
         now = datetime.now(tz=timezone.utc)
+        self._add_backlog(session)
         with patch("app.core.mode_flags.get_mode_flags", return_value=self._flags()), \
              patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
             self._run(session, settings, now=now)
