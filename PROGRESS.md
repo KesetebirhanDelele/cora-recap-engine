@@ -2346,3 +2346,6 @@ Merged `feat/open-house-date-alert` → `feat/ghl-call-conversation-sync` (`4355
 **Status: built and tested locally; NOT committed/merged/deployed.**
 Investigation finding first: the flagged messages to +16148932691 (and ~115 others) were generated before Kes saved the new dates (19:27/19:50 UTC) and before the open house date existed in the prompts (deployed 21:04 UTC); two post-19:50 emails said Open House = the class date because the prompt had no open house date. No wrong-date message generated since the deploy.
 Added: auto-close a lead's other open incidents when a correction is sent; "Dismiss all older incidents" (before last date-settings change); "Send correction SMS to all" (one SMS per lead, batched, failure-capped). 54 wrong-date tests pass.
+
+### Deployed (2026-09-30, later)
+Merged bulk-actions branch (`a143779`), redeployed Hetzner, no migration. Health ok.
