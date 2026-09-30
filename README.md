@@ -450,6 +450,9 @@ pytest tests/unit/
 # Run with coverage
 pytest tests/unit/ --cov=app --cov-report=term-missing
 
+# Wrong Date Monitor DB tests (opt-in; needs a THROWAWAY Postgres with migrations applied — never production)
+WRONG_DATE_TEST_DATABASE_URL=postgresql://postgres@localhost:55432/cora_test pytest tests/unit/test_wrong_date_monitor.py
+
 # Lint
 ruff check .
 

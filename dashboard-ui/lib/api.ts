@@ -453,3 +453,50 @@ export async function fetchLeadLifecycle(options?: {
   if (options?.offset)   params.offset   = String(options.offset);
   return get<LeadLifecycleResponse>("/dashboard/lead-lifecycle", params);
 }
+
+// ── Wrong Date Monitor (spec/32) ──────────────────────────────────────────────
+
+export interface WrongDateItem {
+  kind: "class" | "open_house";
+  raw: string;
+  expected: string;
+}
+
+export interface WrongDateIncident {
+  id: string;
+  contact_id: string;
+  channel: "sms" | "email";
+  wrong_dates: WrongDateItem[];
+  snippet: string;
+  expected_class_start: string;
+  expected_open_house: string;
+  message_sent_at: string | null;
+  status: "open" | "corrected" | "dismissed";
+  resolved_by: string | null;
+  resolved_at: string | null;
+  correction_text: string | null;
+  created_at: string | null;
+}
+
+export interface WrongDatesResponse {
+  expected: { class_start: string; open_house: string };
+  open_count: number;
+  correction_preview: string | null;
+  incidents: WrongDateIncident[];
+}
+
+export async function fetchWrongDates(
+  status: "open" | "corrected" | "dismissed" = "open",
+): Promise<WrongDatesResponse> {
+  return get<WrongDatesResponse>("/dashboard/wrong-dates", { status });
+}
+
+export async function sendDateCorrection(
+  incidentId: string,
+): Promise<{ status: "sent" | "shadow"; correction_text: string }> {
+  return post("/dashboard/actions/send-date-correction", { incident_id: incidentId });
+}
+
+export async function dismissWrongDate(incidentId: string, note = ""): Promise<{ status: string }> {
+  return post("/dashboard/actions/dismiss-wrong-date", { incident_id: incidentId, note });
+}

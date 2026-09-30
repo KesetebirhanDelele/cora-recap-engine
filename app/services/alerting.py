@@ -185,6 +185,12 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     except Exception as exc:
         logger.error("alerting: sales_queue_urgent eval failed: %s", exc)
 
+    try:
+        from app.services.wrong_date_monitor import scan_wrong_dates
+        scan_wrong_dates(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: wrong_date scan failed: %s", exc)
+
     for defn in _ALERT_DEFINITIONS:
         try:
             _evaluate_single_alert(

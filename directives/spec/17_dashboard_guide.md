@@ -252,6 +252,7 @@ Each event type has a distinct appearance:
 - `reply_to_email` — email reply-to address
 - `unsubscribe_text` — footer unsubscribe copy
 - `next_class_start` — next class start date injected into call-to-action messages
+- `next_open_house_date` — next Open House date injected into messages and checked by the Wrong Date Monitor (spec/32)
 - `live_open_house_link` — open house registration link
 - `explainer_open_house_video_link` — YouTube explainer video link
 
@@ -300,3 +301,9 @@ These are read-only in the dashboard. Values are configured in `.env` and loaded
 - In shadow mode, SMS/email content IS generated and visible directly in the Lead Journey timeline (🔮 *shadow* badge). GHL field writes appear as 📋 GHL Update (Shadow) events immediately following each message event. No need to cross-reference the Shadow Actions section for message content inspection.
 - All queries run against Postgres directly — no cache layer. Refresh the browser to get current state.
 - The dashboard does not auto-refresh. Use the browser refresh button or Streamlit's `st.rerun()` (available in some sections after taking an action).
+
+---
+
+### 12. Wrong Date Monitor (`/wrong-dates`)
+
+**Purpose**: Lists messages that told a lead a next-class-start or next-open-house date that doesn't match Settings; send a correction SMS or dismiss. The home-page tile badge is the open count. Full behavior: `directives/spec/32_wrong_date_monitor.md`.

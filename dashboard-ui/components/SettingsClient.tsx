@@ -159,6 +159,7 @@ export default function SettingsClient() {
   const [replyToEmail, setReplyToEmail] = useState("admissions@colaberry.com");
   const [unsubscribeText, setUnsubscribeText] = useState("Text STOP to stop alerts");
   const [nextClassStart, setNextClassStart] = useState("upcoming");
+  const [nextOpenHouseDate, setNextOpenHouseDate] = useState("upcoming");
   const [liveOpenHouseLink, setLiveOpenHouseLink] = useState("");
   const [explainerVideoLink, setExplainerVideoLink] = useState("");
 
@@ -191,6 +192,7 @@ export default function SettingsClient() {
     setReplyToEmail(getString(c, "reply_to_email", "admissions@colaberry.com"));
     setUnsubscribeText(getString(c, "unsubscribe_text", "Text STOP to stop alerts"));
     setNextClassStart(getString(c, "next_class_start", "upcoming"));
+    setNextOpenHouseDate(getString(c, "next_open_house_date", "upcoming"));
     setLiveOpenHouseLink(getString(c, "live_open_house_link", ""));
     setExplainerVideoLink(getString(c, "explainer_open_house_video_link", ""));
     try {
@@ -281,6 +283,7 @@ export default function SettingsClient() {
           reply_to_email: replyToEmail.trim(),
           unsubscribe_text: unsubscribeText.trim(),
           next_class_start: nextClassStart.trim(),
+          next_open_house_date: nextOpenHouseDate.trim(),
           live_open_house_link: liveOpenHouseLink.trim(),
           explainer_open_house_video_link: explainerVideoLink.trim(),
           admissions_assistants: JSON.stringify(admissionsAssistants),
@@ -555,6 +558,12 @@ export default function SettingsClient() {
             <p style={SECTION_CAPTION}>e.g. &quot;May 12&quot; or &quot;Q3 2026&quot;. Used in urgency messaging.</p>
             <input type="text" value={nextClassStart}
               onChange={(e) => setNextClassStart(e.target.value)} style={INPUT} />
+          </div>
+          <div>
+            <label style={LABEL}>Next Open House Date</label>
+            <p style={SECTION_CAPTION}>e.g. &quot;October 29, 2026&quot;. Used in messages and checked by the Wrong Date Monitor.</p>
+            <input type="text" value={nextOpenHouseDate}
+              onChange={(e) => setNextOpenHouseDate(e.target.value)} style={INPUT} />
           </div>
           <div>
             <label style={LABEL}>Live Open House RSVP link</label>

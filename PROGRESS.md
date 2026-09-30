@@ -2318,3 +2318,22 @@ new code imports cleanly in the live `api` container. One alert row was
 active at deploy time (`cfcd2e48`, created 20:35:26 UTC) — verifying it
 resolves under the new logic on the next metrics cycle rather than
 lingering.
+
+## Session: 2026-09-30 — Wrong Date Monitor + Next Open House Date setting (spec/32, `feat/open-house-date-alert`)
+
+**Status: built and tested locally; NOT committed, NOT merged, NOT deployed** (awaiting Kes's local sign-off).
+
+### What was built
+- New setting `next_open_house_date` (Settings page, Streamlit, AI prompt context; migration 0024 seeds `October 29, 2026`, never overwrites a saved value). Prompts now carry both dates and tell the model not to invent any.
+- Detector `app/core/wrong_date_guard.py`: class-start / open-house dates in a sent message vs. the dashboard values; appointment / "we'll call you" dates are classified by nearest keyword and ignored.
+- `app/services/wrong_date_monitor.py`: scanner (runs each metrics cycle), per-message incident (UNIQUE → idempotent), one email per incident, correction SMS via the GHL Message field, dismiss.
+- Dashboard: "Wrong Date Monitor" tile (badge = open count) → `/wrong-dates` page with Send correction SMS / Dismiss.
+- Migration 0024 adds `wrong_date_incidents`.
+
+### Tests
+46 new (30 pure, 16 DB-backed opt-in via `WRONG_DATE_TEST_DATABASE_URL`). Full unit suite: 1353 passed, 5 failed — the same 5 fail on the untouched branch HEAD (test_enrolled_intent, test_ghl_adapter x2, test_inbound_call_processing x2), unrelated. Migrations 0001→0024 verified on a throwaway local Postgres.
+
+### Not done / to verify after deploy
+- `alembic upgrade head` on Hetzner (0024) + `up -d --build`.
+- Confirm in live mode (test contact) that writing the GHL Message field actually triggers the SMS workflow.
+- Messages sent by GHL-native workflows/templates (not in `outbound_messages`) are not checked.

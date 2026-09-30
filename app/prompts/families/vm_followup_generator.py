@@ -19,6 +19,7 @@ Context variables injected at generation time:
   {sender_name}           — from app_config
   {reply_to_email}        — from app_config
   {next_class_start}      — from app_config
+  {next_open_house_date}  — from app_config
   {live_open_house_link}  — from app_config
   {explainer_video_link}  — from app_config
   {unsubscribe_text}      — from app_config
@@ -75,6 +76,7 @@ Context:
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
 - Next class: {next_class_start}
+- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
 - Open House RSVP: {live_open_house_link}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
@@ -116,6 +118,7 @@ Context:
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
 - Next class: {next_class_start}
+- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
 - Open House RSVP: {live_open_house_link}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
@@ -157,6 +160,7 @@ Context:
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
 - Next class: {next_class_start}
+- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
 - Open House RSVP: {live_open_house_link}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
@@ -199,6 +203,7 @@ Context:
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
 - Next class: {next_class_start}
+- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
 - Open House RSVP: {live_open_house_link}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}

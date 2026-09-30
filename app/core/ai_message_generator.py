@@ -483,6 +483,7 @@ def _load_brand_context(session: Any, settings: Any) -> dict[str, str]:
         "sender_name":                _gs("sender_name", "Cora from Colaberry"),
         "reply_to_email":             _gs("reply_to_email", "admissions@colaberry.com"),
         "next_class_start":           _gs("next_class_start", "upcoming"),
+        "next_open_house_date":       _gs("next_open_house_date", "upcoming"),
         "live_open_house_link":       _gs("live_open_house_link", ""),
         "explainer_video_link":       _gs("explainer_open_house_video_link", ""),
         "unsubscribe_text":           _gs("unsubscribe_text", "Text STOP to stop alerts"),

@@ -1,4 +1,4 @@
-import { fetchHealth, fetchCardMetrics } from "@/lib/api";
+import { fetchHealth, fetchCardMetrics, fetchWrongDates } from "@/lib/api";
 import SystemStatusBar from "@/components/SystemStatusBar";
 import { type NavCategory } from "@/components/NavigationCard";
 import DashboardSections, { type ResolvedNavGroup } from "@/components/DashboardSections";
@@ -13,7 +13,7 @@ interface NavItem {
   icon: string;
   description: string;
   category: NavCategory;
-  badgeKey?: keyof HealthResponse | "queue_issues";
+  badgeKey?: keyof HealthResponse | "queue_issues" | "wrong_date_open";
   badgeCritical?: boolean;
 }
 
@@ -37,6 +37,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
       { href: "/activity",        title: "Live Activity",       icon: "⚡",  description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
       { href: "/exceptions",      title: "Exceptions Monitor",  icon: "⚠️",  description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
       { href: "/queue",           title: "Queue Health",        icon: "⚙️",  description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
+      { href: "/wrong-dates",    title: "Wrong Date Monitor",  icon: "📆", description: "Leads sent a wrong class-start / open-house date — send a correction.", category: "operations", badgeKey: "wrong_date_open", badgeCritical: true },
       { href: "/alerts",          title: "Alerts",              icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
       { href: "/contact-lookup",  title: "Contact Drill-Down",  icon: "🔍", description: "Inspect all data for a single contact.", category: "operations" },
       { href: "/lead-lifecycle",  title: "Lead Lifecycle",      icon: "🗺️", description: "Per-lead journey: campaign, VM tier, touchpoints & finalization.", category: "operations" },
@@ -55,8 +56,9 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
   },
 ];
 
-function getBadge(item: NavItem, health: HealthResponse): number | undefined {
+function getBadge(item: NavItem, health: HealthResponse, wrongDateOpen: number): number | undefined {
   if (!item.badgeKey) return undefined;
+  if (item.badgeKey === "wrong_date_open") return wrongDateOpen > 0 ? wrongDateOpen : undefined;
   if (item.badgeKey === "queue_issues") {
     const n = health.stuck_job_count + health.expired_lease_count;
     return n > 0 ? n : undefined;
@@ -68,6 +70,7 @@ function getBadge(item: NavItem, health: HealthResponse): number | undefined {
 function resolveGroups(
   health: HealthResponse | null,
   cardMetrics: CardMetricsResponse | null,
+  wrongDateOpen: number,
 ): ResolvedNavGroup[] {
   return NAV_GROUPS.map((group) => ({
     label: group.label,
@@ -78,7 +81,7 @@ function resolveGroups(
       icon: item.icon,
       description: item.description,
       category: item.category,
-      badge: health ? getBadge(item, health) : undefined,
+      badge: health ? getBadge(item, health, wrongDateOpen) : undefined,
       badgeCritical: item.badgeCritical,
       indicator: computeIndicator(item.href, cardMetrics),
     })),
@@ -89,6 +92,8 @@ export default async function HomePage() {
   let health: HealthResponse | null = null;
   let healthError: string | null = null;
   let cardMetrics: CardMetricsResponse | null = null;
+  let wrongDateOpen = 0;
+  try { wrongDateOpen = (await fetchWrongDates("open")).open_count; } catch { /* tile still renders without a badge */ }
   try {
     [health, cardMetrics] = await Promise.all([fetchHealth(), fetchCardMetrics()]);
   } catch (e) {
@@ -150,7 +155,7 @@ export default async function HomePage() {
       </div>
 
       {/* ── Navigation (stacked sections: Analytics / Operations / System) ──── */}
-      <DashboardSections groups={resolveGroups(health, cardMetrics)} />
+      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen)} />
     </div>
   );
 }

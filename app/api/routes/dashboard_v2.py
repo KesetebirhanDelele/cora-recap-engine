@@ -942,6 +942,83 @@ def action_acknowledge_alert(
     return {"status": "ok", "alert_id": body.alert_id, "audit_log_id": audit.id}
 
 
+# ── Wrong Date Monitor (spec/32) ─────────────────────────────────────────────
+
+@router.get("/wrong-dates")
+def get_wrong_dates(
+    status_filter: str = Query(default="open", alias="status", pattern="^(open|corrected|dismissed)$"),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Incidents where a lead was sent a wrong class-start / open-house date."""
+    from app.config import get_settings
+    from app.services import wrong_date_monitor as wdm
+
+    settings = get_settings()
+    class_start, open_house = wdm.expected_dates(session, settings)
+    try:
+        preview: str | None = wdm.build_correction_text(session, settings)
+    except ValueError:
+        preview = None
+    return {
+        "expected": {"class_start": class_start, "open_house": open_house},
+        "open_count": wdm.count_open(session),
+        "correction_preview": preview,
+        "incidents": wdm.list_incidents(session, status_filter),
+    }
+
+
+class WrongDateActionRequest(BaseModel):
+    incident_id: str
+    note: str = ""
+
+
+@router.post("/actions/send-date-correction")
+def action_send_date_correction(
+    body: WrongDateActionRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Send the correction SMS for one open incident (writes the GHL Message field)."""
+    from app.config import get_settings
+    from app.services import wrong_date_monitor as wdm
+
+    try:
+        result = wdm.send_correction(session, get_settings(), body.incident_id, auth["operator_id"])
+    except wdm.IncidentNotOpen:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Incident not found or already handled")
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    except Exception as exc:
+        session.rollback()
+        logger.exception("send_date_correction failed | incident=%s", body.incident_id)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"GHL write failed: {exc}")
+    session.commit()
+    return {"status": "shadow" if result["shadow"] else "sent", **result}
+
+
+@router.post("/actions/dismiss-wrong-date")
+def action_dismiss_wrong_date(
+    body: WrongDateActionRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Dismiss an incident without sending anything (false positive / handled manually)."""
+    from app.services import wrong_date_monitor as wdm
+
+    try:
+        wdm.dismiss_incident(session, body.incident_id, auth["operator_id"], body.note)
+    except wdm.IncidentNotOpen:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail="Incident not found or already handled")
+    session.commit()
+    return {"status": "dismissed", "incident_id": body.incident_id}
+
+
 # ── WebSocket — real-time event feed ─────────────────────────────────────────
 
 @router.get("/campaign-overview")

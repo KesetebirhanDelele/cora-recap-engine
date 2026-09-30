@@ -1465,6 +1465,12 @@ elif section == "Settings":
         help='E.g. "May 12" or "Q3 2026". Used in urgency messaging.',
         key="next_class_start",
     )
+    next_open_house_date = col1.text_input(
+        "Next Open House Date",
+        value=_get(cfg, "next_open_house_date", "upcoming"),
+        help='E.g. "October 29, 2026". Used in messages and checked by the Wrong Date Monitor.',
+        key="next_open_house_date",
+    )
     live_open_house_link = col2.text_input(
         "Live Open House RSVP link",
         value=_get(cfg, "live_open_house_link", ""),
@@ -1522,6 +1528,7 @@ elif section == "Settings":
                     "reply_to_email":                      reply_to_email.strip(),
                     "unsubscribe_text":                    unsubscribe_text.strip(),
                     "next_class_start":                    next_class_start.strip(),
+                    "next_open_house_date":                next_open_house_date.strip(),
                     "live_open_house_link":                live_open_house_link.strip(),
                     "explainer_open_house_video_link":     explainer_video_link.strip(),
                 },
