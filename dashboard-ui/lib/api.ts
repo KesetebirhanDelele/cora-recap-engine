@@ -482,6 +482,10 @@ export interface WrongDatesResponse {
   expected: { class_start: string; open_house: string };
   open_count: number;
   correction_preview: string | null;
+  open_leads: number;
+  bulk_send_max: number;
+  settings_changed_at: string | null;
+  open_before_settings_change: number;
   incidents: WrongDateIncident[];
 }
 
@@ -493,10 +497,29 @@ export async function fetchWrongDates(
 
 export async function sendDateCorrection(
   incidentId: string,
-): Promise<{ status: "sent" | "shadow"; correction_text: string }> {
+): Promise<{ status: "sent" | "shadow"; correction_text: string; also_closed?: number }> {
   return post("/dashboard/actions/send-date-correction", { incident_id: incidentId });
 }
 
 export async function dismissWrongDate(incidentId: string, note = ""): Promise<{ status: string }> {
   return post("/dashboard/actions/dismiss-wrong-date", { incident_id: incidentId, note });
+}
+
+export async function dismissWrongDatesBulk(note = ""): Promise<{ status: string; dismissed: number; cutoff: string }> {
+  return post("/dashboard/actions/dismiss-wrong-dates-bulk", { note });
+}
+
+export interface BulkSendResult {
+  status: "shadow" | "done";
+  shadow: boolean;
+  sent: number;
+  failed: number;
+  remaining: number;
+  total_leads: number;
+  stopped_early?: boolean;
+  errors?: string[];
+}
+
+export async function sendDateCorrectionAll(): Promise<BulkSendResult> {
+  return post("/dashboard/actions/send-date-correction-all", {});
 }

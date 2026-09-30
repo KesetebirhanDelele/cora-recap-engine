@@ -34,6 +34,21 @@ code change. As of 2026-09-30: class start `November 12, 2026`, open house
    `ALERT_EMAIL_TO`), and one aggregate `alert_events` row while any incident is open.
 5. Tile `/wrong-dates`: **Send correction SMS** / **Dismiss**.
 
+## Bulk actions (added 2026-09-30)
+- **One correction per lead.** Sending a correction closes every other open
+  incident for the same lead (they were told wrong things in several messages;
+  one corrected SMS covers all), so a lead is never texted twice.
+- **Send correction SMS to all** - one click; the UI calls
+  `POST /dashboard/actions/send-date-correction-all` in batches of
+  `BULK_SEND_MAX_LEADS` (25) until `remaining` is 0. One SMS per lead. Each lead
+  commits independently (failures keep what was already sent and stay open);
+  3 consecutive failures stop the run; the field id is resolved once per run.
+  Shadow mode sends nothing. Confirm dialog shows the exact text and lead count.
+- **Dismiss all older incidents** - `POST /dashboard/actions/dismiss-wrong-dates-bulk`
+  dismisses open incidents sent before the date settings were last saved
+  (`MAX(updated_at)` of next_class_start / next_open_house_date / live_open_house_link),
+  since those messages used the old values. No messages sent; audited.
+
 ## Comparison rules
 - Mention with no year → match on month+day. With a year → year must match too
   (when the configured value has one).

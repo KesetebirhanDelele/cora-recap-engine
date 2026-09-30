@@ -955,6 +955,7 @@ def get_wrong_dates(
 
     settings = get_settings()
     class_start, open_house = wdm.expected_dates(session, settings)
+    changed = wdm.settings_changed_at(session)
     try:
         preview: str | None = wdm.build_correction_text(session, settings)
     except ValueError:
@@ -963,6 +964,10 @@ def get_wrong_dates(
         "expected": {"class_start": class_start, "open_house": open_house},
         "open_count": wdm.count_open(session),
         "correction_preview": preview,
+        "open_leads": wdm.count_open_leads(session),
+        "bulk_send_max": wdm.BULK_SEND_MAX_LEADS,
+        "settings_changed_at": changed.isoformat() if changed else None,
+        "open_before_settings_change": wdm.count_open_before(session, changed) if changed else 0,
         "incidents": wdm.list_incidents(session, status_filter),
     }
 
@@ -998,6 +1003,48 @@ def action_send_date_correction(
                             detail=f"GHL write failed: {exc}")
     session.commit()
     return {"status": "shadow" if result["shadow"] else "sent", **result}
+
+
+class BulkDismissRequest(BaseModel):
+    before: datetime | None = None   # default: when the date settings were last saved
+    note: str = ""
+
+
+@router.post("/actions/dismiss-wrong-dates-bulk")
+def action_dismiss_wrong_dates_bulk(
+    body: BulkDismissRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Dismiss all open incidents sent before a cutoff (default: last date-settings change)."""
+    from app.services import wrong_date_monitor as wdm
+
+    cutoff = body.before or wdm.settings_changed_at(session)
+    if cutoff is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="No cutoff available")
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    count = wdm.dismiss_open_before(session, cutoff, auth["operator_id"], body.note)
+    session.commit()
+    return {"status": "dismissed", "dismissed": count, "cutoff": cutoff.isoformat()}
+
+
+@router.post("/actions/send-date-correction-all")
+def action_send_date_correction_all(
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Send the correction SMS to every lead with an open incident (one SMS per lead, capped per call)."""
+    from app.config import get_settings
+    from app.services import wrong_date_monitor as wdm
+
+    try:
+        result = wdm.send_corrections_bulk(session, get_settings(), auth["operator_id"])
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    return {"status": "shadow" if result["shadow"] else "done", **result}
 
 
 @router.post("/actions/dismiss-wrong-date")

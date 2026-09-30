@@ -6,6 +6,9 @@ import {
   fetchWrongDates,
   sendDateCorrection,
   dismissWrongDate,
+  dismissWrongDatesBulk,
+  sendDateCorrectionAll,
+  type BulkSendResult,
   type WrongDatesResponse,
   type WrongDateIncident,
 } from "@/lib/api";
@@ -53,7 +56,8 @@ function IncidentRow({
       onChanged(
         r.status === "shadow"
           ? "Shadow mode: nothing was sent (GHL writes are off). Incident left open."
-          : `Correction sent to ${inc.contact_id}.`
+          : `Correction sent to ${inc.contact_id}.` +
+            (r.also_closed ? ` Also closed ${r.also_closed} other open incident(s) for this lead.` : "")
       );
     } catch (e) {
       setErr(String(e));
@@ -143,6 +147,7 @@ export default function WrongDatesClient() {
   const [data, setData] = useState<WrongDatesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(() => {
     fetchWrongDates(tab).then(setData).catch((e) => setError(String(e)));
@@ -189,6 +194,78 @@ export default function WrongDatesClient() {
           </button>
         ))}
       </div>
+
+      {tab === "open" && data && data.open_leads > 0 && (
+        <div style={{ ...CARD, display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "0.82rem", color: "#475569", flex: 1, minWidth: 240 }}>
+            {data.open_leads} lead(s) have an open incident. One correction SMS per lead
+            All are sent with one click.
+          </span>
+          <button
+            disabled={bulkBusy}
+            onClick={async () => {
+              if (!window.confirm(`Send the correction SMS to ALL ${data.open_leads} lead(s) now?\n\n${data.correction_preview ?? ""}`)) return;
+              setBulkBusy(true);
+              setError(null);
+              try {
+                // The server handles a bounded batch per request; keep going until
+                // everyone is done, or a pass sends nothing / stops early (failures).
+                let sent = 0;
+                let failed = 0;
+                let last: BulkSendResult | null = null;
+                for (let pass = 0; pass < 50; pass++) {
+                  last = await sendDateCorrectionAll();
+                  if (last.shadow) break;
+                  sent += last.sent;
+                  failed += last.failed;
+                  setNotice(`Sending… ${sent} sent so far, ${last.remaining} lead(s) remaining.`);
+                  if (last.remaining === 0 || last.sent === 0 || last.stopped_early) break;
+                }
+                setNotice(
+                  last?.shadow
+                    ? "Shadow mode: nothing was sent (GHL writes are off). Incidents left open."
+                    : `Done: ${sent} correction(s) sent` +
+                      (failed ? `, ${failed} failed (left open)` : "") + "." +
+                      (last?.stopped_early ? " Stopped early after repeated failures: " + (last.errors ?? []).join("; ") : "")
+                );
+                load();
+              } catch (e) {
+                setError(String(e));
+              } finally {
+                setBulkBusy(false);
+              }
+            }}
+            style={{ background: "#2563eb", color: "#fff", border: 0, borderRadius: 6, padding: "0.45rem 0.8rem", fontWeight: 600, cursor: bulkBusy ? "wait" : "pointer", opacity: bulkBusy ? 0.6 : 1 }}
+          >
+            {bulkBusy ? "Sending…" : "Send correction SMS to all"}
+          </button>
+        </div>
+      )}
+
+      {tab === "open" && data && data.open_before_settings_change > 0 && (
+        <div style={{ ...CARD, display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "0.82rem", color: "#475569", flex: 1, minWidth: 240 }}>
+            {data.open_before_settings_change} open incident(s) were sent before the date settings were last
+            changed ({data.settings_changed_at ? new Date(data.settings_changed_at).toLocaleString() : "—"}) —
+            they used the old values.
+          </span>
+          <button
+            onClick={async () => {
+              if (!window.confirm(`Dismiss ${data.open_before_settings_change} incident(s)? No messages will be sent.`)) return;
+              try {
+                const r = await dismissWrongDatesBulk();
+                setNotice(`Dismissed ${r.dismissed} older incident(s).`);
+                load();
+              } catch (e) {
+                setError(String(e));
+              }
+            }}
+            style={{ background: "#fff", color: "#475569", border: "1px solid #cbd5e1", borderRadius: 6, padding: "0.45rem 0.8rem", cursor: "pointer" }}
+          >
+            Dismiss all older incidents
+          </button>
+        </div>
+      )}
 
       {notice && <div style={{ ...CARD, color: "#166534", background: "#f0fdf4" }}>{notice}</div>}
 

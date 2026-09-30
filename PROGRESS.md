@@ -2340,3 +2340,9 @@ lingering.
 
 ### Deployed (2026-09-30)
 Merged `feat/open-house-date-alert` → `feat/ghl-call-conversation-sync` (`435506e`), pushed, redeployed Hetzner via `scripts/deploy.sh`. All services up, API + Dashboard health `ok`, migration 0024 applied (`next_open_house_date` = October 29, 2026; `next_class_start` = November 12, 2026). `/dashboard/wrong-dates` returns 200. Still to verify in live mode: the GHL Message-field correction actually triggers the SMS workflow (test contact).
+
+## Session: 2026-09-30 (later) — Wrong Date Monitor bulk actions (`feat/wrong-date-monitor-bulk-close`)
+
+**Status: built and tested locally; NOT committed/merged/deployed.**
+Investigation finding first: the flagged messages to +16148932691 (and ~115 others) were generated before Kes saved the new dates (19:27/19:50 UTC) and before the open house date existed in the prompts (deployed 21:04 UTC); two post-19:50 emails said Open House = the class date because the prompt had no open house date. No wrong-date message generated since the deploy.
+Added: auto-close a lead's other open incidents when a correction is sent; "Dismiss all older incidents" (before last date-settings change); "Send correction SMS to all" (one SMS per lead, batched, failure-capped). 54 wrong-date tests pass.

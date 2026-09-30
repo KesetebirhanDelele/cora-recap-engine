@@ -202,6 +202,56 @@ def count_open(session: Session) -> int:
     ).scalar() or 0)
 
 
+_DATE_SETTING_KEYS = ("next_class_start", "next_open_house_date", "live_open_house_link")
+
+
+def settings_changed_at(session: Session) -> datetime | None:
+    """When the date/RSVP settings were last saved. Anything sent before this
+    used older values, so it is stale by definition."""
+    return session.execute(
+        text("SELECT MAX(updated_at) FROM app_config WHERE key = ANY(:keys)"),
+        {"keys": list(_DATE_SETTING_KEYS)},
+    ).scalar()
+
+
+def count_open_before(session: Session, cutoff: datetime) -> int:
+    return int(session.execute(
+        text("SELECT COUNT(*) FROM wrong_date_incidents "
+             "WHERE status = 'open' AND message_sent_at < :c"),
+        {"c": cutoff},
+    ).scalar() or 0)
+
+
+def dismiss_open_before(
+    session: Session, cutoff: datetime, operator_id: str, note: str = "",
+) -> int:
+    """Dismiss every open incident whose message was sent before `cutoff`
+    (no messages sent). Returns how many were dismissed. Idempotent: rerunning
+    with the same cutoff dismisses nothing new."""
+    now = datetime.now(tz=timezone.utc)
+    rows = session.execute(
+        text("""
+            UPDATE wrong_date_incidents
+            SET status = 'dismissed', resolved_by = :op, resolved_at = :now
+            WHERE status = 'open' AND message_sent_at < :c
+            RETURNING id
+        """),
+        {"op": operator_id, "now": now, "c": cutoff},
+    ).fetchall()
+    if rows:
+        session.execute(
+            text("""
+                INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+                VALUES (:id, 'wrong_date_incident', 'bulk', 'bulk_dismiss_wrong_date', :op,
+                        CAST(:ctx AS jsonb), :now)
+            """),
+            {"id": str(uuid.uuid4()), "op": operator_id, "now": now,
+             "ctx": json.dumps({"cutoff": cutoff.isoformat(), "count": len(rows), "note": note})},
+        )
+    _sync_aggregate_alert(session, now)
+    return len(rows)
+
+
 # ── Correction SMS ───────────────────────────────────────────────────────────
 
 def build_correction_text(session: Session, settings: Any) -> str:
@@ -240,6 +290,7 @@ def _looks_like_phone(s: str) -> bool:
 
 def send_correction(
     session: Session, settings: Any, incident_id: str, operator_id: str,
+    field_cache: dict | None = None,
 ) -> dict[str, Any]:
     """
     Send the correction SMS for one open incident by writing the GHL "Message"
@@ -293,9 +344,14 @@ def send_correction(
             if not found or not found.get("id"):
                 raise RuntimeError(f"Could not resolve GHL contact for phone {contact_id}")
             contact_id = found["id"]
-        field_updates = _resolve_to_field_ids(ghl, {label: correction})
-        if not field_updates:
-            raise RuntimeError(f"Could not resolve GHL field {label!r} to an ID")
+        if field_cache is not None and "field_id" in field_cache:
+            field_updates = {field_cache["field_id"]: correction}
+        else:
+            field_updates = _resolve_to_field_ids(ghl, {label: correction})
+            if not field_updates:
+                raise RuntimeError(f"Could not resolve GHL field {label!r} to an ID")
+            if field_cache is not None:
+                field_cache["field_id"] = next(iter(field_updates))
         ghl.update_contact_fields(contact_id, field_updates, mode_flags=flags)
     except Exception:
         session.execute(
@@ -327,8 +383,23 @@ def send_correction(
         {"id": str(uuid.uuid4()), "eid": incident_id, "op": operator_id,
          "ctx": '{"source": "dashboard_v2"}', "now": now},
     )
+    # One correction covers everything this lead was told wrong: close their
+    # other open incidents too so nobody sends (and the lead never receives)
+    # the same correction twice.
+    siblings = session.execute(
+        text("""
+            UPDATE wrong_date_incidents
+            SET status = 'corrected', resolved_by = :op, resolved_at = :now, correction_text = :txt
+            WHERE contact_id = :cid AND status = 'open'
+            RETURNING id
+        """),
+        {"op": operator_id, "now": now, "txt": correction, "cid": row[0]},
+    ).fetchall()
     _sync_aggregate_alert(session, now)
-    return {"shadow": False, "correction_text": correction, "sent": True}
+    return {
+        "shadow": False, "correction_text": correction, "sent": True,
+        "also_closed": len(siblings),
+    }
 
 
 def dismiss_incident(session: Session, incident_id: str, operator_id: str, note: str = "") -> None:
@@ -354,3 +425,74 @@ def dismiss_incident(session: Session, incident_id: str, operator_id: str, note:
          "ctx": json.dumps({"note": note}), "now": now},
     )
     _sync_aggregate_alert(session, now)
+
+
+# One bulk HTTP request handles at most this many leads (~1s each) so it stays
+# well inside proxy timeouts. The dashboard button keeps calling until
+# `remaining` is 0, so the operator still sends to everyone with one click.
+BULK_SEND_MAX_LEADS = 25
+BULK_SEND_MAX_CONSECUTIVE_FAILURES = 3
+
+
+def count_open_leads(session: Session) -> int:
+    """Distinct leads with at least one open incident (= SMS a bulk send would send)."""
+    return int(session.execute(
+        text("SELECT COUNT(DISTINCT contact_id) FROM wrong_date_incidents WHERE status = 'open'")
+    ).scalar() or 0)
+
+
+def send_corrections_bulk(
+    session: Session, settings: Any, operator_id: str,
+) -> dict[str, Any]:
+    """
+    Send the correction SMS to every lead with an open incident - ONE SMS per
+    lead, however many wrong messages they received (send_correction closes
+    the lead's sibling incidents). Each lead commits independently, so a
+    failure part-way keeps everything already sent; after
+    BULK_SEND_MAX_CONSECUTIVE_FAILURES in a row the run stops (GHL is down or
+    misconfigured - don't hammer it). In shadow mode nothing is written.
+    """
+    from app.core.mode_flags import get_mode_flags
+
+    leads = session.execute(
+        text("""
+            SELECT DISTINCT ON (contact_id) contact_id, id
+            FROM wrong_date_incidents
+            WHERE status = 'open'
+            ORDER BY contact_id, created_at DESC
+        """)
+    ).fetchall()
+    total = len(leads)
+
+    flags = get_mode_flags(session, settings)
+    if not flags.ghl_writes_enabled:
+        return {"shadow": True, "sent": 0, "failed": 0, "remaining": total, "total_leads": total,
+                "correction_text": build_correction_text(session, settings)}
+
+    sent = failed = consecutive = 0
+    errors: list[str] = []
+    field_cache: dict = {}
+    attempted = 0
+    for contact_id, incident_id in leads[:BULK_SEND_MAX_LEADS]:
+        attempted += 1
+        try:
+            send_correction(session, settings, incident_id, operator_id, field_cache=field_cache)
+            session.commit()
+            sent += 1
+            consecutive = 0
+        except IncidentNotOpen:
+            session.rollback()  # closed by a concurrent click - nothing to do
+        except Exception as exc:
+            session.rollback()
+            failed += 1
+            consecutive += 1
+            errors.append(f"{contact_id}: {exc}")
+            logger.error("bulk correction failed | contact=%s: %s", contact_id, exc)
+            if consecutive >= BULK_SEND_MAX_CONSECUTIVE_FAILURES:
+                break
+    return {
+        "shadow": False, "sent": sent, "failed": failed, "total_leads": total,
+        "remaining": max(total - attempted, 0),
+        "errors": errors[:5],
+        "stopped_early": consecutive >= BULK_SEND_MAX_CONSECUTIVE_FAILURES,
+    }
