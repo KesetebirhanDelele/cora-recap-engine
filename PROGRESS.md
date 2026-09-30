@@ -2337,3 +2337,6 @@ lingering.
 - `alembic upgrade head` on Hetzner (0024) + `up -d --build`.
 - Confirm in live mode (test contact) that writing the GHL Message field actually triggers the SMS workflow.
 - Messages sent by GHL-native workflows/templates (not in `outbound_messages`) are not checked.
+
+### Deployed (2026-09-30)
+Merged `feat/open-house-date-alert` → `feat/ghl-call-conversation-sync` (`435506e`), pushed, redeployed Hetzner via `scripts/deploy.sh`. All services up, API + Dashboard health `ok`, migration 0024 applied (`next_open_house_date` = October 29, 2026; `next_class_start` = November 12, 2026). `/dashboard/wrong-dates` returns 200. Still to verify in live mode: the GHL Message-field correction actually triggers the SMS workflow (test contact).
