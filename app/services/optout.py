@@ -500,25 +500,106 @@ def cora_block_reason(session: Session, contact_ids: list[str], channel: str) ->
 
 # ── dashboard reads ──────────────────────────────────────────────────────────
 
-def snapshot(session: Session) -> dict[str, Any]:
+def _looks_phone(v: str) -> bool:
+    d = (v or "").replace("+", "").replace("-", "").replace(" ", "")
+    return d.isdigit() and len(d) >= 10
+
+
+def fill_contact_info(session: Session, rows: list[dict], ghl: Any | None, budget_seconds: float = 10.0,
+                      max_lookups: int = 40) -> None:
+    """Give every row the lead's FULL phone / email (stored on the row, so each lookup happens once). A contact id that
+    is already a phone number needs no lookup. Parallel and time-boxed; failures are retried on the next refresh."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    started = time.monotonic()
+    todo: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("contact_phone") or r.get("contact_email"):
+            continue
+        if _looks_phone(r["contact_id"]):
+            r["contact_phone"] = r["contact_id"]
+            session.execute(text("UPDATE optout_actions SET contact_phone = :p WHERE id = :i"), {"p": r["contact_id"], "i": r["id"]})
+        else:
+            todo.setdefault(r["contact_id"], []).append(r)
+    if not todo or ghl is None:
+        return
+
+    def fetch(cid: str) -> tuple[str, str, str]:
+        rec = ghl.get_contact(cid)
+        c = rec.get("contact", rec) if isinstance(rec, dict) else {}
+        return cid, c.get("phone") or "", c.get("email") or ""
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(fetch, c) for c in list(todo)[:max_lookups]]
+        try:
+            for f in as_completed(futures, timeout=budget_seconds + 5):
+                try:
+                    cid, phone, email = f.result(timeout=max(budget_seconds - (time.monotonic() - started), 0.1))
+                except Exception:
+                    continue
+                for r in todo[cid]:
+                    r["contact_phone"], r["contact_email"] = phone, email
+                    session.execute(text("UPDATE optout_actions SET contact_phone = :p, contact_email = :e WHERE id = :i"),
+                                    {"p": phone, "e": email, "i": r["id"]})
+        except Exception as exc:                       # timeout: show what we have
+            logger.warning("optout contact lookup incomplete: %s", exc)
+
+
+def triage_unclear(session: Session, settings: Any, limit: int = 10) -> dict[str, int]:
+    """Word matching only NOMINATES a line ("leave me a message", "not in my spam" hit the hint words). Before a human
+    reads it, an LLM reads the quote: clearly not an opt-out (>= 0.9) -> dismissed with the reason on record; otherwise
+    its verdict is attached to the row and the human decides."""
+    rows = session.execute(text("""
+        SELECT id, source, excerpt FROM optout_actions
+        WHERE status = 'review' AND kind = 'dnd' AND confidence = 'medium'
+          AND coalesce(reason, '') ILIKE '%unclear%' AND coalesce(reason, '') NOT LIKE '%[LLM%' AND coalesce(excerpt, '') <> ''
+        ORDER BY created_at LIMIT :n"""), {"n": limit}).fetchall()
+    out = {"dismissed": 0, "annotated": 0, "skipped": 0}
+    for rid, source, excerpt in rows:
+        channel = "call" if "call" in source else ("email" if "email" in source else "sms")
+        v = llm_judge(settings, excerpt, channel)
+        if not v:
+            out["skipped"] += 1
+            continue
+        decision, conf, why = v
+        note = f"[LLM {conf:.2f}] {decision}: {why}"[:290]
+        if decision == "other" and conf >= 0.9:
+            session.execute(text("UPDATE optout_actions SET status='dismissed', decided_by='llm', resolved_at=:n, reason=:r WHERE id=:i"),
+                            {"n": _now(), "r": "not an opt-out " + note[:270], "i": rid})
+            _audit(session, "optout_dismissed", rid, {"by": "llm", "confidence": conf})
+            out["dismissed"] += 1
+        else:
+            scope = ",".join(sorted(_DECISION_SCOPE.get(decision, set()))) if decision in _DECISION_SCOPE and conf >= 0.7 else None
+            session.execute(text("UPDATE optout_actions SET reason=:r, scope=coalesce(:sc, scope) WHERE id=:i"),
+                            {"r": note, "sc": scope, "i": rid})
+            out["annotated"] += 1
+    session.commit()
+    return out
+
+
+def snapshot(session: Session, ghl: Any | None = None) -> dict[str, Any]:
     def rows(sql: str, **p: Any) -> list[dict]:
         cols = ("id", "contact_id", "source", "kind", "scope", "confidence", "decided_by", "status", "phrase",
-                "excerpt", "reason", "created_at", "resolved_at")
+                "excerpt", "reason", "created_at", "resolved_at", "contact_phone", "contact_email")
         return [{**dict(zip(cols, r)), "created_at": r[11].isoformat() if r[11] else None,
-                 "resolved_at": r[12].isoformat() if r[12] else None}
+                 "resolved_at": r[12].isoformat() if r[12] else None,
+                 "contact_phone": r[13] or "", "contact_email": r[14] or ""}
                 for r in session.execute(text(sql), p).fetchall()]
 
     base = ("SELECT id, contact_id, source, kind, scope, confidence, decided_by, status, phrase, excerpt, reason, "
-            "created_at, resolved_at FROM optout_actions ")
+            "created_at, resolved_at, contact_phone, contact_email FROM optout_actions ")
     counts = {r[0]: int(r[1]) for r in session.execute(text(
         "SELECT status, count(*) FROM optout_actions GROUP BY status")).fetchall()}
     by_source = {r[0]: int(r[1]) for r in session.execute(text(
         "SELECT source, count(*) FROM optout_actions WHERE status='review' GROUP BY source")).fetchall()}
+    review = rows(base + "WHERE status='review' ORDER BY created_at DESC LIMIT 100")
+    applied = rows(base + "WHERE status='applied' ORDER BY resolved_at DESC NULLS LAST LIMIT 50")
+    failed = rows(base + "WHERE status='failed' AND source <> 'reconcile' ORDER BY created_at DESC LIMIT 20")
+    fill_contact_info(session, review + applied + failed, ghl)
     return {
         "counts": counts, "review_by_source": by_source,
-        "review": rows(base + "WHERE status='review' ORDER BY created_at DESC LIMIT 100"),
-        "applied": rows(base + "WHERE status='applied' ORDER BY resolved_at DESC NULLS LAST LIMIT 50"),
-        "failed": rows(base + "WHERE status='failed' AND source <> 'reconcile' ORDER BY created_at DESC LIMIT 20"),
+        "review": review, "applied": applied, "failed": failed,
         "reconcile_pending": int(session.execute(text("""SELECT count(*) FROM lead_state l WHERE l.do_not_call AND NOT EXISTS
             (SELECT 1 FROM optout_actions a WHERE a.source='reconcile' AND a.external_id = l.contact_id)""")).scalar() or 0),
     }

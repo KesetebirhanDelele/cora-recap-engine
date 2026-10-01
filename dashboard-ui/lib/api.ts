@@ -499,7 +499,7 @@ export interface WrongDatesResponse {
 export interface OptoutRow {
   id: string; contact_id: string; source: string; kind: string; scope: string; confidence: string;
   decided_by: string; status: string; phrase: string | null; excerpt: string | null; reason: string | null;
-  created_at: string | null; resolved_at: string | null;
+  created_at: string | null; resolved_at: string | null; contact_phone: string; contact_email: string;
 }
 
 export interface OptoutsResponse {

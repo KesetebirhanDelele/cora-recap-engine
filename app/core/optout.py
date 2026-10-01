@@ -62,7 +62,9 @@ _KEYWORD = re.compile(r"(?i)^\W*(stop|stopall|stop all|unsubscribe|cancel|end|qu
                       r"unsub|do not contact)\W*$")
 _NOT_INT = re.compile(r"(?i)\bnot\s+interested\b|\bno\s+thanks?\b|\bno\s+thank\s+you\b|\bnot\s+looking\b|\bnot\s+for\s+me\b")
 _WRONG = re.compile(r"(?i)\bwrong\s+(?:number|person)\b|\bno\s+one\s+(?:here\s+)?by\s+that\s+name\b|\bnot\s+(?:\w+\s+)?my\s+number\b")
-_HINT = re.compile(r"(?i)\b(stop|remove|unsubscribe|leave\s+me|harass\w*|spam\w*|report(?:ed|ing)?|sue|lawyer|attorney|tcpa|"
+_HINT = re.compile(r"(?i)\b(stop|remove|unsubscribe|leave\s+me\s+(?:alone|be)|harass\w*|"
+                   r"(?:it'?s|this\s+is|that'?s|you'?re|you\s+are)\s+(?:all\s+)?spam\w*|spamming|spam\s+me|"
+                   r"report(?:ed|ing)?\s+(?:you|this|it)|sue|lawyer|attorney|tcpa|"
                    r"no\s+more|quit|annoying|bother\w*|block|fcc|had\s+enough|enough\s+already|that'?s\s+enough|"
                    r"do\s+not\s+(?:want|need)|don'?t\s+(?:want|need)\s+(?:any|this|your|more|to\s+be))\b")
 

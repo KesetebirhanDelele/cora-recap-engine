@@ -446,3 +446,63 @@ def test_real_short_replies_still_work_after_the_boilerplate_rules():
 def test_verification_code_texts_with_stop_links_are_not_opt_outs():
     t = "Your Link verification code is: 150571. To stop receiving these messages, visit support.link.com/sms-opt-out"
     assert oo.classify(t, "sms").kind == oo.NONE
+
+
+# ── "unclear" is only a nomination: weak word hits no longer reach a human (found live 2026-10-01) ──
+@pytest.mark.parametrize("said,channel", [
+    ("Hey. You just missed me. So just please text me or leave me a message over here.", "call"),
+    ("I am waiting to receive the email, its not being sent to my email box. Its not in my spam cos I have checked it several times.", "sms"),
+])
+def test_lead_asking_to_be_contacted_is_not_even_nominated(said, channel):
+    assert oo.classify(said, channel).kind == oo.NONE
+
+
+@pytest.mark.parametrize("said,kind", [("this is spam, I will report you", oo.UNCLEAR), ("leave me alone", oo.DND),
+                                       ("you are spamming me", oo.UNCLEAR)])
+def test_real_spam_complaints_are_still_caught(said, kind):
+    assert oo.classify(said, "sms").kind == kind
+
+
+@db
+def test_contact_details_are_looked_up_once_and_stored(session):
+    from app.services import optout
+
+    _lead(session, "x", do_not_call=True)
+    optout._propose(session, contact_id="+14155550123", scope={"call"}, source="history_call", external_id="h1", phrase="p", excerpt="e", reason="r")
+    optout._propose(session, contact_id="ghl-abc", scope={"call"}, source="history_call", external_id="h2", phrase="p", excerpt="e", reason="r")
+    session.commit()
+    calls = []
+
+    class G:
+        def get_contact(self, cid):
+            calls.append(cid)
+            return {"contact": {"phone": "+16145550100", "email": "lead@example.test"}}
+
+    snap = optout.snapshot(session, G())
+    by = {r["contact_id"]: r for r in snap["review"]}
+    assert by["+14155550123"]["contact_phone"] == "+14155550123" and by["+14155550123"]["contact_email"] == ""
+    assert (by["ghl-abc"]["contact_phone"], by["ghl-abc"]["contact_email"]) == ("+16145550100", "lead@example.test")
+    assert calls == ["ghl-abc"]                                           # a phone-number id needs no lookup
+    session.commit()
+    optout.snapshot(session, G())
+    assert calls == ["ghl-abc"]                                           # stored: not looked up again
+
+
+@db
+def test_llm_triage_dismisses_clear_non_requests_and_annotates_the_rest(session):
+    from app.services import optout
+
+    for i, ex in enumerate(["leave me a message", "stop it already", "unreadable"]):
+        optout._insert(session, contact_id=f"t{i}", source="history_call", external_id=f"t{i}", kind="dnd", scope={"call"},
+                       confidence="medium", decided_by="auto", status="review", phrase="p", excerpt=ex,
+                       reason="Historical call: unclear wording - please read the quote")
+    session.commit()
+    answers = {"leave me a message": ("other", 0.95, "asks for a voicemail"), "stop it already": ("opt_out_call", 0.8, "asks to stop"),
+               "unreadable": None}
+    with patch.object(optout, "llm_judge", side_effect=lambda s, text_, ch: answers[text_]):
+        out = optout.triage_unclear(session, SETTINGS)
+    assert out == {"dismissed": 1, "annotated": 1, "skipped": 1}
+    rows = {r[0]: r[1:] for r in session.execute(text("select excerpt, status, scope, reason, decided_by from optout_actions order by created_at")).fetchall()}
+    assert rows["leave me a message"][0] == "dismissed" and rows["leave me a message"][3] == "llm"
+    assert rows["stop it already"][0] == "review" and "[LLM 0.80]" in rows["stop it already"][2]
+    assert rows["unreadable"][0] == "review"

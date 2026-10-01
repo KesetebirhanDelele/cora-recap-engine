@@ -1185,9 +1185,17 @@ class OptoutBatchRequest(BaseModel):
 @router.get("/optouts")
 def get_optouts(session: Session = Depends(get_db)) -> dict[str, Any]:
     """Opt-outs awaiting review, recently applied DND (undoable), reconciliation progress."""
+    from app.adapters.ghl import GHLClient
+    from app.config import get_settings
     from app.services import optout
 
-    return optout.snapshot(session)
+    try:
+        ghl = GHLClient(settings=get_settings())
+    except Exception:
+        ghl = None
+    result = optout.snapshot(session, ghl)
+    session.commit()                   # phone / email lookups are stored on the rows
+    return result
 
 
 @router.post("/actions/optout-apply")

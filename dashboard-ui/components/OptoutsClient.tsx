@@ -15,7 +15,20 @@ const SECONDARY: React.CSSProperties = { background: "#fff", color: "#475569", b
 const CHANNELS = ["call", "sms", "email"] as const;
 const SOURCE_LABEL: Record<string, string> = {
   call: "Phone call", sms_reply: "SMS reply", email_reply: "Email reply", reconcile: "Marked do-not-call in Cora, no DND in GHL",
+  history_call: "Earlier phone call", history_sms: "Earlier SMS reply", history_email: "Earlier email reply",
 };
+
+// full, selectable contact details - paste any of them into GHL's search
+function Contact({ r }: { r: OptoutRow }) {
+  const sel: React.CSSProperties = { userSelect: "all", fontWeight: 600, color: "#0f172a" };
+  return (
+    <span>
+      <span style={sel}>{r.contact_phone || "no phone"}</span>{" · "}
+      <span style={sel}>{r.contact_email || "no email"}</span>{" · GHL id "}
+      <span style={{ userSelect: "all", fontSize: "0.72rem" }}>{r.contact_id}</span>
+    </span>
+  );
+}
 
 function ago(iso: string | null): string {
   if (!iso) return "";
@@ -38,8 +51,9 @@ function ReviewRow({ r, onDone }: { r: OptoutRow; onDone: () => void }) {
   return (
     <div style={{ borderTop: "1px solid #e2e8f0", padding: "0.6rem 0" }}>
       <div style={{ fontSize: "0.8rem", color: "#64748b" }}>
-        {SOURCE_LABEL[r.source] ?? r.source} · {ago(r.created_at)} · contact {r.contact_id.slice(0, 8)}… · {r.kind.replace("_", " ")}
+        {SOURCE_LABEL[r.source] ?? r.source} · {ago(r.created_at)} · {r.kind.replace("_", " ")}
       </div>
+      <div style={{ fontSize: "0.85rem", margin: "0.15rem 0" }}><Contact r={r} /></div>
       {r.excerpt && <div style={{ margin: "0.25rem 0", fontStyle: "italic" }}>&ldquo;{r.excerpt}&rdquo;</div>}
       <div style={{ fontSize: "0.8rem", color: "#475569" }}>{r.phrase}{r.reason ? ` — ${r.reason}` : ""}</div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
@@ -129,11 +143,11 @@ export default function OptoutsClient() {
         <strong>Recently applied</strong>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", fontSize: "0.82rem", borderCollapse: "collapse", marginTop: 6 }}>
-            <thead><tr style={{ textAlign: "left", color: "#64748b" }}><th>When</th><th>Source</th><th>Channels</th><th>By</th><th>Said</th><th></th></tr></thead>
+            <thead><tr style={{ textAlign: "left", color: "#64748b" }}><th>When</th><th>Lead</th><th>Source</th><th>Channels</th><th>By</th><th>Said</th><th></th></tr></thead>
             <tbody>
               {d.applied.map((r) => (
                 <tr key={r.id} style={{ borderTop: "1px solid #e2e8f0" }}>
-                  <td>{ago(r.resolved_at)}</td><td>{SOURCE_LABEL[r.source] ?? r.source}</td>
+                  <td>{ago(r.resolved_at)}</td><td><Contact r={r} /></td><td>{SOURCE_LABEL[r.source] ?? r.source}</td>
                   <td>{r.kind === "dnd" ? r.scope.replace(/,/g, " + ") : r.kind.replace("_", " ")}</td>
                   <td>{r.decided_by}</td><td>{r.excerpt ?? r.phrase}</td>
                   <td>{r.kind === "dnd" && <button style={SECONDARY} onClick={async () => { await undoOptout(r.id); load(); }}>Undo</button>}</td>
