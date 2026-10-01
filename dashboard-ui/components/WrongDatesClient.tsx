@@ -183,7 +183,7 @@ export default function WrongDatesClient() {
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(() => {
-    fetchWrongDates(tab).then(setData).catch((e) => setError(String(e)));
+    fetchWrongDates(tab).then((d) => { setData(d); setError(null); }).catch((e) => setError(String(e)));
   }, [tab]);
 
   useEffect(() => {
@@ -206,7 +206,7 @@ export default function WrongDatesClient() {
       let failed = 0;
       let blocked = 0;
       let last: BulkSendResult | null = null;
-      for (let pass = 0; pass < 100; pass++) {
+      for (let pass = 0; pass < 300; pass++) {
         const r: BulkSendResult = await sendDateCorrectionAll(channel);
         last = r;
         if (r.shadow) break;
@@ -214,12 +214,15 @@ export default function WrongDatesClient() {
         failed += r.failed;
         blocked += r.blocked ?? 0;
         setNotice(`Sending… ${sent} ${CHANNEL_LABEL[channel]} sent so far, ${r.remaining} lead(s) remaining.`);
-        if (r.remaining === 0 || r.sent === 0 || r.stopped_early || r.daily_cap_reached) break;
+        const progressed = r.sent + r.failed + (r.blocked ?? 0) > 0;
+        if (r.remaining === 0 || !progressed || r.stopped_early || r.daily_cap_reached) break;
       }
       setNotice(bulkSummary(channel, sent, failed, blocked, last));
       load();
     } catch (e) {
-      setError(String(e));
+      // The server may have finished the batch even if the connection broke - say so and refresh.
+      setError(`${String(e)} — the connection was interrupted; the page now shows what was actually sent.`);
+      load();
     } finally {
       setBulkBusy(false);
     }

@@ -262,3 +262,36 @@ def test_routes_channel_gating_and_test_send(session, settings, client):
     assert t.status_code == 200 and t.json()["status"] == "sent"
     assert e.json()["status"] == "sent"
     assert sent.json()["sent"] == 1 and sent.json()["channel"] == "email"      # empty body defaults to email
+
+
+# ── request time budget (Next.js proxy drops requests open > ~30 s) ──────────
+
+def test_bulk_request_stops_at_time_budget_and_the_tile_can_finish_in_more_calls(session, settings, monkeypatch):
+    _setup(session, settings, ["a", "b", "c", "d", "e"])
+    ticks = iter(range(0, 1000, 10))                  # every clock read advances 10 s
+    monkeypatch.setattr(wdm, "_monotonic", lambda: next(ticks))
+    monkeypatch.setattr(wdm, "BULK_TIME_BUDGET_SECONDS", 25.0)
+    ghl_cls = MagicMock()
+    p1, p2, p3 = _live_patches(ghl_cls)
+    totals, calls, last = 0, 0, None
+    with p1, p2, p3:
+        while calls < 20:
+            last = wdm.send_corrections_bulk(session, settings, "kes")
+            calls += 1
+            totals += last["sent"]
+            if last["remaining"] == 0:
+                break
+    assert totals == 5 and calls > 1                  # needed several short requests
+    assert last["remaining"] == 0
+    assert len(_writes(ghl_cls)) == 5                 # each lead emailed exactly once
+    assert _incident_ids(session, "open") == []
+
+
+def test_budget_never_blocks_progress(session, settings, monkeypatch):
+    _setup(session, settings, ["a", "b", "c"])
+    monkeypatch.setattr(wdm, "BULK_TIME_BUDGET_SECONDS", 0.0)       # always "out of time"
+    ghl_cls = MagicMock()
+    p1, p2, p3 = _live_patches(ghl_cls)
+    with p1, p2, p3:
+        first = wdm.send_corrections_bulk(session, settings, "kes")
+    assert first["sent"] == 1 and first["remaining"] == 2           # at least one lead per request

@@ -52,6 +52,27 @@ _CAMPAIGN_KEY: dict[str, str] = {
 }
 
 
+# Legacy "US/..." aliases (what GHL/Synthflow send, e.g. 'US/Central' for ~7,000 leads) are
+# missing from the slim tzdata in our containers, so ZoneInfo() rejected them and every lead
+# fell back to the default zone with a warning. Map them to their canonical IANA names.
+_TZ_ALIASES: dict[str, str] = {
+    "us/central": "America/Chicago",
+    "us/eastern": "America/New_York",
+    "us/mountain": "America/Denver",
+    "us/pacific": "America/Los_Angeles",
+    "us/alaska": "America/Anchorage",
+    "us/hawaii": "Pacific/Honolulu",
+    "us/arizona": "America/Phoenix",
+}
+
+
+def canonical_timezone(tz_str: str) -> str:
+    """Canonical IANA name for a timezone string (legacy US/* aliases mapped, whitespace
+    stripped). Unknown strings are returned unchanged for the caller to validate."""
+    cleaned = tz_str.strip()
+    return _TZ_ALIASES.get(cleaned.lower(), cleaned)
+
+
 def get_contact_timezone(session, contact_id: str, settings: Settings) -> str:
     """
     Look up the caller's IANA timezone from the most recent call_event for this contact.
@@ -80,6 +101,7 @@ def get_contact_timezone(session, contact_id: str, settings: Settings) -> str:
         if row and row.raw_payload_json:
             tz_str = row.raw_payload_json.get("timezone")
             if tz_str and isinstance(tz_str, str):
+                tz_str = canonical_timezone(tz_str)
                 ZoneInfo(tz_str)  # raises ZoneInfoNotFoundError if not a valid IANA name
                 logger.debug(
                     "get_contact_timezone | contact_id=%s tz=%s", contact_id, tz_str

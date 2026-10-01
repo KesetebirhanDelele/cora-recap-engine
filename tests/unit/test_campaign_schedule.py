@@ -387,9 +387,10 @@ def test_get_contact_timezone_fallback_invalid_tz(session):
     assert result == "America/Chicago"
 
 
-def test_get_contact_timezone_accepts_us_central(session):
-    """Accepts legacy 'US/Central' alias which is valid IANA."""
+def test_get_contact_timezone_maps_legacy_us_central(session):
+    """Legacy 'US/Central' (7,000+ leads) is mapped to its canonical IANA name, so it is
+    recognised everywhere - including containers whose slim tzdata lacks the alias."""
     contact_id = f"c-{uuid.uuid4().hex[:6]}"
     _make_call_event(session, contact_id, "US/Central")
     result = get_contact_timezone(session, contact_id, _settings())
-    assert result == "US/Central"
+    assert result == "America/Chicago"

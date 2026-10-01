@@ -49,8 +49,9 @@ MAX_NEW_INCIDENTS_PER_CYCLE = 25
 
 _SNIPPET_CHARS = 280
 
-# Injectable so tests don't really sleep.
+# Injectable so tests don't really sleep / wait.
 _sleep = time.sleep
+_monotonic = time.monotonic
 _KIND_LABEL = {KIND_CLASS: "class start", "open_house": "open house"}
 
 
@@ -770,6 +771,11 @@ def dismiss_incident(session: Session, incident_id: str, operator_id: str, note:
 # The dashboard button keeps calling until `remaining` is 0.
 BULK_SEND_MAX_LEADS = 10
 BULK_SEND_MAX_CONSECUTIVE_FAILURES = 3
+# Wall-clock budget for ONE bulk request. The dashboard reaches this API through the
+# Next.js server's rewrite proxy, which drops any request open longer than ~30 s
+# (browser sees "Internal Server Error" while the API keeps working - seen live
+# 2026-10-01 with 10 sends x ~4 s). Stay well under it; the tile loops until done.
+BULK_TIME_BUDGET_SECONDS = 18.0
 
 
 def count_open_leads(session: Session) -> int:
@@ -816,6 +822,7 @@ def send_corrections_bulk(
     consecutive = attempts = 0
     did_send = cap_hit = False
     remaining = 0
+    started = _monotonic()
 
     def pace() -> None:
         # space real sends out - provider rate-limit safety. Skipped/held leads never wait.
@@ -825,6 +832,9 @@ def send_corrections_bulk(
     for idx, (contact_id, incident_id) in enumerate(leads):
         if attempts >= BULK_SEND_MAX_LEADS:
             remaining = total - idx
+            break
+        if idx > 0 and _monotonic() - started >= BULK_TIME_BUDGET_SECONDS:
+            remaining = total - idx      # out of time for this request - the tile calls again
             break
         if used + tally.sent >= cap:
             cap_hit, remaining = True, total - idx
