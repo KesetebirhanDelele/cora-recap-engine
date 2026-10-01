@@ -1,8 +1,8 @@
 # 35 — Delivery health: sent vs delivered, last activity per channel, silence alert
 
-**Status:** built and tested locally 2026-10-02; deploy pending Kes's go-ahead.
+**Status:** built and tested locally 2026-10-01; deploy pending Kes's go-ahead.
 
-## Problem (Ali, 2026-10-02)
+## Problem (Ali, 2026-10-01)
 The SMS workflow matched nothing for a month while "attempted" looked healthy and email kept flowing. Controls must be: per channel (not one number), on **delivered** (not attempted), and a **scheduled check for silence** (a dead channel throws no error). Alert Kes, copy Ali, after 2.5 days with no delivery.
 
 ## Sources of truth
@@ -12,7 +12,7 @@ The SMS workflow matched nothing for a month while "attempted" looked healthy an
 | Email | Cora wrote `Support Issue Ticket #2` + Message | GHL email status behind `meta.email.messageIds[0]` (`GET /conversations/messages/email/{id}`, header 2021-04-15): delivered / opened / clicked = delivered; bounced / failed = failed |
 | Calls | completed `launch_outbound_call` job | matching `call_events` row (Synthflow logs reach Cora 10–15 min later): voicemail, human_goodbye, human_pick_up_cut_off, agent_goodbye, or "undefined" with ≥5 s = connected; anything else = failed |
 
-A hand-off matches a delivery for the same contact + channel within [-2 min, +60 min] (calls: +90 min). **Not confirmed** = hand-off older than 15 min (calls 25 min) with no delivery/failure record — the dead-workflow signature. Hand-offs are recorded for follow-ups and corrections (not counted before 2026-10-02 deploy; GHL-side deliveries are backfilled 72 h).
+A hand-off matches a delivery for the same contact + channel within [-2 min, +60 min] (calls: +90 min). **Not confirmed** = hand-off older than 15 min (calls 25 min) with no delivery/failure record — the dead-workflow signature. Hand-offs are recorded for follow-ups and corrections (not counted before 2026-10-01 deploy; GHL-side deliveries are backfilled 72 h).
 
 ## Replies (inbound)
 `delivery_sync` also reads inbound SMS / email / call messages from GHL conversations: logged in `channel_events` kind `reply`, and SMS/email replies are stored in `inbound_messages` (previously never written — so a STOP reply was invisible to Cora's own `_has_stop_reply` check). `lead_state.last_replied_at` is intentionally NOT changed (spec/06: reply handling is owned by GHL automations); only logged. Inbound calls are logged as reply events (they arrive via GHL, not Synthflow).

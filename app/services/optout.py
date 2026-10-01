@@ -3,7 +3,7 @@ Opt-out handling: turn what a lead SAID into real GHL DND (spec/36).
 
 Sources: answered-call transcripts (the lead's own lines), inbound SMS / email replies read by
 delivery_sync, and a one-time reconciliation of leads Cora already marked do-not-call.
-Decision (Kes, 2026-10-02): DND follows the lead's wording (calls / texts / email / all); clear opt-outs
+Decision (Kes, 2026-10-01): DND follows the lead's wording (calls / texts / email / all); clear opt-outs
 are applied automatically (an LLM may judge free-form replies, only >= 0.85 confidence); everything else goes
 to the review list; every action is recorded in `optout_actions` with the previous GHL state so it can be undone.
 GHL DND is the hard stop - GHL's own workflows and senders honour it; Cora's flags alone do not reach them.

@@ -2373,7 +2373,7 @@ Merged bulk-actions branch (`a143779`), redeployed Hetzner, no migration. Health
 ### Deployed (2026-10-01)
 Merged `feat/date-expiry-and-metrics` (`f2f9670`) -> `feat/ghl-call-conversation-sync`, redeployed Hetzner (migration 0025 applied; all services up, API + Dashboard health ok). 219 incidents / 137 leads reopened, 0 corrections sent. `correction_test_contacts` set via SQL (not in repo). SMS corrections remain off. SMS workflow verified end-to-end by a live API test to the operator contact (trigger had been watching the wrong field).
 
-## Current state and next steps — 2026-10-01 (read this first for the Wrong Date Monitor)
+## Current state and next steps — early 2026-10-01 (SUPERSEDED: see 'END-OF-DAY STATE 2026-10-01' at the bottom of this file)
 **Live in production** (branch `feat/ghl-call-conversation-sync`, deployed `f2f9670`, migrations through 0025): wrong-date detection + alert emails; tile `/wrong-dates` with 24h open/closed metrics; email corrections (one / all) with DND, unsubscribed, no-address, reply, campaign-window, fail-closed safeguards, 3 s pacing, 100/day cap; test-send to Kes's own contact; date auto-expiry with the www.myfreeaiclass.com fallback; `next_open_house_date` in Settings and prompts.
 **Explicitly NOT done:** no correction has been sent to any lead (219 incidents / 137 leads open, awaiting Kes's click on "Send correction email to all" after a test email). SMS corrections are built but OFF (`sms_corrections_enabled`).
 **Known facts:** Cora's follow-ups (even "SMS" ones) reach leads as EMAIL via GHL workflow "AI Agent - Send Email" (Ticket #2 -> body); the SMS workflow reads Ticket #4 and works end-to-end since its trigger field was fixed on 2026-10-01. If a GHL workflow trigger/field is edited, corrections silently stop — re-run the tile's test buttons.
@@ -2418,21 +2418,59 @@ Built: `app/core/sms_gate.py` (pure rules), `app/services/sms_ledger.py` (reserv
 Deploy needs: `alembic upgrade head` (0026). Not counted: GHL-native/manual/Synthflow texts.
 
 **Deployed** (commit `e7eac1a`, merged into `feat/ghl-call-conversation-sync`, Hetzner redeployed via scripts/deploy.sh): Alembic at 0026, `sms_send_ledger` exists (empty at deploy), `GET /dashboard/sms-monitor` returns cap 999 / min gap 5 s / 12 per min / 4 segments, no tracebacks in the first 3 minutes. First real SMS will create the first ledger row.
-**Next (Ali, 2026-10-02 emails):** report DELIVERED not attempted; add per-channel (email / SMS / call) last-activity timestamps measured on delivery, with a scheduled silence check (not an error handler) that alerts Kes and copies Ali after 2.5 days quiet. Ali: leave SMS on, SMS corrections stay off.
+**Next (Ali, 2026-10-01 emails):** report DELIVERED not attempted; add per-channel (email / SMS / call) last-activity timestamps measured on delivery, with a scheduled silence check (not an error handler) that alerts Kes and copies Ali after 2.5 days quiet. Ali: leave SMS on, SMS corrections stay off.
 
-## 2026-10-02 — delivery health: sent vs delivered, per-channel silence alert, reply logging (spec/35) — built, tested locally, NOT deployed
+## 2026-10-01 — delivery health: sent vs delivered, per-channel silence alert, reply logging (spec/35) — built, tested locally, NOT deployed
 Ali: report delivered not attempted; last activity per channel (email/SMS/call); scheduled silence alert after 2.5 days (to Kes, cc Ali). Built: migration `0027_channel_events` (channel_events, channel_sync_state, inbound_messages.external_id), `app/core/channel_health.py` (pure rules), `app/services/delivery_sync.py` (GHL conversations -> deliveries + replies, throttled/resumable), `app/services/channel_health.py` (snapshot/detail/hourly silence check), hand-off recording in `update_ghl_after_vm_message` + corrections, `GET /dashboard/delivery-health[/{channel}]`, Delivery Health tile. Live probe findings: SMS status delivered/undelivered(+Twilio error) is in the message list; email status is only behind meta.email.messageIds[0]; calls use call_events (call matching validated on prod: ~93% delivered, ~1% unmatched). Replies were never logged before (inbound_messages was empty) - now they are (last_replied_at deliberately untouched). Tests: 20 pure + 7 Postgres-backed new; all DB-backed wrong-date suites pass (117). Deploy needs `alembic upgrade head` (0027).
 
-## 2026-10-02 — delivery health deployed (`518035c`, migration 0027) + opt-out -> real GHL DND (spec/36)
+## 2026-10-01 — delivery health deployed (`518035c`, migration 0027) + opt-out -> real GHL DND (spec/36)
 Delivery health live: alembic 0027, first sync read 38 deliveries + 2 call replies; SMS/email "sent" counts start at 0 (hand-offs recorded only from the deploy). Finding: `inbound_messages` had never been written; Cora's call regex never set GHL DND (16 of newest 40 Cora do-not-call leads had no DND in GHL; free-form SMS/email opt-outs also none).
 Built (Kes: "DND by the lead's wording; yes to all decisions"): `app/core/optout.py` (wording->scope), `app/services/optout.py` (apply / LLM judge / review / undo / reconcile / `cora_block_reason`), `GHLClient.set_dnd` (payload round-tripped on Kes's own contact: SMS-only and all-channel set + cleared), hooks in `delivery_sync` (replies), `ai_jobs` (do_not_call calls) and `update_ghl_after_vm_message` (Cora-side block), migration `0028_optout_actions`, tile `/optouts` ("Opt-outs & DND"), reconcile each metrics cycle. Tests: 39 new (wording matrix + Postgres-backed); all DB-backed suites 156 pass; unit suite only the 7 known failures.
 
-## 2026-10-02 — one offer + SMS is a notification (spec/37) — built, tested locally, NOT deployed
+## 2026-10-01 — one offer + SMS is a notification (spec/37) — built, tested locally, NOT deployed
 Kes: only the AI Systems Architect Accelerator is offered; SMS = missed-call notification / upcoming-call reminder (1 segment, 2 max), email = the program description. Found: prompt hard-coded "Data Analytics or AI" (46 % of 3,528 SMS and 63 % of emails said Data Analytics in 14 days); story library entirely the retired program; one LLM call per channel generated both; curly apostrophes made 28 % of SMS 3 segments. Built: `app/core/offer.py`, new `vm_sms_notice` prompt family + email-only `vm_followup_generator`, `generate_vm_sms/_email` with retry+fallback, `normalize_sms`, gate rules (retired terms in all SMS, marketing words in follow-up SMS, max 2 segments), `channel=` routing in `channel_jobs`. Live sample with the real model: 4 tiers 127-156 chars, 1 segment, gate-approved. Tests: 31 new; unit suite only the 7 known failures; DB-backed suites 156 pass. Open: upcoming-call reminder SMS (not built), Synthflow/GHL-native texts unreviewed, KB "rolling enrollment" vs Settings Nov 12.
 
-### 2026-10-02 — deployed: offer/SMS-notice (`37ed7ba`) and opt-out DND fixes
+### 2026-10-01 — deployed: offer/SMS-notice (`37ed7ba`) and opt-out DND fixes
 Live check after deploy: production settings give 1-segment gate-approved SMS ("...about the AI Systems Architect Accelerator. Please reply with a good time to talk.") and an email with the Open House + self-paced options and no retired terms. Decisions: no upcoming-call reminder SMS (none existed, none to be built); Synthflow and GHL-native SMS prompts not reviewed; enrollment is ongoing for the self-paced option, the Open House is for people who want live classes.
 Opt-out live findings: 4 DND writes failed - (a) GHL refuses to overwrite PERMANENT SMS DND; (b) the reply sync used the conversations token for the write. Fixed: only missing channels are written; contacts token; automatic retry (max 5). 185 call opt-outs await review, 16 already DND, 203/203 checked.
 
 ### 2026-10-01 — Delivery Health false "not confirmed" fixed
 Kes's screenshot showed SMS 12 sent / 0 delivered / 8 not confirmed. GHL itself showed all 12 texts `delivered` within ~7 s of each hand-off (source `workflow`) - the miss was ours: the sync was still in its one-time history load and only walked history, so today's messages were not read. Fixed: every run now first walks the newest conversations (forward, since watermark - 30 min) and then continues the history load with the remaining budget. Drill-down now shows each lead's full phone, email and GHL contact id (looked up from GHL, parallel and time-boxed) so rows can be verified in GHL.
+
+## END-OF-DAY STATE 2026-10-01 — read this first
+**Production** = branch `feat/ghl-call-conversation-sync` at `11f1e72` (+ this docs commit), Hetzner redeployed after every change, Alembic at **0028**. All services up; no tracebacks at last check.
+
+**Live and verified**
+| Area | What runs | Spec / key code |
+|---|---|---|
+| Wrong-date alert + corrections | detector, tile `/wrong-dates`, email corrections (SMS corrections OFF), auto-expiry of passed dates | spec/32 |
+| Call cadence | retries keep their delays; 2 calls/lead/day cap (callbacks exempt); real SMS; no links in SMS; 167 Cold Lead calls cancelled (restore SQL in the 04:35 UTC entry) | spec/33 |
+| SMS gate + budget | every Cora text checked first: 999 segments/US-Pacific day (deferred to next legal hour), 5 s gap, 12/min, <=2 segments, content rules; ledger `sms_send_ledger`; tile `/sms-monitor`; alerts at 80%/100% | spec/34, `sms_gate.py`, `sms_ledger.py` |
+| Delivery health | per channel (email/SMS/calls): handed over vs delivered vs not-confirmed vs failed, last delivered, 7-day trend, Replies row; sync every 2 min (newest first, parallel, 5 calls/s cap, resumable); hourly silence check -> email Kes cc Ali at 60 h without delivery (or >=20 sent & <50% delivered); labeled TEST alert sent and logged as delivered to SMTP | spec/35, `delivery_sync.py`, `channel_health.py` |
+| Opt-outs -> real GHL DND | DND by the lead's wording from answered calls and SMS/email replies; LLM judges free-form (>=0.85) else review; Cora's own follow-ups withheld for opted-out leads; reconcile of Cora do-not-call leads vs GHL; tile `/optouts` (apply / dismiss / undo / apply-all) | spec/36, `optout.py` |
+| One offer + SMS purpose | only the AI Systems Architect Accelerator; SMS = short missed-call notice (1 segment); email = program description (self-paced anytime vs live classes via Open House); retired-course terms blocked in code; student stories OFF | spec/37, `offer.py`, `vm_sms_notice.py` |
+
+**Migrations this day:** 0024 incidents, 0025 triggered-at, 0026 `sms_send_ledger`, 0027 `channel_events` + `channel_sync_state` + `inbound_messages.external_id`, 0028 `optout_actions`.
+**app_config knobs (no deploy needed):** `sms_daily_segment_cap` (<=999), `sms_min_gap_seconds`, `sms_per_minute_cap`, `sms_max_segments_per_message` (2), `sms_allowed_link_domains` (empty), `offer_name`, `offer_facts`, `offer_forbidden_terms`, `channel_silence_hours` (60), `channel_silence_cc` (ali@colaberry.com), `channel_silence_muted`, `delivery_sync_interval_seconds` (120), `optout_llm_enabled`, `optout_reconcile_enabled`, `sms_corrections_enabled` (false).
+
+**Findings worth remembering**
+* The SMS workflow had matched nothing for a month while "attempted" looked healthy -> measure DELIVERED per channel (spec/35). GHL message statuses: SMS `delivered/undelivered` (+Twilio error), email status only behind `meta.email.messageIds[0]`, calls from `call_events` (log arrives 10-15 min later).
+* Cora's call regex never set GHL DND (16 of the newest 40 Cora do-not-call leads had none; free-form email/SMS opt-outs also none); `inbound_messages` had never been written. GHL refuses to overwrite a PERMANENT DND (write only missing channels); the conversations token cannot edit contacts (use the contacts token).
+* 46% of 3,528 SMS and 63% of 229 emails (14 days) named the retired Data Analytics course; the whole story library is the retired program.
+* First delivery-health version false-alarmed (SMS 12 sent / 0 delivered) because history loading starved fresh messages; GHL showed all 12 delivered. Fixed (forward pass first, parallel, rate-capped). GHL answers 429 above its burst limit - keep sync calls <= 5/s.
+
+**Waiting on Kes**
+1. `/optouts`: ~185 call opt-outs proposed for DND in GHL (scope from the lead's own words) - review a few quotes, then "Apply DND to all"; 1 item needs a second Apply (earlier permanent-SMS-DND failure).
+2. Confirm Twilio sole-proprietor limits in the Twilio console (taken from search summaries; Twilio's pages returned 403).
+3. Ali: draft reply to his 8:46 AM email is in Kes's Gmail Drafts (NOT sent). Ali should confirm he received the labeled TEST alert.
+4. Settings still carry next class start Nov 12 while the self-paced option is open-enrollment; the email follows the Settings schedule block.
+
+**Scheduled (session-only, die if the Claude session closes):** hourly audit crons for 2026-10-02 (`7 * 2 10 *`) and a 23:52 report email to Kes. If the session is closed, re-run the spec/33 and spec/34 verification SQL by hand.
+
+**Explicitly not done / decisions**
+* No upcoming-call reminder SMS (none existed; Kes: do not build). Synthflow's end-of-call text and GHL-native automations are NOT covered by the SMS gate/ledger/offer rules (Kes: out of scope) but share the Twilio quota.
+* Voicemails are not transcribed for opt-outs; email "delivered" = provider accepted, call "delivered" = connected; email/SMS "sent" counts start at the 2026-10-01 deploy.
+* Pre-existing unit-test failures (7): test_admin_routes x2 (Redis), test_enrolled_intent, test_ghl_adapter x2, test_inbound_call_processing x2 - fail on a clean tree; four more fail only at night (campaign windows).
+
+**Next steps (ordered):** (1) Kes approves the opt-out list; (2) read tomorrow's hourly-audit report; (3) check `/delivery-health` shows no red channel for 24 h and the silence check keeps running (`audit_log` action `channel_silence_check`); (4) decide on Accelerator success stories for email; (5) consider extending SMS Monitor rows with phone/email like the Delivery Health drill-down.
+

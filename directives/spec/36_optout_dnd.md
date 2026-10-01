@@ -1,11 +1,11 @@
 # 36 — Opt-outs: lead wording -> real GHL DND (calls, SMS replies, email replies)
 
-**Status:** built and tested 2026-10-02; deployed with commit noted in PROGRESS.md.
+**Status:** built and tested 2026-10-01; deployed with commit noted in PROGRESS.md.
 
 ## Problem
 Cora's call check (`intent_detection`, regex only - no LLM) marks a lead `do_not_call` in Cora and writes `AI Campaign = No` to GHL, but **never set GHL's native DND**. A live check found 16 of the newest 40 Cora do-not-call leads (40 %) had no DND in GHL; 3 of 4 free-form email opt-outs and 1 of 1 free-form SMS opt-out also had none (only exact `STOP` SMS replies get DND from GHL itself). Replies were not read at all (`inbound_messages` was empty until spec/35).
 
-## Behaviour (Kes, 2026-10-02: scope by the lead's wording; clear -> automatic; unclear -> review; reconcile with a list first)
+## Behaviour (Kes, 2026-10-01: scope by the lead's wording; clear -> automatic; unclear -> review; reconcile with a list first)
 | Source | Trigger | Action |
 |---|---|---|
 | Answered call | Cora's `do_not_call` intent AND opt-out wording in the **lead's own lines** (`human:`), not the bot's | GHL DND for the channels the lead named; Cora `do_not_call` + pending calls cancelled |
@@ -15,7 +15,7 @@ Cora's call check (`intent_detection`, regex only - no LLM) marks a lead `do_not
 
 Scope rules (`app/core/optout.py`): stop calling -> `call`; stop texting / no more texts -> `sms`; stop emailing -> `email`; stop messaging -> `sms + email`; remove me / unsubscribe / opt out / leave me alone / do not contact / take me off the list -> all three (also sets the contact-level `dnd`). Combined wording unions ("don't call or text me" -> call + sms). Out-of-office replies, "don't stop", "stop by" are ignored.
 
-GHL payload (verified on Kes's own contact 2026-10-02): `PUT /contacts/{id}` `{"dndSettings": {"SMS": {"status": "active", "message": ..., "code": "cora_optout"}}}`; all channels also `"dnd": true`. Undo = status `inactive` (and `dnd: false`), only for channels Cora turned on.
+GHL payload (verified on Kes's own contact 2026-10-01): `PUT /contacts/{id}` `{"dndSettings": {"SMS": {"status": "active", "message": ..., "code": "cora_optout"}}}`; all channels also `"dnd": true`. Undo = status `inactive` (and `dnd: false`), only for channels Cora turned on.
 
 ## Cora's own sends respect it
 `update_ghl_after_vm_message` (follow-up SMS/email) asks `optout.cora_block_reason` first: Cora do-not-contact / closed / invalid, a STOP reply in `inbound_messages`, an applied opt-out covering the channel, or one **awaiting review** (conservative) -> the send-trigger fields are not written. (Cora's own `do_not_call` still blocks every channel, as before - GHL DND is the part scoped by wording.)
@@ -32,7 +32,7 @@ Counters (waiting / applied / already DND / still checking); **Needs your decisi
 ## app_config
 `optout_llm_enabled` (true) · `optout_reconcile_enabled` (true). Shadow mode (GHL writes off) records `shadow` rows and writes nothing.
 
-## Fixes found live (2026-10-02)
+## Fixes found live (2026-10-01)
 * GHL refuses to overwrite a **permanent** DND (what an earlier STOP leaves): `Not authorized to update permanent dnd setting for SMS`. Cora now writes only the channels that are not already DND (nothing at all when everything is covered).
 * The reply sync passed the conversations-scoped token to the DND write (`The token is not authorized for this scope`). The write now always uses the contacts token.
 * Automatic writes that fail are retried every metrics cycle (max 5 attempts, `retry_failed`); an operator click that fails stays on the tile as `apply failed: ...` and is excluded from "Apply to all".

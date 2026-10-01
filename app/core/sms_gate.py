@@ -31,7 +31,7 @@ HARD_MAX_DAILY_SEGMENTS = 999       # Kes 2026-10-01: never above 999 / Pacific 
 DEFAULT_DAILY_SEGMENTS = 999
 DEFAULT_MIN_GAP_SECONDS = 5         # 1 MPS with margin
 DEFAULT_PER_MINUTE_CAP = 12         # AT&T ~15/min with margin
-DEFAULT_MAX_SEGMENTS_PER_MESSAGE = 2     # Kes 2026-10-02: one segment if possible, at most two
+DEFAULT_MAX_SEGMENTS_PER_MESSAGE = 2     # Kes 2026-10-01: one segment if possible, at most two
 MIN_WORDS = 3                       # a real sentence - blocks stray tokens such as "warm_lead"
 WARN_FRACTION = 0.8                 # alert when this much of the day's budget is used
 

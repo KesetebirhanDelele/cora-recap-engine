@@ -2,7 +2,7 @@
 
 Revision ID: 0027
 Revises: 0026
-Create Date: 2026-10-02
+Create Date: 2026-10-01
 
 channel_events: one row per
   handoff  - Cora wrote the GHL field that makes a workflow send an email / SMS
