@@ -506,3 +506,38 @@ def test_llm_triage_dismisses_clear_non_requests_and_annotates_the_rest(session)
     assert rows["leave me a message"][0] == "dismissed" and rows["leave me a message"][3] == "llm"
     assert rows["stop it already"][0] == "review" and "[LLM 0.80]" in rows["stop it already"][2]
     assert rows["unreadable"][0] == "review"
+
+
+class NoSuchContactGHL(FakeGHL):
+    def search_contact_by_phone(self, phone):
+        return None                                     # GHL has never heard of this number
+
+
+@db
+def test_apply_on_a_number_with_no_ghl_contact_succeeds_as_a_recorded_no_op_and_can_be_undone(session):
+    from app.services import optout
+
+    optout._propose(session, contact_id="33569149532", scope={"call", "sms", "email"}, source="history_call",
+                    external_id="nc1", phrase="stop", excerpt="Wanna stop that?", reason="unclear")
+    session.commit()
+    [rid] = [r[0] for r in session.execute(text("select id from optout_actions where external_id='nc1'")).fetchall()]
+    ghl = NoSuchContactGHL()
+    assert optout.review_apply(session, SETTINGS, rid, "kes", ghl=ghl) == "applied"
+    row = session.execute(text("select status, reason from optout_actions where id=:i"), {"i": rid}).fetchone()
+    assert row[0] == "applied" and "no GHL contact exists" in row[1]
+    assert ghl.dnd_calls == []                                           # nothing written to GHL
+    optout.undo(session, SETTINGS, rid, "kes", ghl=ghl)                  # undo also needs no GHL contact
+    assert session.execute(text("select status from optout_actions where id=:i"), {"i": rid}).scalar() == "undone"
+    assert ghl.dnd_calls == []
+
+
+@db
+def test_a_number_with_a_lead_record_but_no_ghl_contact_still_stops_cora_calling_it(session):
+    from app.services import optout
+
+    _lead(session, "+13145550100", status="active")
+    ghl = NoSuchContactGHL()
+    st = optout.apply_dnd(session, SETTINGS, ghl, contact_id="+13145550100", scope={"call"}, source="history_call",
+                          external_id="nc2", phrase="stop calling", excerpt="Stop calling", decided_by="kes")
+    assert st == "applied" and ghl.dnd_calls == []
+    assert tuple(session.execute(text("select do_not_call, status from lead_state where contact_id='+13145550100'")).fetchone()) == (True, "closed")

@@ -166,14 +166,32 @@ def apply_dnd(session: Session, settings: Any, ghl: Any, *, contact_id: str, sco
         attempts = int((prior_state or {}).get("attempts", 0))
     operator_click = decided_by not in ("auto", "llm")
     try:
-        real_id, rec = (contact_id, record) if record is not None else _resolve(ghl, contact_id)
+        no_contact = False
+        try:
+            real_id, rec = (contact_id, record) if record is not None else _resolve(ghl, contact_id)
+        except RuntimeError as exc:
+            if not str(exc).startswith("Could not resolve GHL contact"):
+                raise
+            # A number GHL has never heard of (a one-off inbound caller, a robocall, a foreign number): there is no
+            # contact to put DND on. Stop whatever Cora itself holds for the number and record that GHL had nothing.
+            real_id, rec, no_contact = contact_id, {}, True
         before = dnd_channels(rec)
         todo = set(scope) - before          # GHL refuses to overwrite a PERMANENT DND (e.g. an earlier STOP): only add what is missing
         previous = {"ghl_dnd": sorted(before), "ghl_contact_id": real_id}
-        if todo:
+        if no_contact:
+            previous["no_ghl_contact"] = True
+        elif todo:
             ghl.set_dnd(real_id, todo, active=True, reason=f"Lead opt-out ({source}): {phrase}", mode_flags=flags)
-        previous["lead_state"] = _stop_cora_outreach(session, settings, real_id, set(scope), oo.DND)
-        status, reason = "applied", ("" if todo else "already DND in GHL for every requested channel")
+        prior = _stop_cora_outreach(session, settings, real_id, set(scope), oo.DND)
+        if prior is None and no_contact and not real_id.startswith("+"):
+            prior = _stop_cora_outreach(session, settings, "+" + real_id, set(scope), oo.DND)    # bare digits -> E.164
+        previous["lead_state"] = prior
+        status = "applied"
+        if no_contact:
+            reason = ("no GHL contact exists for this number - nothing to set in GHL; "
+                      + ("Cora stopped calling it" if prior else "Cora has no lead record for it either, so nothing was contacting it"))
+        else:
+            reason = "" if todo else "already DND in GHL for every requested channel"
     except Exception as exc:
         logger.error("optout: apply failed | contact=%s: %s", contact_id, exc)
         real_id = contact_id
@@ -428,7 +446,7 @@ def undo(session: Session, settings: Any, action_id: str, operator: str, ghl: An
     ours = _scope_set(a["scope"]) - set(prev.get("ghl_dnd") or [])
     ghl = ghl or _ghl(settings)
     flags = get_mode_flags(session, settings)
-    if ours:
+    if ours and not prev.get("no_ghl_contact"):
         ghl.set_dnd(prev.get("ghl_contact_id") or a["contact_id"], ours, active=False, reason="Undone by operator", mode_flags=flags)
         if ours >= set(oo.ALL):
             ghl.set_dnd(prev.get("ghl_contact_id") or a["contact_id"], set(oo.ALL), active=False, mode_flags=flags)
