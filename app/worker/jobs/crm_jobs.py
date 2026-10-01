@@ -596,6 +596,17 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                         sms_ledger.mark_failed(sms_ledger_id, "shadow mode - not sent")
                     else:
                         sms_ledger.mark_sent(sms_ledger_id)
+                # Delivery health (spec/35): remember what we asked GHL to send, so the monitor can
+                # tell "handed over" from "arrived". Email route = Ticket #2 write; SMS = Ticket #4 write.
+                if not write_result.get("shadow") and not plan.sms_skip_reason:
+                    from app.services.channel_health import record_handoff
+
+                    sent_channel = (
+                        "sms" if (plan.route == "sms" and sms_field in label_updates)
+                        else "email" if plan.route != "sms" else None
+                    )
+                    if sent_channel:
+                        record_handoff(session, sent_channel, contact_id, "crm_job")
                 # Shadow mode: log what would have been written to GHL so
                 # operators can inspect the exact fields via Lead Journey.
                 if write_result.get("shadow"):

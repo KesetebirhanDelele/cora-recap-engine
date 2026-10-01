@@ -389,6 +389,20 @@ class GHLClient:
         result = self._request("GET", "/conversations/search", params=params)
         return result.get("conversations", [])
 
+    def get_email_status(self, email_message_id: str) -> str | None:
+        """
+        Provider status of one outbound email (delivered / opened / bounced ...).
+
+        The conversation message list carries NO status for emails; the status lives behind the
+        PROVIDER message id in message.meta.email.messageIds[0] (confirmed live 2026-10-01 with the
+        2021-04-15 header). Requires the conversations-scoped token (api_key_override).
+        """
+        self.settings.validate_for_ghl_reads()
+        result = self._request(
+            "GET", f"/conversations/messages/email/{email_message_id}", version_override="2021-04-15"
+        )
+        return ((result or {}).get("emailMessage") or {}).get("status")
+
     def get_message_recording(self, message_id: str, location_id: str | None = None) -> bytes:
         """
         Fetch the raw call recording audio for a message (audio/x-wav).

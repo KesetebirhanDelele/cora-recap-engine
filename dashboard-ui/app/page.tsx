@@ -1,4 +1,4 @@
-import { fetchHealth, fetchCardMetrics, fetchWrongDates } from "@/lib/api";
+import { fetchHealth, fetchCardMetrics, fetchWrongDates, fetchDeliveryHealth } from "@/lib/api";
 import SystemStatusBar from "@/components/SystemStatusBar";
 import { type NavCategory } from "@/components/NavigationCard";
 import DashboardSections, { type ResolvedNavGroup } from "@/components/DashboardSections";
@@ -13,7 +13,7 @@ interface NavItem {
   icon: string;
   description: string;
   category: NavCategory;
-  badgeKey?: keyof HealthResponse | "queue_issues" | "wrong_date_open";
+  badgeKey?: keyof HealthResponse | "queue_issues" | "wrong_date_open" | "delivery_bad";
   badgeCritical?: boolean;
 }
 
@@ -37,6 +37,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
       { href: "/activity",        title: "Live Activity",       icon: "⚡",  description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
       { href: "/exceptions",      title: "Exceptions Monitor",  icon: "⚠️",  description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
       { href: "/queue",           title: "Queue Health",        icon: "⚙️",  description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
+      { href: "/delivery-health", title: "Delivery Health",     icon: "📬", description: "Email, SMS and calls: sent vs delivered, last delivery, and silence alerts.", category: "operations", badgeKey: "delivery_bad", badgeCritical: true },
       { href: "/sms-monitor",    title: "SMS Monitor",         icon: "💬", description: "Today's SMS budget (max 999 segments / Pacific day), pre-send gate verdicts and every text sent.", category: "operations" },
       { href: "/wrong-dates",    title: "Wrong Date Monitor",  icon: "📆", description: "Leads sent a wrong class-start / open-house date — send a correction.", category: "operations", badgeKey: "wrong_date_open", badgeCritical: true },
       { href: "/alerts",          title: "Alerts",              icon: "🔔", description: "Lag, error, and worker alerts.", category: "operations" },
@@ -57,8 +58,9 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
   },
 ];
 
-function getBadge(item: NavItem, health: HealthResponse, wrongDateOpen: number): number | undefined {
+function getBadge(item: NavItem, health: HealthResponse, wrongDateOpen: number, deliveryBad: number): number | undefined {
   if (!item.badgeKey) return undefined;
+  if (item.badgeKey === "delivery_bad") return deliveryBad > 0 ? deliveryBad : undefined;
   if (item.badgeKey === "wrong_date_open") return wrongDateOpen > 0 ? wrongDateOpen : undefined;
   if (item.badgeKey === "queue_issues") {
     const n = health.stuck_job_count + health.expired_lease_count;
@@ -73,6 +75,8 @@ function resolveGroups(
   cardMetrics: CardMetricsResponse | null,
   wrongDateOpen: number,
   wrongDateClosed24h: number | null,
+  deliverySummary: string | null,
+  deliveryBad: number,
 ): ResolvedNavGroup[] {
   return NAV_GROUPS.map((group) => ({
     label: group.label,
@@ -84,9 +88,11 @@ function resolveGroups(
       description:
         item.badgeKey === "wrong_date_open" && wrongDateClosed24h !== null
           ? `Open ${wrongDateOpen} · Closed ${wrongDateClosed24h} in the last 24h. Wrong class / open-house dates sent to leads.`
-          : item.description,
+          : item.badgeKey === "delivery_bad" && deliverySummary
+            ? deliverySummary
+            : item.description,
       category: item.category,
-      badge: health ? getBadge(item, health, wrongDateOpen) : undefined,
+      badge: health ? getBadge(item, health, wrongDateOpen, deliveryBad) : undefined,
       badgeCritical: item.badgeCritical,
       indicator: computeIndicator(item.href, cardMetrics),
     })),
@@ -99,6 +105,15 @@ export default async function HomePage() {
   let cardMetrics: CardMetricsResponse | null = null;
   let wrongDateOpen = 0;
   let wrongDateClosed24h: number | null = null;
+  let deliverySummary: string | null = null;
+  let deliveryBad = 0;
+  try {
+    const dh = await fetchDeliveryHealth();
+    deliveryBad = dh.channels.filter((c) => c.level === "red").length;
+    deliverySummary = dh.channels
+      .map((c) => `${c.label} ${c.rate === null ? "—" : Math.round(c.rate * 100) + "%"}`)
+      .join(" · ") + " delivered (24h)" + (deliveryBad ? ` · ${deliveryBad} channel(s) RED` : "");
+  } catch { /* tile still renders without a summary */ }
   try {
     const wd = await fetchWrongDates("open");
     wrongDateOpen = wd.open_count;
@@ -165,7 +180,7 @@ export default async function HomePage() {
       </div>
 
       {/* ── Navigation (stacked sections: Analytics / Operations / System) ──── */}
-      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen, wrongDateClosed24h)} />
+      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen, wrongDateClosed24h, deliverySummary, deliveryBad)} />
     </div>
   );
 }

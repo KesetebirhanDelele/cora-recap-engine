@@ -496,6 +496,32 @@ export interface WrongDatesResponse {
   incidents: WrongDateIncident[];
 }
 
+export interface DeliveryChannel {
+  channel: "email" | "sms" | "call"; label: string; level: "green" | "amber" | "red" | "grey"; reasons: string[];
+  sent: number; delivered: number; failed: number; unconfirmed: number; rate: number | null;
+  ghl_delivered_24h: number | null; last_delivered_at: string | null; last_handoff_at: string | null;
+  muted: string | null; trend: { day: string; sent: number; delivered: number }[];
+}
+
+export interface DeliveryHealthResponse {
+  channels: DeliveryChannel[];
+  replies: { last_24h: number; last_at: string | null; by_channel: Record<string, number> };
+  worst: "green" | "amber" | "red" | "grey"; silence_hours: number; confirm_minutes: number;
+  sync: { last_run_at: string | null; last_error: string | null; backfill_done: boolean };
+}
+
+export interface DeliveryDetailResponse {
+  channel: string; items: { at: string; contact_id: string; state: string; error: string | null }[];
+}
+
+export async function fetchDeliveryHealth(): Promise<DeliveryHealthResponse> {
+  return get<DeliveryHealthResponse>("/dashboard/delivery-health");
+}
+
+export async function fetchDeliveryDetail(channel: string): Promise<DeliveryDetailResponse> {
+  return get<DeliveryDetailResponse>(`/dashboard/delivery-health/${channel}`);
+}
+
 export interface SmsMonitorRow {
   at: string; source: string; status: string; code: string; segments: number;
   contact_id: string; reason: string; preview: string;

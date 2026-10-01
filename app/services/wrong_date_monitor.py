@@ -777,6 +777,9 @@ def send_correction(
 
     if ledger_id:
         sms_ledger.mark_sent(ledger_id, sms_ledger.factory_for(session))
+    from app.services.channel_health import record_handoff
+
+    record_handoff(session, channel, real_id, "correction", now)
 
     # History: the correction is a real outbound message (its dates are correct,
     # so the scanner will not flag it).

@@ -27,7 +27,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -940,6 +940,27 @@ def action_acknowledge_alert(
     session.commit()
 
     return {"status": "ok", "alert_id": body.alert_id, "audit_log_id": audit.id}
+
+
+# ── Delivery Health (spec/35) ────────────────────────────────────────────────
+
+@router.get("/delivery-health")
+def get_delivery_health(session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Per channel (email / SMS / calls): sent vs delivered vs failed vs not-confirmed, last delivery, trend."""
+    from app.config import get_settings
+    from app.services import channel_health
+
+    return channel_health.snapshot(session, get_settings())
+
+
+@router.get("/delivery-health/{channel}")
+def get_delivery_health_detail(
+    channel: str = Path(..., pattern="^(email|sms|call)$"), session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Failed and not-confirmed hand-offs of the last 24 h for one channel."""
+    from app.services import channel_health
+
+    return channel_health.detail(session, channel)
 
 
 # ── SMS Monitor (spec/34) ────────────────────────────────────────────────────

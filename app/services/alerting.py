@@ -197,6 +197,21 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     except Exception as exc:
         logger.error("alerting: wrong_date scan failed: %s", exc)
 
+    # Delivery health (spec/35): read GHL delivery status + replies, then the scheduled silence check.
+    try:
+        from app.services.delivery_sync import sync as _delivery_sync
+        _delivery_sync(session, settings, now)
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: delivery sync failed: %s", exc)
+    try:
+        from app.services.channel_health import run_silence_check
+        run_silence_check(session, settings, now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: channel silence check failed: %s", exc)
+
     for defn in _ALERT_DEFINITIONS:
         try:
             _evaluate_single_alert(
