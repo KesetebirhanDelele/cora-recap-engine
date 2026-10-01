@@ -325,8 +325,7 @@ def build_correction_text(session: Session, settings: Any, channel: str = "email
     dates stored on the incident).
 
     email: full RSVP link allowed; no STOP line (GHL adds the unsubscribe footer).
-    sms:   no long third-party links (carrier filtering) - only the free-signup
-           address - and the opt-out line."""
+    sms:   NO links at all (carrier filtering; Kes 2026-10-01) and the opt-out line."""
     from app.core.schedule_context import DEFAULT_FREE_SIGNUP_URL, is_unset
 
     class_start, open_house = expected_dates(session, settings)
@@ -351,7 +350,7 @@ def build_correction_text(session: Session, settings: Any, channel: str = "email
 
     msg = f"Quick correction from {sender}: {' and '.join(facts)}."
     if channel == "sms":
-        msg += f" Start learning for free at {free_url}."
+        # No link of any kind in a text (spec/33) - the free-signup address goes in emails only.
         msg += " Sorry for any confusion!"
         if stop:
             msg += f" {stop}"

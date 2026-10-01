@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
@@ -36,7 +36,10 @@ from app.worker.exceptions import create_exception
 logger = logging.getLogger(__name__)
 
 
-def _check_active_window(session, job, contact_id: str, campaign_name: str, settings) -> bool:
+def _check_active_window(
+    session, job, contact_id: str, campaign_name: str, settings, *, tcpa: bool = False,
+    now: datetime | None = None,
+) -> bool:
     """
     Check whether the campaign is within its active window in the caller's timezone.
 
@@ -53,12 +56,28 @@ def _check_active_window(session, job, contact_id: str, campaign_name: str, sett
     from app.worker.claim import cancel_job
     from app.worker.scheduler import schedule_job
 
-    now = datetime.now(tz=timezone.utc)
+    now = now or datetime.now(tz=timezone.utc)
     contact_tz = get_contact_timezone(session, contact_id, settings)
     if is_campaign_active(campaign_name, now, settings, contact_tz, session):
-        return True
+        # Real SMS also needs the federal TCPA floor (08:00-21:00 local) even when the campaign
+        # window is wider (New Lead runs to 22:00).
+        if not tcpa:
+            return True
+        from app.core.sms_eligibility import in_tcpa_hours
+        from zoneinfo import ZoneInfo
 
-    next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
+        if in_tcpa_hours(now.astimezone(ZoneInfo(contact_tz)).hour):
+            return True
+        local = now.astimezone(ZoneInfo(contact_tz))
+        day = local.date() if local.hour < 8 else local.date() + timedelta(days=1)
+        next_open = next_active_window_start(
+            campaign_name,
+            datetime(day.year, day.month, day.day, 8, 0, tzinfo=ZoneInfo(contact_tz)).astimezone(timezone.utc),
+            settings, contact_tz, session,
+        )
+    else:
+        next_open = next_active_window_start(campaign_name, now, settings, contact_tz, session)
+    next_open = next_open.astimezone(timezone.utc)  # store UTC regardless of the lead's zone
     logger.info(
         "%s: outside active window — deferring | "
         "contact_id=%s campaign=%s contact_tz=%s rescheduled_for=%s",
@@ -132,7 +151,7 @@ def send_sms_job(job_id: str) -> None:
         campaign_name = payload.get("campaign_name", "")
 
         # ── Campaign active-window check ──────────────────────────────────────
-        if not _check_active_window(session, job, contact_id, campaign_name, settings):
+        if not _check_active_window(session, job, contact_id, campaign_name, settings, tcpa=True):
             return
 
         mark_running(session, job)

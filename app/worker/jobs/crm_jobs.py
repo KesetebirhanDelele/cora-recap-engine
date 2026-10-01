@@ -506,28 +506,33 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     "phone search found no match or failed; skipping write"
                 )
 
-            # Ticket #2 carries a brief identifier; Message carries the full body.
-            # GHL text fields cap around 2000 chars — truncate to avoid 400 errors.
-            _GHL_MSG_MAX = 2000
-            ticket_2_value = message_subject if channel == "email" else message_body[:200]
-            message_body_ghl = message_body[:_GHL_MSG_MAX]
+            # Which GHL fields to write decides which GHL workflow sends the message
+            # (spec/33, app/core/followup_routing.py): email -> Ticket #2 subject + Message
+            # body ("AI Agent - Send Email"); sms -> Ticket #4 text ("AI Agent - Send SMS").
+            # Ticket #4 is the SMS body, so the lead-classification tag is no longer written there.
+            from app.core.app_config import get_str
+            from app.core.followup_routing import build_followup_updates
 
-            # Build with label keys first, then resolve labels → UUIDs.
-            label_updates: dict[str, str] = {}
-            if settings.ghl_field_mark_as_lead:
-                label_updates[settings.ghl_field_mark_as_lead] = "Yes"
-            if settings.ghl_field_support_ticket_2 and ticket_2_value:
-                label_updates[settings.ghl_field_support_ticket_2] = ticket_2_value
-            if settings.ghl_field_message and message_body_ghl:
-                label_updates[settings.ghl_field_message] = message_body_ghl
-            if settings.ghl_field_ai_campaign:
-                label_updates[settings.ghl_field_ai_campaign] = "Yes"
-
-            # Support Ticket #4: most recent lead classification from classification_results
-            if settings.ghl_field_support_ticket_4:
-                classification = _get_latest_classification(session, contact_id)
-                if classification:
-                    label_updates[settings.ghl_field_support_ticket_4] = classification
+            plan = build_followup_updates(
+                settings,
+                channel=channel,
+                subject=message_subject,
+                body=message_body,
+                ghl_contact=ghl_contact,
+                sms_mode=get_str("sms_delivery_mode", session, settings, "sms"),
+                allowed_link_domains=get_str("sms_allowed_link_domains", session, settings, ""),
+            )
+            label_updates = plan.updates
+            if plan.route == "sms_link_to_email":
+                logger.info(
+                    "update_ghl_after_vm_message: SMS carries a link - delivering by EMAIL instead | "
+                    "contact_id=%s job_id=%s", contact_id, job_id,
+                )
+            if plan.sms_skip_reason:
+                logger.info(
+                    "update_ghl_after_vm_message: follow-up not delivered (%s) | contact_id=%s job_id=%s",
+                    plan.sms_skip_reason, contact_id, job_id,
+                )
 
             field_updates = _resolve_to_field_ids(ghl, label_updates) if label_updates else {}
             if field_updates:

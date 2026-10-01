@@ -44,6 +44,10 @@ Applies to both campaigns. Tier advances each time the call is unanswered (voice
 | 1 → 2 (3rd missed call) | 48 hours (`cold_vm_tier_1_delay_minutes = 2880`) | Yes — Synthflow callback | Yes — +30 min | No | GHL Path 2 after SMS |
 | 2 → 3 (4th missed call) | None — terminal | **No** | **No** | **No** | **GHL Path 3** — AI Campaign = No |
 
+> **New Lead delays as configured (Settings page, 2026-10-01):** none→0 = 120 min, 0→1 = 1,440 min, 1→2 = 2,880 min, finalize at tier 2. These are not defaults — they are saved values.
+> **Daily cap (spec/33):** a lead is dialed at most **2 times per local day** unless the lead asked for a call back; over-cap calls move to the next day's window.
+> **Delivery (spec/33):** a text is delivered as a real **SMS** (GHL "AI Agent - Send SMS", Support issue Ticket #4); the email is delivered by "AI Agent - Send Email" (Ticket #2 = subject, Message = body). Calls are never pulled earlier than their configured delay.
+
 **SMS rule:** Always sent +30 min after every missed call (`sms_followup_delay_minutes = 30`).  
 **Email rule:** Sent only on the 2nd missed call (tier 0 → 1), at the same scheduled time as the SMS.  
 **GHL Path 2** (`update_ghl_after_vm_message`): writes Mark as Lead, Support Ticket #2 (identifier), Message body, AI Campaign = Yes, latest lead classification.  

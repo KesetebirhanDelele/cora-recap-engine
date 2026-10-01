@@ -230,6 +230,70 @@ def _compute_window_run_at(session, window_start: datetime, *, campaign_name: st
     return _bucket_start(end_bucket)
 
 
+def calls_launched_today(
+    session, contact_id: str, phone: str, day_start_utc: datetime, exclude_job_id: str | None = None,
+) -> int:
+    """Calls already placed to this lead since `day_start_utc` (completed launch jobs; the
+    job's updated_at is when it finished launching)."""
+    from sqlalchemy import func, or_, select
+
+    from app.models.scheduled_job import ScheduledJob
+
+    ids = [i for i in {contact_id, phone} if i]
+    clauses = [ScheduledJob.entity_id.in_(ids)]
+    clauses += [ScheduledJob.payload_json["contact_id"].as_string().in_(ids)]
+    q = select(func.count()).select_from(ScheduledJob).where(
+        ScheduledJob.job_type == "launch_outbound_call",
+        ScheduledJob.status == "completed",
+        ScheduledJob.updated_at >= day_start_utc,
+        or_(*clauses),
+    )
+    if exclude_job_id:
+        q = q.where(ScheduledJob.id != exclude_job_id)
+    return int(session.scalar(q) or 0)
+
+
+def daily_cap_deferral(
+    session, settings, *, job, payload: dict, contact_id: str, phone: str, campaign_name: str,
+    contact_tz: str, now: datetime,
+) -> datetime | None:
+    """
+    Hard daily call cap (spec/33). Returns None when the call may proceed, or the run_at the
+    job must be deferred to (the open of the campaign window on the lead's NEXT local day)
+    when the lead has already been called `max_calls_per_lead_per_day` times today.
+    Lead-requested callbacks are exempt. A cap of 0 or less disables the check.
+    """
+    from app.core.app_config import get_int
+    from app.core.call_policy import (
+        DEFAULT_MAX_CALLS_PER_DAY,
+        is_lead_requested_callback,
+        local_day_start_utc,
+        next_local_day_start_utc,
+    )
+    from app.core.campaign_schedule import next_active_window_start
+
+    if is_lead_requested_callback(payload):
+        return None
+    cap = get_int("max_calls_per_lead_per_day", session, settings, DEFAULT_MAX_CALLS_PER_DAY)
+    if cap <= 0:
+        return None
+    made = calls_launched_today(
+        session, contact_id, phone, local_day_start_utc(now, contact_tz), exclude_job_id=job.id
+    )
+    if made < cap:
+        return None
+    next_open = next_active_window_start(
+        campaign_name, next_local_day_start_utc(now, contact_tz), settings, contact_tz, session
+    )
+    run_at = _compute_window_run_at(session, next_open, campaign_name=campaign_name)
+    logger.info(
+        "launch_outbound_call_job: daily call cap reached (%d/%d today) - deferring to next day | "
+        "contact_id=%s campaign=%s job_id=%s rescheduled_for=%s",
+        made, cap, contact_id, campaign_name, job.id, run_at.isoformat(),
+    )
+    return run_at
+
+
 def _is_do_not_call(session, contact_id: str) -> bool:
     """True if lead_state.do_not_call is set for this contact. False if no row exists."""
     from sqlalchemy import select
@@ -484,6 +548,23 @@ def launch_outbound_call_job(job_id: str) -> None:
                     entity_type=job.entity_type,
                     entity_id=job.entity_id,
                     run_at=run_at,
+                    payload=payload,
+                )
+                return
+
+            # ── Hard daily call cap (spec/33): max 2 calls per lead per local day ──
+            cap_run_at = daily_cap_deferral(
+                session, settings, job=job, payload=payload, contact_id=contact_id,
+                phone=phone, campaign_name=campaign_name, contact_tz=contact_tz, now=now,
+            )
+            if cap_run_at is not None:
+                cancel_job(session, job.id)
+                schedule_job(
+                    session=session,
+                    job_type="launch_outbound_call",
+                    entity_type=job.entity_type,
+                    entity_id=job.entity_id,
+                    run_at=cap_run_at,
                     payload=payload,
                 )
                 return

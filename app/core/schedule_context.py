@@ -80,6 +80,8 @@ def build_schedule_block(
             f"- SCHEDULE OVERRIDE: there is NO upcoming {' and no '.join(missing)} right now. "
             "Ignore any guideline below that asks you to mention it, create urgency before it, "
             "or link its RSVP. NEVER write any date for it. "
-            f"Instead, invite the lead to start learning for FREE by signing up at {free_signup_url}."
+            f"Instead, invite the lead to start learning for FREE by signing up at {free_signup_url}. "
+            "Put that address ONLY in the email - NEVER put any link or web address in the SMS "
+            "(texts may not contain links); in the SMS just invite them to reply."
         )
     return "\n".join(lines)
