@@ -17,6 +17,8 @@ from tests.unit.test_wrong_date_monitor import (  # noqa: F401  (fixtures)
     DB_URL,
     STALE_CLASS,
     _add_msg,
+    _clean_contact,
+    _fake_resolve,
     _incident_ids,
     _live_patches,
     _scan,
@@ -91,7 +93,8 @@ def test_bulk_send_one_sms_per_lead_and_resolves_field_once(session, settings):
     assert len(_incident_ids(session, "open")) == 6
 
     ghl_cls = MagicMock()
-    resolve = MagicMock(return_value={"field-uuid": "x"})
+    ghl_cls.return_value.get_contact.return_value = _clean_contact()
+    resolve = MagicMock(side_effect=_fake_resolve)
     with patch("app.adapters.ghl.GHLClient", ghl_cls), \
          patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)), \
          patch("app.worker.jobs.crm_jobs._resolve_to_field_ids", resolve):
@@ -99,7 +102,7 @@ def test_bulk_send_one_sms_per_lead_and_resolves_field_once(session, settings):
 
     assert (r["sent"], r["failed"], r["remaining"], r["total_leads"]) == (3, 0, 0, 3)
     assert ghl_cls.return_value.update_contact_fields.call_count == 3        # 3 SMS, not 6
-    assert resolve.call_count == 1                                           # field looked up once
+    assert resolve.call_count == 1                        # the email field id is looked up once for the run
     assert _incident_ids(session, "open") == []
     assert len(_incident_ids(session, "corrected")) == 6
     # a second press finds nothing to do

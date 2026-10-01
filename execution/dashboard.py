@@ -1468,7 +1468,7 @@ elif section == "Settings":
     next_open_house_date = col1.text_input(
         "Next Open House Date",
         value=_get(cfg, "next_open_house_date", "upcoming"),
-        help='E.g. "October 29, 2026". Used in messages and checked by the Wrong Date Monitor.',
+        help='E.g. "October 29, 2026" (include the year). Cleared automatically the day after it passes; blank = none scheduled.',
         key="next_open_house_date",
     )
     live_open_house_link = col2.text_input(

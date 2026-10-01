@@ -555,13 +555,13 @@ export default function SettingsClient() {
           </div>
           <div>
             <label style={LABEL}>Next class start</label>
-            <p style={SECTION_CAPTION}>e.g. &quot;May 12&quot; or &quot;Q3 2026&quot;. Used in urgency messaging.</p>
+            <p style={SECTION_CAPTION}>e.g. &quot;November 12, 2026&quot; (include the year). Cleared automatically the day after it passes; blank = no class scheduled, messages invite leads to start free at www.myfreeaiclass.com.</p>
             <input type="text" value={nextClassStart}
               onChange={(e) => setNextClassStart(e.target.value)} style={INPUT} />
           </div>
           <div>
             <label style={LABEL}>Next Open House Date</label>
-            <p style={SECTION_CAPTION}>e.g. &quot;October 29, 2026&quot;. Used in messages and checked by the Wrong Date Monitor.</p>
+            <p style={SECTION_CAPTION}>e.g. &quot;October 29, 2026&quot; (include the year). Cleared automatically the day after it passes; blank = no Open House scheduled (the RSVP link is then not sent).</p>
             <input type="text" value={nextOpenHouseDate}
               onChange={(e) => setNextOpenHouseDate(e.target.value)} style={INPUT} />
           </div>

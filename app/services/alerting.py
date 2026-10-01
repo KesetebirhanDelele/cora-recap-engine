@@ -186,6 +186,12 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         logger.error("alerting: sales_queue_urgent eval failed: %s", exc)
 
     try:
+        from app.services.date_expiry import expire_past_dates
+        expire_past_dates(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: date_expiry failed: %s", exc)
+
+    try:
         from app.services.wrong_date_monitor import scan_wrong_dates
         scan_wrong_dates(session, settings, now)
     except Exception as exc:

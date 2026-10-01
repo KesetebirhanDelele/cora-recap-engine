@@ -20,6 +20,9 @@ Context variables injected at generation time:
   {reply_to_email}        — from app_config
   {next_class_start}      — from app_config
   {next_open_house_date}  — from app_config
+  {schedule_block}        — what is scheduled (dates + RSVP), or a SCHEDULE OVERRIDE
+                            telling the model to invite the lead to {free_signup_url}
+                            when a date is unset / expired
   {live_open_house_link}  — from app_config
   {explainer_video_link}  — from app_config
   {unsubscribe_text}      — from app_config
@@ -75,9 +78,7 @@ Context:
 - Campaign: {campaign_name}
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
-- Next class: {next_class_start}
-- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
-- Open House RSVP: {live_open_house_link}
+{schedule_block}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
@@ -117,9 +118,7 @@ Context:
 - Campaign: {campaign_name}
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
-- Next class: {next_class_start}
-- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
-- Open House RSVP: {live_open_house_link}
+{schedule_block}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
@@ -159,9 +158,7 @@ Context:
 - Campaign: {campaign_name}
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
-- Next class: {next_class_start}
-- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
-- Open House RSVP: {live_open_house_link}
+{schedule_block}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 
@@ -202,9 +199,7 @@ Context:
 - Campaign: {campaign_name}
 - Sender: {sender_name} at {brand_name}
 - Reply-to: {reply_to_email}
-- Next class: {next_class_start}
-- Next Open House: {next_open_house_date} (use EXACTLY these two dates; never invent or alter a class or Open House date)
-- Open House RSVP: {live_open_house_link}
+{schedule_block}
 - Explainer video: {explainer_video_link}
 - Unsubscribe line: {unsubscribe_text}
 

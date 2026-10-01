@@ -22,8 +22,10 @@ class/open-house keyword wins (a wrong program date is the costlier miss).
 Comparison rules
 ----------------
 - Configured values come from app_config (free text, e.g. "November 12, 2026").
-  A value that cannot be parsed into a month+day (e.g. "upcoming", "Q3 2026")
-  disables that one check — we never guess.
+  expected=None, or free text that is not a date ("Q3 2026"), disables that one
+  check - we never guess.
+- expected="" means NOTHING is scheduled (the date expired / was cleared): any
+  dated class / open-house mention is wrong, because past dates must not be told.
 - A mention without a year matches on month+day only. A mention with a year
   must also match the configured year when the configured value has one.
 """
@@ -226,16 +228,20 @@ def find_wrong_dates(
     checkable). Appointment / unrelated dates never appear in the result.
     """
     expected = {
-        KIND_CLASS: (parse_config_date(expected_class_start), expected_class_start or ""),
-        KIND_OPEN_HOUSE: (parse_config_date(expected_open_house), expected_open_house or ""),
+        KIND_CLASS: (parse_config_date(expected_class_start), expected_class_start),
+        KIND_OPEN_HOUSE: (parse_config_date(expected_open_house), expected_open_house),
     }
     wrong: list[WrongDate] = []
     for mention in extract_date_mentions(clean_text(body, subject)):
         if mention.kind not in expected:
             continue
         exp_parsed, exp_raw = expected[mention.kind]
+        if exp_raw is None:
+            continue  # check disabled
         if exp_parsed is None:
-            continue  # configured value isn't a concrete date — can't judge
+            if exp_raw.strip() == "":  # nothing scheduled -> any date is wrong
+                wrong.append(WrongDate(kind=mention.kind, raw=mention.raw, expected=""))
+            continue  # free text that isn't a date - can't judge
         if not _matches(mention.parsed, exp_parsed):
             wrong.append(WrongDate(kind=mention.kind, raw=mention.raw, expected=exp_raw))
     return wrong

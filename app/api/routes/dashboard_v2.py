@@ -956,14 +956,17 @@ def get_wrong_dates(
     settings = get_settings()
     class_start, open_house = wdm.expected_dates(session, settings)
     changed = wdm.settings_changed_at(session)
-    try:
-        preview: str | None = wdm.build_correction_text(session, settings)
-    except ValueError:
-        preview = None
+    previews = {ch: wdm.build_correction_text(session, settings, ch) for ch in ("email", "sms")}
     return {
         "expected": {"class_start": class_start, "open_house": open_house},
         "open_count": wdm.count_open(session),
-        "correction_preview": preview,
+        "stats": wdm.incident_stats(session),
+        "correction_preview": previews["email"],          # kept for older clients
+        "correction_previews": previews,
+        "sms_enabled": wdm.sms_enabled(session, settings),
+        "test_available": bool(wdm._config(session, settings, "correction_test_contacts", "").strip()),
+        "email_daily_cap": wdm._daily_cap(session, settings, "email"),
+        "email_sent_last_24h": wdm.sent_last_24h(session, "email"),
         "open_leads": wdm.count_open_leads(session),
         "bulk_send_max": wdm.BULK_SEND_MAX_LEADS,
         "settings_changed_at": changed.isoformat() if changed else None,
@@ -975,6 +978,14 @@ def get_wrong_dates(
 class WrongDateActionRequest(BaseModel):
     incident_id: str
     note: str = ""
+    channel: str = "email"      # "email" (default) | "sms" (disabled unless sms_corrections_enabled)
+
+
+def _check_channel(channel: str) -> str:
+    if channel not in ("email", "sms"):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            detail="channel must be 'email' or 'sms'")
+    return channel
 
 
 @router.post("/actions/send-date-correction")
@@ -983,12 +994,17 @@ def action_send_date_correction(
     auth: DashboardAuth,
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Send the correction SMS for one open incident (writes the GHL Message field)."""
+    """Send the correction (email by default) for one open incident."""
     from app.config import get_settings
     from app.services import wrong_date_monitor as wdm
 
+    channel = _check_channel(body.channel)
     try:
-        result = wdm.send_correction(session, get_settings(), body.incident_id, auth["operator_id"])
+        result = wdm.send_correction(session, get_settings(), body.incident_id,
+                                     auth["operator_id"], channel=channel)
+    except wdm.ChannelDisabled as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except wdm.IncidentNotOpen:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT,
@@ -1002,7 +1018,15 @@ def action_send_date_correction(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
                             detail=f"GHL write failed: {exc}")
     session.commit()
-    return {"status": "shadow" if result["shadow"] else "sent", **result}
+    if result["shadow"]:
+        state = "shadow"
+    elif result.get("held"):
+        state = "held"
+    elif result.get("skipped"):
+        state = "skipped"
+    else:
+        state = "sent"
+    return {"status": state, **result}
 
 
 class BulkDismissRequest(BaseModel):
@@ -1030,21 +1054,63 @@ def action_dismiss_wrong_dates_bulk(
     return {"status": "dismissed", "dismissed": count, "cutoff": cutoff.isoformat()}
 
 
+class SendAllRequest(BaseModel):
+    channel: str = "email"
+
+
 @router.post("/actions/send-date-correction-all")
 def action_send_date_correction_all(
     auth: DashboardAuth,
+    body: SendAllRequest = SendAllRequest(),
     session: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """Send the correction SMS to every lead with an open incident (one SMS per lead, capped per call)."""
+    """Send the correction (email by default) to every lead with an open incident:
+    one message per lead, paced, capped per call and per day."""
     from app.config import get_settings
     from app.services import wrong_date_monitor as wdm
 
+    channel = _check_channel(body.channel)
     try:
-        result = wdm.send_corrections_bulk(session, get_settings(), auth["operator_id"])
+        result = wdm.send_corrections_bulk(session, get_settings(), auth["operator_id"], channel=channel)
+    except wdm.ChannelDisabled as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except ValueError as exc:
         session.rollback()
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
     return {"status": "shadow" if result["shadow"] else "done", **result}
+
+
+@router.post("/actions/send-test-correction")
+def action_send_test_correction(
+    auth: DashboardAuth,
+    body: SendAllRequest = SendAllRequest(),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Send a TEST correction (email or sms) to the allow-listed operator contact.
+    Works for sms even while SMS corrections are disabled - it exists to prove the
+    channel still works. No incident or counter is touched."""
+    from app.config import get_settings
+    from app.services import wrong_date_monitor as wdm
+
+    channel = _check_channel(body.channel)
+    try:
+        result = wdm.send_test_correction(session, get_settings(), channel, auth["operator_id"])
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    except Exception as exc:
+        session.rollback()
+        logger.exception("send_test_correction failed")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"GHL write failed: {exc}")
+    session.commit()
+    if result.get("shadow"):
+        state = "shadow"
+    elif result.get("skipped"):
+        state = "skipped"
+    else:
+        state = "sent"
+    return {"status": state, **result}
 
 
 @router.post("/actions/dismiss-wrong-date")

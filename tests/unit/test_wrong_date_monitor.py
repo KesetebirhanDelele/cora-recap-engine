@@ -41,19 +41,24 @@ def session():
         for t in ("wrong_date_incidents", "outbound_messages", "alert_events"):
             s.execute(text(f"DELETE FROM {t}"))
         s.execute(text("DELETE FROM audit_log WHERE entity_type = 'wrong_date_incident'"))
+        s.execute(text("DELETE FROM app_config WHERE key IN ('correction_daily_cap', "
+                       "'correction_email_daily_cap', 'sms_corrections_enabled', 'correction_test_contacts')"))
         for k, v in {
             "next_class_start": CLASS,
             "next_open_house_date": OH,
             "sender_name": "Cora from Colaberry",
             "live_open_house_link": "https://example.test/rsvp",
             "unsubscribe_text": "Text STOP to stop alerts",
+            "correction_send_delay_seconds": "0",
+            "correction_email_delay_seconds": "0",
         }.items():
             s.execute(text("""
                 INSERT INTO app_config (key, value, updated_by) VALUES (:k, :v, 'test')
                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
             """), {"k": k, "v": v})
         s.commit()
-        yield s
+        with patch.object(wdm, "_window_verdict", return_value=None):
+            yield s
         s.rollback()
     engine.dispose()
 
@@ -62,7 +67,9 @@ def session():
 def settings():
     return SimpleNamespace(
         smtp_enabled=False, alert_email_to="ops@example.test", frontend_url="https://dash.test",
-        ghl_field_message="Message", ghl_writes_enabled=True,
+        ghl_field_message="Message", ghl_field_support_ticket_4="Support Ticket #4",
+        ghl_field_support_ticket_2="Support Issue Ticket #2",
+        ghl_writes_enabled=True, default_timezone="America/Chicago",
     )
 
 
@@ -153,9 +160,13 @@ def test_email_failure_still_records_incident(session, settings):
 
 def test_correction_text_uses_current_dates_and_rsvp(session, settings):
     txt = wdm.build_correction_text(session, settings)
-    assert CLASS in txt and OH in txt
+    assert CLASS in txt and OH in txt                         # default channel = email
     assert "https://example.test/rsvp" in txt
-    assert txt.endswith("Text STOP to stop alerts")
+    assert "Text STOP" not in txt                             # GHL adds the unsubscribe footer
+    sms = wdm.build_correction_text(session, settings, "sms")
+    assert CLASS in sms and OH in sms
+    assert "https://example.test/rsvp" not in sms             # no long third-party link in a text
+    assert "www.myfreeaiclass.com" in sms and sms.endswith("Text STOP to stop alerts")
 
 
 def test_correction_message_itself_is_not_flagged(session, settings):
@@ -166,11 +177,25 @@ def test_correction_message_itself_is_not_flagged(session, settings):
 
 # ── send correction ──────────────────────────────────────────────────────────
 
+def _fake_resolve(ghl, updates):
+    """label -> id, like the real resolver: {'Message:' -> 'id-Message'}."""
+    return {f"id-{label}": value for label, value in updates.items()}
+
+
+def _clean_contact(**overrides):
+    rec = {"id": "x", "dnd": False, "dndSettings": {}, "tags": [],
+           "email": "lead@example.test", "phone": "+15551230000"}
+    rec.update(overrides)
+    return {"contact": rec}
+
+
 def _live_patches(ghl_cls):
+    if not isinstance(ghl_cls.return_value.get_contact.return_value, dict):
+        ghl_cls.return_value.get_contact.return_value = _clean_contact()
     return (
         patch("app.adapters.ghl.GHLClient", ghl_cls),
         patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)),
-        patch("app.worker.jobs.crm_jobs._resolve_to_field_ids", return_value={"field-uuid": "x"}),
+        patch("app.worker.jobs.crm_jobs._resolve_to_field_ids", side_effect=_fake_resolve),
     )
 
 
@@ -189,6 +214,14 @@ def test_send_correction_writes_ghl_field_and_closes_incident(session, settings)
     ghl_cls.return_value.update_contact_fields.assert_called_once()
     args = ghl_cls.return_value.update_contact_fields.call_args
     assert args.args[0] == "ghl-123"
+    written = args.args[1]
+    # email is the default channel: ONLY Support Issue Ticket #2 (the email workflow's body) is written
+    assert list(written) == ["id-Support Issue Ticket #2"]
+    assert written["id-Support Issue Ticket #2"].startswith("Quick correction")
+    row = session.execute(text(
+        "SELECT email_triggered_at, sms_triggered_at, correction_channel FROM wrong_date_incidents WHERE id=:i"),
+        {"i": iid}).fetchone()
+    assert row[0] is not None and row[1] is None and row[2] == "email"
     row = session.execute(text(
         "SELECT status, resolved_by, correction_text FROM wrong_date_incidents WHERE id=:i"), {"i": iid}).fetchone()
     assert row[0] == "corrected" and row[1] == "kes" and CLASS in row[2]

@@ -71,6 +71,7 @@ function resolveGroups(
   health: HealthResponse | null,
   cardMetrics: CardMetricsResponse | null,
   wrongDateOpen: number,
+  wrongDateClosed24h: number | null,
 ): ResolvedNavGroup[] {
   return NAV_GROUPS.map((group) => ({
     label: group.label,
@@ -79,7 +80,10 @@ function resolveGroups(
       href: item.href,
       title: item.title,
       icon: item.icon,
-      description: item.description,
+      description:
+        item.badgeKey === "wrong_date_open" && wrongDateClosed24h !== null
+          ? `Open ${wrongDateOpen} · Closed ${wrongDateClosed24h} in the last 24h. Wrong class / open-house dates sent to leads.`
+          : item.description,
       category: item.category,
       badge: health ? getBadge(item, health, wrongDateOpen) : undefined,
       badgeCritical: item.badgeCritical,
@@ -93,7 +97,12 @@ export default async function HomePage() {
   let healthError: string | null = null;
   let cardMetrics: CardMetricsResponse | null = null;
   let wrongDateOpen = 0;
-  try { wrongDateOpen = (await fetchWrongDates("open")).open_count; } catch { /* tile still renders without a badge */ }
+  let wrongDateClosed24h: number | null = null;
+  try {
+    const wd = await fetchWrongDates("open");
+    wrongDateOpen = wd.open_count;
+    wrongDateClosed24h = wd.stats.closed_24h;
+  } catch { /* tile still renders without a badge */ }
   try {
     [health, cardMetrics] = await Promise.all([fetchHealth(), fetchCardMetrics()]);
   } catch (e) {
@@ -155,7 +164,7 @@ export default async function HomePage() {
       </div>
 
       {/* ── Navigation (stacked sections: Analytics / Operations / System) ──── */}
-      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen)} />
+      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen, wrongDateClosed24h)} />
     </div>
   );
 }

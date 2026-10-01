@@ -2349,3 +2349,23 @@ Added: auto-close a lead's other open incidents when a correction is sent; "Dism
 
 ### Deployed (2026-09-30, later)
 Merged bulk-actions branch (`a143779`), redeployed Hetzner, no migration. Health ok.
+
+## Session: 2026-09-30 (later still) — date auto-expiry, free-signup fallback, 24h tile metrics (`feat/date-expiry-and-metrics`)
+
+**Status: built and tested locally; NOT committed/merged/deployed.**
+- Dates now clear themselves the day after they pass (year required); prompts then say there is no class/open house and invite leads to www.myfreeaiclass.com; RSVP link withheld; correction SMS has a no-dates variant; monitor flags any dated class/open-house mention sent after a clear.
+- Tile + page show Open now / Closed (24h) / corrected / dismissed / new.
+- 98 wrong-date tests pass (DB-backed ones need WRONG_DATE_TEST_DATABASE_URL). No migration.
+
+## Session: 2026-09-30 (night) — correction SMS actually delivered via Ticket #4 + SMS safeguards (`feat/date-expiry-and-metrics`)
+**Status: built and tested locally; NOT committed/merged/deployed.**
+- Root cause of "no SMS": GHL workflow "AI Agent - Send SMS" starts on `Support issue Ticket #4` changing and texts that field; corrections only wrote `Message:`. 154 production corrections wrote Message only (no SMS). Fix writes the text to Message AND Ticket #4; migration 0025 adds `sms_triggered_at`; "Send the missing SMS" re-triggers the 154.
+- Safeguards (spec/32): DND/STOP/opt-out block, replied -> hold, campaign + TCPA window, fail-closed contact read, 5s pacing between real sends, daily cap 300. 170 wrong-date tests pass.
+- Open: confirm API writes fire the workflow (test on one contact first); how Cora's regular follow-ups are delivered is still unverified (email workflow "AI Agent - Send Email" triggers on Support Issue Ticket #2 + 5s wait).
+
+## Session: 2026-10-01 — email is the correction channel; SMS built but off (`feat/date-expiry-and-metrics`)
+**Status: built and tested locally; NOT committed/merged/deployed.**
+- Live test on Kes's own contact: Ticket #2 write -> email arrived; Ticket #4 write -> no SMS (SMS workflow not firing/sending; pending GHL execution-log check).
+- GHL conversations: Cora's "SMS" follow-ups are delivered as emails (Ticket #2 workflow). So corrections go by EMAIL; SMS corrections gated off (`sms_corrections_enabled`), SMS test-to-self kept to confirm the channel when restored.
+- Added: channel-aware send/bulk/test, per-channel ledgers + caps (email 100/day, 3 s), email-specific DND/no-address/window rules, tile email buttons + test buttons. Migration 0025 reopens the 219 never-delivered "corrected" incidents.
+- Before first use after deploy: INSERT app_config `correction_test_contacts` (Kes's email) via SQL - deliberately NOT in the repo.

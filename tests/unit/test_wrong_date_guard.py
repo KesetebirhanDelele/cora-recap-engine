@@ -159,9 +159,27 @@ def test_unparseable_class_config_skips_class_check_only():
     assert [w.kind for w in wrong] == [KIND_OPEN_HOUSE]
 
 
-def test_both_configs_empty_never_alerts():
+def test_checks_disabled_with_none_never_alerts():
     assert find_wrong_dates("Class starts Dec 1.", None,
-                            expected_class_start="", expected_open_house="") == []
+                            expected_class_start=None, expected_open_house=None) == []
+
+
+def test_blank_means_nothing_scheduled_so_any_dated_mention_is_wrong():
+    wrong = find_wrong_dates(
+        "Our next class starts Nov 12. Open house is Oct 29. We'll call you Oct 6.", None,
+        expected_class_start="", expected_open_house="",
+    )
+    assert sorted((w.kind, w.raw, w.expected) for w in wrong) == [
+        (KIND_CLASS, "Nov 12", ""),
+        (KIND_OPEN_HOUSE, "Oct 29", ""),
+    ]  # appointment date still ignored
+
+
+def test_blank_with_no_dates_is_fine():
+    assert find_wrong_dates(
+        "Start learning for free at www.myfreeaiclass.com today!", None,
+        expected_class_start="", expected_open_house="",
+    ) == []
 
 
 def test_none_body_is_safe():

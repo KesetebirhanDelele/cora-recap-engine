@@ -14,13 +14,25 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.sms_eligibility import (
+    BLOCK,
+    HOLD,
+    SEND,
+    Verdict,
+    contact_block_reason,
+    cora_state_verdict,
+    in_tcpa_hours,
+    is_stop_reply,
+)
 from app.core.wrong_date_guard import KIND_CLASS, find_wrong_dates
 
 logger = logging.getLogger(__name__)
@@ -36,6 +48,9 @@ SCAN_ROW_LIMIT = 2000
 MAX_NEW_INCIDENTS_PER_CYCLE = 25
 
 _SNIPPET_CHARS = 280
+
+# Injectable so tests don't really sleep.
+_sleep = time.sleep
 _KIND_LABEL = {KIND_CLASS: "class start", "open_house": "open house"}
 
 
@@ -43,6 +58,27 @@ def _config(session: Session, settings: Any, key: str, default: str = "") -> str
     from app.core.app_config import get_str
 
     return get_str(key, session, settings, default)
+
+
+def _expectation(value: str, changed_at: datetime | None, msg_at: datetime) -> str | None:
+    """What a message should be checked against for one date kind.
+    - a real value -> that value (every message)
+    - unset (cleared/expired) -> "" (nothing scheduled) but ONLY for messages sent
+      after the setting was cleared; earlier messages were correct when sent
+    - never configured -> None (check disabled)"""
+    from app.core.schedule_context import is_unset
+
+    if not is_unset(value):
+        return value
+    if changed_at is not None and msg_at >= changed_at:
+        return ""
+    return None
+
+
+def _key_updated_at(session: Session, key: str) -> datetime | None:
+    return session.execute(
+        text("SELECT updated_at FROM app_config WHERE key = :k"), {"k": key}
+    ).scalar()
 
 
 def expected_dates(session: Session, settings: Any) -> tuple[str, str]:
@@ -65,6 +101,8 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
     from app.services.alerting import _send_alert_email
 
     class_start, open_house = expected_dates(session, settings)
+    class_changed = _key_updated_at(session, "next_class_start")
+    oh_changed = _key_updated_at(session, "next_open_house_date")
     new_count = 0
 
     rows = session.execute(
@@ -87,7 +125,8 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
             break
         wrong = find_wrong_dates(
             body, subject,
-            expected_class_start=class_start, expected_open_house=open_house,
+            expected_class_start=_expectation(class_start, class_changed, created_at),
+            expected_open_house=_expectation(open_house, oh_changed, created_at),
         )
         if not wrong:
             continue
@@ -117,7 +156,8 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
         new_count += 1
 
         detail = "; ".join(
-            f"{_KIND_LABEL[w.kind]} date '{w.raw}' (should be {w.expected})" for w in wrong
+            f"{_KIND_LABEL[w.kind]} date '{w.raw}' (should be {w.expected or 'none - nothing is scheduled'})"
+            for w in wrong
         )
         frontend = (getattr(settings, "frontend_url", "") or "").rstrip("/")
         message = (
@@ -196,6 +236,31 @@ def list_incidents(session: Session, status: str = "open", limit: int = 100) -> 
     return out
 
 
+def incident_stats(session: Session, now: datetime | None = None) -> dict[str, int]:
+    """Tile metrics: incidents open right now, and closed in the last 24h."""
+    now = now or datetime.now(tz=timezone.utc)
+    since = now - timedelta(hours=24)
+    row = session.execute(
+        text("""
+            SELECT
+              COUNT(*) FILTER (WHERE status = 'open'),
+              COUNT(*) FILTER (WHERE status = 'corrected' AND resolved_at >= :s),
+              COUNT(*) FILTER (WHERE status = 'dismissed' AND resolved_at >= :s),
+              COUNT(*) FILTER (WHERE created_at >= :s)
+            FROM wrong_date_incidents
+        """),
+        {"s": since},
+    ).fetchone()
+    open_now, corrected, dismissed, new_24h = (int(x or 0) for x in row)
+    return {
+        "open": open_now,
+        "closed_24h": corrected + dismissed,
+        "corrected_24h": corrected,
+        "dismissed_24h": dismissed,
+        "new_24h": new_24h,
+    }
+
+
 def count_open(session: Session) -> int:
     return int(session.execute(
         text("SELECT COUNT(*) FROM wrong_date_incidents WHERE status = 'open'")
@@ -254,28 +319,46 @@ def dismiss_open_before(
 
 # ── Correction SMS ───────────────────────────────────────────────────────────
 
-def build_correction_text(session: Session, settings: Any) -> str:
-    """Correction SMS built from the CURRENT dashboard values (never the
-    stale dates stored on the incident)."""
+def build_correction_text(session: Session, settings: Any, channel: str = "email") -> str:
+    """Correction text built from the CURRENT dashboard values (never the stale
+    dates stored on the incident).
+
+    email: full RSVP link allowed; no STOP line (GHL adds the unsubscribe footer).
+    sms:   no long third-party links (carrier filtering) - only the free-signup
+           address - and the opt-out line."""
+    from app.core.schedule_context import DEFAULT_FREE_SIGNUP_URL, is_unset
+
     class_start, open_house = expected_dates(session, settings)
     sender = _config(session, settings, "sender_name", "Cora from Colaberry")
     rsvp = _config(session, settings, "live_open_house_link")
     stop = _config(session, settings, "unsubscribe_text")
+    free_url = _config(session, settings, "free_signup_url", DEFAULT_FREE_SIGNUP_URL) or DEFAULT_FREE_SIGNUP_URL
 
+    has_class = not is_unset(class_start)
+    has_oh = not is_unset(open_house)
     facts = []
-    if class_start:
+    if has_class:
         facts.append(f"our next class starts {class_start}")
-    if open_house:
+    if has_oh:
         facts.append(f"our next Open House is {open_house}")
-    if not facts:
-        raise ValueError("Neither next_class_start nor next_open_house_date is set")
+    if not has_class and not has_oh:
+        facts.append("we don't have a class or Open House scheduled right now")
+    elif not has_class:
+        facts.append("there is no class scheduled yet")
+    elif not has_oh:
+        facts.append("there is no Open House scheduled right now")
 
     msg = f"Quick correction from {sender}: {' and '.join(facts)}."
-    if rsvp and open_house:
+    if channel == "sms":
+        msg += f" Start learning for free at {free_url}."
+        msg += " Sorry for any confusion!"
+        if stop:
+            msg += f" {stop}"
+        return msg
+    if has_oh and rsvp:
         msg += f" RSVP: {rsvp}."
+    msg += f" You can also start learning for free at {free_url}."
     msg += " Sorry for any confusion!"
-    if stop:
-        msg += f" {stop}"
     return msg
 
 
@@ -283,29 +366,256 @@ class IncidentNotOpen(Exception):
     """Incident missing or already corrected/dismissed."""
 
 
+class ChannelDisabled(Exception):
+    """SMS corrections are switched off (app_config sms_corrections_enabled)."""
+
+
+# ── channels ─────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class _Channel:
+    name: str
+    field_attr: str        # Settings attribute holding the GHL field label the workflow reads
+    ledger_col: str        # wrong_date_incidents column stamped when the send is triggered
+    delay_key: str
+    delay_default: float
+    cap_key: str
+    cap_default: int
+    tcpa: bool             # apply the 08:00-21:00 local floor (texts only)
+
+
+CHANNELS: dict[str, _Channel] = {
+    # GHL "AI Agent - Send Email": trigger Support Issue Ticket #2 changed -> email body = Ticket #2
+    "email": _Channel("email", "ghl_field_support_ticket_2", "email_triggered_at",
+                      "correction_email_delay_seconds", 3.0, "correction_email_daily_cap", 100, False),
+    # GHL "AI Agent - Send SMS": trigger Support issue Ticket #4 changed -> SMS body = Ticket #4
+    "sms": _Channel("sms", "ghl_field_support_ticket_4", "sms_triggered_at",
+                    "correction_send_delay_seconds", 5.0, "correction_daily_cap", 300, True),
+}
+
+
+def channel_spec(channel: str) -> _Channel:
+    try:
+        return CHANNELS[channel]
+    except KeyError:
+        raise ValueError(f"Unknown correction channel {channel!r}") from None
+
+
+def sms_enabled(session: Session, settings: Any) -> bool:
+    """SMS corrections are OFF unless app_config sms_corrections_enabled is true.
+    (Test sends to allow-listed contacts work regardless - see send_test_correction.)"""
+    return _config(session, settings, "sms_corrections_enabled", "false").strip().lower() in ("true", "1", "yes")
+
+
+def _require_enabled(session: Session, settings: Any, channel: str) -> _Channel:
+    spec = channel_spec(channel)
+    if channel == "sms" and not sms_enabled(session, settings):
+        raise ChannelDisabled("SMS corrections are disabled")
+    return spec
+
+
+def _send_delay(session: Session, settings: Any, channel: str = "email") -> float:
+    """Seconds between REAL sends in a bulk run (provider rate-limit safety); 0 disables."""
+    spec = channel_spec(channel)
+    raw = _config(session, settings, spec.delay_key, str(spec.delay_default))
+    try:
+        return max(float(raw), 0.0)
+    except (TypeError, ValueError):
+        return spec.delay_default
+
+
+def _daily_cap(session: Session, settings: Any, channel: str = "email") -> int:
+    """Max distinct leads corrected on this channel in any rolling 24h."""
+    spec = channel_spec(channel)
+    raw = _config(session, settings, spec.cap_key, str(spec.cap_default))
+    try:
+        return max(int(float(raw)), 0)
+    except (TypeError, ValueError):
+        return spec.cap_default
+
+
+def sent_last_24h(session: Session, channel: str = "email") -> int:
+    col = channel_spec(channel).ledger_col     # fixed internal constant, never user input
+    return int(session.execute(
+        text(f"SELECT COUNT(DISTINCT contact_id) FROM wrong_date_incidents "
+             f"WHERE {col} >= now() - interval '24 hours'")
+    ).scalar() or 0)
+
+
+# ── eligibility screening (DND / STOP / windows) ─────────────────────────────
+
+def _lead_row(session: Session, contact_id: str) -> dict | None:
+    row = session.execute(
+        text("""
+            SELECT contact_id, campaign_name, do_not_call, invalid, status, last_replied_at, sales_outcome
+            FROM lead_state WHERE contact_id = :c OR normalized_phone = :c LIMIT 1
+        """),
+        {"c": contact_id},
+    ).fetchone()
+    if row is None:
+        return None
+    keys = ("contact_id", "campaign_name", "do_not_call", "invalid", "status",
+            "last_replied_at", "sales_outcome")
+    return dict(zip(keys, row))
+
+
+def _has_stop_reply(session: Session, contact_id: str) -> bool:
+    rows = session.execute(
+        text("SELECT body FROM inbound_messages WHERE contact_id = :c ORDER BY received_at DESC LIMIT 20"),
+        {"c": contact_id},
+    ).fetchall()
+    return any(is_stop_reply(r[0]) for r in rows)
+
+
+def _window_verdict(
+    session: Session, settings: Any, contact_id: str, lead: dict | None, now: datetime,
+    tcpa: bool = True,
+) -> Verdict | None:
+    """HOLD unless inside the lead's campaign window(s) - and, for texts, the TCPA
+    hours - in the lead's own timezone. Lead with no known campaign must be inside
+    every campaign window (the strictest reading)."""
+    from zoneinfo import ZoneInfo
+
+    from app.core.campaign_schedule import (
+        get_contact_timezone,
+        is_campaign_active,
+        next_active_window_start,
+    )
+
+    campaigns = [lead["campaign_name"]] if lead and lead.get("campaign_name") else ["New Lead", "Cold Lead"]
+    tz_name = get_contact_timezone(session, (lead or {}).get("contact_id") or contact_id, settings)
+    local = now.astimezone(ZoneInfo(tz_name))
+    if (not tcpa or in_tcpa_hours(local.hour)) and all(
+        is_campaign_active(c, now, settings, tz_name, session) for c in campaigns
+    ):
+        return None
+    opens = max(next_active_window_start(c, now, settings, tz_name, session) for c in campaigns)
+    return Verdict(HOLD, "outside the allowed sending window", kind="window",
+                   next_open=opens.isoformat())
+
+
+def screen_lead(
+    session: Session, settings: Any, contact_id: str, now: datetime, channel: str = "email",
+) -> Verdict:
+    """DB-only checks (no GHL call): Cora opt-out/state signals, then sending window.
+    A STOP reply is an SMS opt-out, so it only blocks the SMS channel."""
+    spec = channel_spec(channel)
+    lead = _lead_row(session, contact_id)
+    stop = channel == "sms" and _has_stop_reply(session, contact_id)
+    v = cora_state_verdict(lead, stop)
+    if v is not None:
+        return v
+    return _window_verdict(session, settings, contact_id, lead, now, tcpa=spec.tcpa) or Verdict(SEND)
+
+
 def _looks_like_phone(s: str) -> bool:
     stripped = s.replace(" ", "").replace("-", "").replace("+", "")
     return bool(stripped) and stripped.isdigit()
 
 
+def _lookup_contact(ghl: Any, contact_id: str) -> tuple[str, dict]:
+    """(real GHL contact id, full contact record incl. DND flags). Raises on failure,
+    so a lead whose DND state can't be read is never contacted (fail closed)."""
+    real = contact_id
+    if _looks_like_phone(contact_id):
+        found = ghl.search_contact_by_phone(contact_id)
+        if not found or not found.get("id"):
+            raise RuntimeError(f"Could not resolve GHL contact for phone {contact_id}")
+        real = found["id"]
+    rec = ghl.get_contact(real)
+    if isinstance(rec, dict):
+        rec = rec.get("contact", rec)
+    return real, rec if isinstance(rec, dict) else {}
+
+
+def _block_lead(session: Session, contact_id: str, reason: str, now: datetime) -> int:
+    """Close this lead's open incidents as dismissed with the reason. Never retried."""
+    ids = [r[0] for r in session.execute(
+        text("""
+            UPDATE wrong_date_incidents
+            SET status = 'dismissed', resolved_by = :by, resolved_at = :now
+            WHERE contact_id = :c AND status = 'open'
+            RETURNING id
+        """),
+        {"by": ("auto-skip: " + reason)[:240], "now": now, "c": contact_id},
+    ).fetchall()]
+    if ids:
+        session.execute(
+            text("""
+                INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+                VALUES (:id, 'wrong_date_incident', :eid, 'auto_skip_date_correction', 'system',
+                        CAST(:ctx AS jsonb), :now)
+            """),
+            {"id": str(uuid.uuid4()), "eid": ids[0], "now": now,
+             "ctx": json.dumps({"reason": reason, "incidents": len(ids)})},
+        )
+        _sync_aggregate_alert(session, now)
+    return len(ids)
+
+
+def _skipped_result(verdict: Verdict, correction: str, channel: str) -> dict[str, Any]:
+    return {
+        "shadow": False, "sent": False, "skipped": True, "correction_text": correction,
+        "channel": channel, "held": verdict.action == HOLD, "reason": verdict.reason,
+        "next_open": verdict.next_open,
+    }
+
+
+def _push_to_ghl(
+    settings: Any, ghl: Any, flags: Any, real_contact_id: str, correction: str,
+    channel: str, field_cache: dict | None = None,
+) -> None:
+    """Write the correction text into the GHL field that channel's workflow sends.
+
+    email: Support Issue Ticket #2 -> workflow "AI Agent - Send Email" (body = Ticket #2).
+    sms:   Support issue Ticket #4 -> workflow "AI Agent - Send SMS" (body = Ticket #4).
+    The new text differs from the lead's previous value, which is what makes the
+    workflow's "has changed" trigger fire; sending byte-identical text to the same
+    lead twice changes nothing, so GHL cannot double-send it either."""
+    from app.worker.jobs.crm_jobs import _resolve_to_field_ids
+
+    spec = channel_spec(channel)
+    label = getattr(settings, spec.field_attr, None)
+    if not label:
+        raise RuntimeError(
+            f"{spec.field_attr.upper()} is not configured - the {channel} workflow reads that field, "
+            "so a correction cannot be sent without it"
+        )
+    cache = field_cache if field_cache is not None else {}
+    key = f"{channel}_id"
+    if key not in cache:
+        resolved = _resolve_to_field_ids(ghl, {label: "x"})
+        if not resolved:
+            raise RuntimeError(f"Could not resolve GHL field {label!r} to an ID")
+        cache[key] = next(iter(resolved))
+    ghl.update_contact_fields(real_contact_id, {cache[key]: correction}, mode_flags=flags)
+
+
 def send_correction(
     session: Session, settings: Any, incident_id: str, operator_id: str,
-    field_cache: dict | None = None,
+    channel: str = "email", field_cache: dict | None = None, before_write: Any = None,
 ) -> dict[str, Any]:
     """
-    Send the correction SMS for one open incident by writing the GHL "Message"
-    field (a GHL workflow sends it, same as VM follow-ups).
+    Send the correction for one open incident on `channel` (default email).
 
-    - Shadow / GHL-writes-off: nothing is written and the incident STAYS open;
-      returns {"shadow": True, ...}.
-    - Live: the incident is claimed atomically (open -> corrected) BEFORE the
-      write so a double-click or second operator can't send twice; if the GHL
-      write fails the claim is rolled back and the exception propagates.
+    Order of safeguards (nothing is written until all pass):
+      0. SMS only: switched off unless app_config sms_corrections_enabled (ChannelDisabled)
+      1. shadow / GHL-writes-off      -> {"shadow": True}, incident stays open
+      2. Cora signals (do-not-contact, invalid, closed, not-interested; STOP for SMS)
+                                      -> BLOCK: incidents dismissed with the reason
+      3. lead replied / outside the campaign window (+ TCPA hours for SMS)
+                                      -> HOLD: incident stays open, {"held": True}
+      4. GHL contact: DND (all / this channel), opt-out tag, no email/phone on file
+                                      -> BLOCK (a contact we can't read is NOT contacted)
+      5. atomic claim (open -> corrected) so a double-click can't double-send;
+         rolled back if the GHL write fails.
+    `before_write` (optional callable) runs after every check passed and just before
+    the claim - bulk runs use it to pace real sends only, never skipped leads.
     """
     from app.adapters.ghl import GHLClient
     from app.core.mode_flags import get_mode_flags
-    from app.worker.jobs.crm_jobs import _resolve_to_field_ids
 
+    spec = _require_enabled(session, settings, channel)
     row = session.execute(
         text("SELECT contact_id, status FROM wrong_date_incidents WHERE id = :id"),
         {"id": incident_id},
@@ -314,50 +624,52 @@ def send_correction(
         raise IncidentNotOpen(incident_id)
     contact_id = row[0]
 
-    correction = build_correction_text(session, settings)
+    correction = build_correction_text(session, settings, channel)
     flags = get_mode_flags(session, settings)
     if not flags.ghl_writes_enabled:
-        return {"shadow": True, "correction_text": correction, "sent": False}
-
-    label = getattr(settings, "ghl_field_message", None)
-    if not label:
-        raise RuntimeError("GHL_FIELD_MESSAGE is not configured — cannot send correction")
+        return {"shadow": True, "correction_text": correction, "sent": False, "channel": channel}
 
     now = datetime.now(tz=timezone.utc)
+    verdict = screen_lead(session, settings, contact_id, now, channel)
+    if verdict.action == BLOCK:
+        _block_lead(session, contact_id, verdict.reason, now)
+        return _skipped_result(verdict, correction, channel)
+    if verdict.action == HOLD:
+        return _skipped_result(verdict, correction, channel)
+
+    ghl = GHLClient(settings=settings)
+    real_id, record = _lookup_contact(ghl, contact_id)
+    reason = contact_block_reason(record, channel)
+    if reason:
+        _block_lead(session, contact_id, reason, now)
+        return _skipped_result(Verdict(BLOCK, reason), correction, channel)
+
+    if before_write is not None:
+        before_write()
+
+    col = spec.ledger_col   # fixed internal constant, never user input
     claimed = session.execute(
-        text("""
+        text(f"""
             UPDATE wrong_date_incidents
-            SET status = 'corrected', resolved_by = :op, resolved_at = :now, correction_text = :txt
+            SET status = 'corrected', resolved_by = :op, resolved_at = :now, correction_text = :txt,
+                correction_channel = :ch, {col} = :now
             WHERE id = :id AND status = 'open'
             RETURNING id
         """),
-        {"op": operator_id, "now": now, "txt": correction, "id": incident_id},
+        {"op": operator_id, "now": now, "txt": correction, "ch": channel, "id": incident_id},
     ).fetchone()
     if claimed is None:
         raise IncidentNotOpen(incident_id)
     session.flush()
 
     try:
-        ghl = GHLClient(settings=settings)
-        if _looks_like_phone(contact_id):
-            found = ghl.search_contact_by_phone(contact_id)
-            if not found or not found.get("id"):
-                raise RuntimeError(f"Could not resolve GHL contact for phone {contact_id}")
-            contact_id = found["id"]
-        if field_cache is not None and "field_id" in field_cache:
-            field_updates = {field_cache["field_id"]: correction}
-        else:
-            field_updates = _resolve_to_field_ids(ghl, {label: correction})
-            if not field_updates:
-                raise RuntimeError(f"Could not resolve GHL field {label!r} to an ID")
-            if field_cache is not None:
-                field_cache["field_id"] = next(iter(field_updates))
-        ghl.update_contact_fields(contact_id, field_updates, mode_flags=flags)
+        _push_to_ghl(settings, ghl, flags, real_id, correction, channel, field_cache)
     except Exception:
         session.execute(
-            text("""
+            text(f"""
                 UPDATE wrong_date_incidents
-                SET status = 'open', resolved_by = NULL, resolved_at = NULL, correction_text = NULL
+                SET status = 'open', resolved_by = NULL, resolved_at = NULL, correction_text = NULL,
+                    correction_channel = NULL, {col} = NULL
                 WHERE id = :id
             """),
             {"id": incident_id},
@@ -365,14 +677,14 @@ def send_correction(
         session.flush()
         raise
 
-    # History: the correction is a real outbound SMS (its dates are correct,
+    # History: the correction is a real outbound message (its dates are correct,
     # so the scanner will not flag it).
     session.execute(
         text("""
             INSERT INTO outbound_messages (id, contact_id, channel, body, status, created_at)
-            VALUES (:id, :cid, 'sms', :body, 'sent', :now)
+            VALUES (:id, :cid, :ch, :body, 'sent', :now)
         """),
-        {"id": str(uuid.uuid4()), "cid": row[0], "body": correction, "now": now},
+        {"id": str(uuid.uuid4()), "cid": row[0], "ch": channel, "body": correction, "now": now},
     )
     session.execute(
         text("""
@@ -381,24 +693,50 @@ def send_correction(
                     CAST(:ctx AS jsonb), :now)
         """),
         {"id": str(uuid.uuid4()), "eid": incident_id, "op": operator_id,
-         "ctx": '{"source": "dashboard_v2"}', "now": now},
+         "ctx": json.dumps({"source": "dashboard_v2", "channel": channel}), "now": now},
     )
-    # One correction covers everything this lead was told wrong: close their
-    # other open incidents too so nobody sends (and the lead never receives)
-    # the same correction twice.
+    # One correction covers everything this lead was told wrong: close their other
+    # open incidents too so the lead is never sent the same correction twice.
     siblings = session.execute(
-        text("""
+        text(f"""
             UPDATE wrong_date_incidents
-            SET status = 'corrected', resolved_by = :op, resolved_at = :now, correction_text = :txt
+            SET status = 'corrected', resolved_by = :op, resolved_at = :now, correction_text = :txt,
+                correction_channel = :ch, {col} = :now
             WHERE contact_id = :cid AND status = 'open'
             RETURNING id
         """),
-        {"op": operator_id, "now": now, "txt": correction, "cid": row[0]},
+        {"op": operator_id, "now": now, "txt": correction, "ch": channel, "cid": row[0]},
     ).fetchall()
     _sync_aggregate_alert(session, now)
     return {
-        "shadow": False, "correction_text": correction, "sent": True,
-        "also_closed": len(siblings),
+        "shadow": False, "correction_text": correction, "sent": True, "skipped": False,
+        "channel": channel, "also_closed": len(siblings),
+    }
+
+
+@dataclass
+class _RunTally:
+    sent: int = 0
+    failed: int = 0
+    blocked: int = 0
+    held: int = 0
+    next_open: str | None = None
+    errors: list[str] = field(default_factory=list)
+
+    def note_hold(self, next_open: str | None) -> None:
+        self.held += 1
+        if next_open and (self.next_open is None or next_open < self.next_open):
+            self.next_open = next_open
+
+
+def _result(tally: _RunTally, total: int, remaining: int, stopped_early: bool,
+            cap: int, cap_hit: bool, session: Session, channel: str) -> dict[str, Any]:
+    return {
+        "shadow": False, "channel": channel, "sent": tally.sent, "failed": tally.failed,
+        "total_leads": total, "remaining": remaining, "errors": tally.errors[:5],
+        "stopped_early": stopped_early, "blocked": tally.blocked, "held": tally.held,
+        "next_window_opens": tally.next_open, "daily_cap": cap, "daily_cap_reached": cap_hit,
+        "sent_last_24h": sent_last_24h(session, channel),
     }
 
 
@@ -427,33 +765,34 @@ def dismiss_incident(session: Session, incident_id: str, operator_id: str, note:
     _sync_aggregate_alert(session, now)
 
 
-# One bulk HTTP request handles at most this many leads (~1s each) so it stays
-# well inside proxy timeouts. The dashboard button keeps calling until
-# `remaining` is 0, so the operator still sends to everyone with one click.
-BULK_SEND_MAX_LEADS = 25
+# One bulk HTTP request handles at most this many SENDS (each ~1s + the pacing
+# delay) so it stays well inside proxy timeouts. Skipped/held leads don't count.
+# The dashboard button keeps calling until `remaining` is 0.
+BULK_SEND_MAX_LEADS = 10
 BULK_SEND_MAX_CONSECUTIVE_FAILURES = 3
 
 
 def count_open_leads(session: Session) -> int:
-    """Distinct leads with at least one open incident (= SMS a bulk send would send)."""
+    """Distinct leads with at least one open incident (= corrections a bulk send would send)."""
     return int(session.execute(
         text("SELECT COUNT(DISTINCT contact_id) FROM wrong_date_incidents WHERE status = 'open'")
     ).scalar() or 0)
 
 
 def send_corrections_bulk(
-    session: Session, settings: Any, operator_id: str,
+    session: Session, settings: Any, operator_id: str, channel: str = "email",
 ) -> dict[str, Any]:
     """
-    Send the correction SMS to every lead with an open incident - ONE SMS per
-    lead, however many wrong messages they received (send_correction closes
-    the lead's sibling incidents). Each lead commits independently, so a
-    failure part-way keeps everything already sent; after
-    BULK_SEND_MAX_CONSECUTIVE_FAILURES in a row the run stops (GHL is down or
-    misconfigured - don't hammer it). In shadow mode nothing is written.
+    Send the correction to every lead with an open incident on `channel` (default
+    email) - ONE message per lead, however many wrong messages they received. Each
+    lead goes through every safeguard in send_correction. Pacing: the channel's
+    delay setting between REAL sends only. Daily cap: the channel's cap, distinct
+    leads per rolling 24h. Each lead commits independently; 3 consecutive failures
+    stop the run. Shadow mode sends nothing.
     """
     from app.core.mode_flags import get_mode_flags
 
+    _require_enabled(session, settings, channel)
     leads = session.execute(
         text("""
             SELECT DISTINCT ON (contact_id) contact_id, id
@@ -466,33 +805,106 @@ def send_corrections_bulk(
 
     flags = get_mode_flags(session, settings)
     if not flags.ghl_writes_enabled:
-        return {"shadow": True, "sent": 0, "failed": 0, "remaining": total, "total_leads": total,
-                "correction_text": build_correction_text(session, settings)}
+        return {"shadow": True, "channel": channel, "sent": 0, "failed": 0, "remaining": total,
+                "total_leads": total, "correction_text": build_correction_text(session, settings, channel)}
 
-    sent = failed = consecutive = 0
-    errors: list[str] = []
+    tally = _RunTally()
+    cap = _daily_cap(session, settings, channel)
+    used = sent_last_24h(session, channel)
+    delay = _send_delay(session, settings, channel)
     field_cache: dict = {}
-    attempted = 0
-    for contact_id, incident_id in leads[:BULK_SEND_MAX_LEADS]:
-        attempted += 1
+    consecutive = attempts = 0
+    did_send = cap_hit = False
+    remaining = 0
+
+    def pace() -> None:
+        # space real sends out - provider rate-limit safety. Skipped/held leads never wait.
+        if did_send and delay:
+            _sleep(delay)
+
+    for idx, (contact_id, incident_id) in enumerate(leads):
+        if attempts >= BULK_SEND_MAX_LEADS:
+            remaining = total - idx
+            break
+        if used + tally.sent >= cap:
+            cap_hit, remaining = True, total - idx
+            break
         try:
-            send_correction(session, settings, incident_id, operator_id, field_cache=field_cache)
+            r = send_correction(session, settings, incident_id, operator_id, channel=channel,
+                                field_cache=field_cache, before_write=pace)
             session.commit()
-            sent += 1
-            consecutive = 0
         except IncidentNotOpen:
             session.rollback()  # closed by a concurrent click - nothing to do
+            continue
         except Exception as exc:
             session.rollback()
-            failed += 1
+            attempts += 1
+            did_send = True
+            tally.failed += 1
             consecutive += 1
-            errors.append(f"{contact_id}: {exc}")
-            logger.error("bulk correction failed | contact=%s: %s", contact_id, exc)
+            tally.errors.append(f"{contact_id}: {exc}")
+            logger.error("bulk correction failed | channel=%s contact=%s: %s", channel, contact_id, exc)
             if consecutive >= BULK_SEND_MAX_CONSECUTIVE_FAILURES:
-                break
-    return {
-        "shadow": False, "sent": sent, "failed": failed, "total_leads": total,
-        "remaining": max(total - attempted, 0),
-        "errors": errors[:5],
-        "stopped_early": consecutive >= BULK_SEND_MAX_CONSECUTIVE_FAILURES,
-    }
+                return _result(tally, total, max(total - idx - 1, 0), True, cap, cap_hit, session, channel)
+            continue
+        if r.get("skipped"):
+            if r.get("held"):
+                tally.note_hold(r.get("next_open"))
+            else:
+                tally.blocked += 1
+            continue
+        attempts += 1
+        did_send = True
+        tally.sent += 1
+        consecutive = 0
+    return _result(tally, total, remaining, False, cap, cap_hit, session, channel)
+
+
+def send_test_correction(
+    session: Session, settings: Any, channel: str, operator_id: str, email: str | None = None,
+) -> dict[str, Any]:
+    """
+    Send a clearly-labelled TEST correction to an allow-listed contact (the operator's
+    own GHL contact) to prove a channel's workflow still works - e.g. SMS while real
+    SMS corrections are switched off. Allow-list: app_config `correction_test_contacts`
+    (comma-separated emails; empty = feature unavailable). Safeguards: the target must
+    be on the allow-list AND match exactly one GHL contact by exact email; DND / missing
+    address are respected; no incident or counter is touched; audited.
+    """
+    from app.adapters.ghl import GHLClient
+    from app.core.mode_flags import get_mode_flags
+
+    spec = channel_spec(channel)
+    allow = [e.strip().lower() for e in _config(session, settings, "correction_test_contacts", "").split(",") if e.strip()]
+    if not allow:
+        raise ValueError("No test contacts configured (app_config correction_test_contacts)")
+    target = (email or allow[0]).strip().lower()
+    if target not in allow:
+        raise ValueError("That contact is not on the test allow-list")
+
+    flags = get_mode_flags(session, settings)
+    if not flags.ghl_writes_enabled:
+        return {"shadow": True, "sent": False, "channel": channel}
+
+    ghl = GHLClient(settings=settings)
+    matches = [c for c in ghl.search_contacts_by_query(target) if (c.get("email") or "").strip().lower() == target]
+    if len(matches) != 1:
+        raise ValueError(f"Expected exactly one GHL contact for the test address, found {len(matches)}")
+    real_id, record = _lookup_contact(ghl, matches[0]["id"])
+    reason = contact_block_reason(record, channel)
+    if reason:
+        return {"sent": False, "skipped": True, "reason": reason, "channel": channel}
+
+    now = datetime.now(tz=timezone.utc)
+    stamp = now.strftime("%H:%M:%S")
+    body = f"TEST [{stamp} UTC] - please ignore. " + build_correction_text(session, settings, channel)
+    _push_to_ghl(settings, ghl, flags, real_id, body, channel, None)
+    session.execute(
+        text("""
+            INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
+            VALUES (:id, 'wrong_date_test', :eid, 'send_test_correction', :op, CAST(:ctx AS jsonb), :now)
+        """),
+        {"id": str(uuid.uuid4()), "eid": real_id, "op": operator_id, "now": now,
+         "ctx": json.dumps({"channel": channel, "field": spec.field_attr})},
+    )
+    return {"sent": True, "skipped": False, "channel": channel, "correction_text": body}

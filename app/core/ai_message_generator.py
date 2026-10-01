@@ -478,13 +478,29 @@ def _load_brand_context(session: Any, settings: Any) -> dict[str, str]:
         def _gs(key: str, default: str = "") -> str:  # type: ignore[misc]
             return str(getattr(settings, key, None) or default)
 
+    from app.core.schedule_context import (
+        DEFAULT_FREE_SIGNUP_URL,
+        NONE_SCHEDULED,
+        build_schedule_block,
+        is_unset,
+    )
+
+    class_start = _gs("next_class_start", "")
+    open_house = _gs("next_open_house_date", "")
+    rsvp = _gs("live_open_house_link", "")
+    free_url = _gs("free_signup_url", DEFAULT_FREE_SIGNUP_URL) or DEFAULT_FREE_SIGNUP_URL
+    oh_active = not is_unset(open_house)
+
     return {
+        "schedule_block":             build_schedule_block(class_start, open_house, rsvp, free_url),
+        "free_signup_url":            free_url,
         "brand_name":                 _gs("brand_name", "Colaberry"),
         "sender_name":                _gs("sender_name", "Cora from Colaberry"),
         "reply_to_email":             _gs("reply_to_email", "admissions@colaberry.com"),
-        "next_class_start":           _gs("next_class_start", "upcoming"),
-        "next_open_house_date":       _gs("next_open_house_date", "upcoming"),
-        "live_open_house_link":       _gs("live_open_house_link", ""),
+        "next_class_start":           NONE_SCHEDULED if is_unset(class_start) else class_start,
+        "next_open_house_date":       NONE_SCHEDULED if not oh_active else open_house,
+        # An RSVP link for an Open House that is no longer scheduled must never be sent.
+        "live_open_house_link":       rsvp if oh_active else "",
         "explainer_video_link":       _gs("explainer_open_house_video_link", ""),
         "unsubscribe_text":           _gs("unsubscribe_text", "Text STOP to stop alerts"),
     }

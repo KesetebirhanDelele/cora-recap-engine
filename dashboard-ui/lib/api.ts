@@ -481,7 +481,13 @@ export interface WrongDateIncident {
 export interface WrongDatesResponse {
   expected: { class_start: string; open_house: string };
   open_count: number;
+  stats: { open: number; closed_24h: number; corrected_24h: number; dismissed_24h: number; new_24h: number };
   correction_preview: string | null;
+  correction_previews: { email: string; sms: string };
+  sms_enabled: boolean;
+  test_available: boolean;
+  email_daily_cap: number;
+  email_sent_last_24h: number;
   open_leads: number;
   bulk_send_max: number;
   settings_changed_at: string | null;
@@ -495,10 +501,19 @@ export async function fetchWrongDates(
   return get<WrongDatesResponse>("/dashboard/wrong-dates", { status });
 }
 
+export type CorrectionChannel = "email" | "sms";
+
 export async function sendDateCorrection(
   incidentId: string,
-): Promise<{ status: "sent" | "shadow"; correction_text: string; also_closed?: number }> {
-  return post("/dashboard/actions/send-date-correction", { incident_id: incidentId });
+  channel: CorrectionChannel = "email",
+): Promise<{
+  status: "sent" | "shadow" | "skipped" | "held";
+  correction_text: string;
+  also_closed?: number;
+  reason?: string;
+  next_open?: string | null;
+}> {
+  return post("/dashboard/actions/send-date-correction", { incident_id: incidentId, channel });
 }
 
 export async function dismissWrongDate(incidentId: string, note = ""): Promise<{ status: string }> {
@@ -518,8 +533,20 @@ export interface BulkSendResult {
   total_leads: number;
   stopped_early?: boolean;
   errors?: string[];
+  blocked?: number;               // skipped: DND / STOP / opt-out / do-not-contact (incident closed)
+  held?: number;                  // not sent now: outside the sending window or lead replied (stays open)
+  next_window_opens?: string | null;
+  daily_cap?: number;
+  daily_cap_reached?: boolean;
+  sent_last_24h?: number;
 }
 
-export async function sendDateCorrectionAll(): Promise<BulkSendResult> {
-  return post("/dashboard/actions/send-date-correction-all", {});
+export async function sendDateCorrectionAll(channel: CorrectionChannel = "email"): Promise<BulkSendResult> {
+  return post("/dashboard/actions/send-date-correction-all", { channel });
+}
+
+export async function sendTestCorrection(
+  channel: CorrectionChannel,
+): Promise<{ status: "sent" | "skipped" | "shadow"; reason?: string; correction_text?: string }> {
+  return post("/dashboard/actions/send-test-correction", { channel });
 }

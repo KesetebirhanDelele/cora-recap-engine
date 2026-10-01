@@ -230,6 +230,17 @@ class GHLClient:
         contacts = result.get("contacts", [])
         return contacts[0] if contacts else None
 
+    def search_contacts_by_query(self, query: str) -> list[dict]:
+        """All contacts GHL returns for a free-text query (email, phone, name).
+        Callers needing an exact match must filter the result themselves."""
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL search_contacts_by_query | query=<redacted>")
+        result = self._request(
+            "GET", "/contacts/",
+            params={"locationId": self.settings.ghl_location_id, "query": query},
+        )
+        return result.get("contacts", [])
+
     def search_contacts(
         self,
         filters: list[dict],
