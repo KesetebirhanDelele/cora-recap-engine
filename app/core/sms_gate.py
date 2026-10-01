@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.core import offer
 from app.core.sms_eligibility import TCPA_EARLIEST_HOUR, in_tcpa_hours
 from app.core.sms_links import disallowed_links, parse_allowed_domains
 
@@ -30,7 +31,7 @@ HARD_MAX_DAILY_SEGMENTS = 999       # Kes 2026-10-01: never above 999 / Pacific 
 DEFAULT_DAILY_SEGMENTS = 999
 DEFAULT_MIN_GAP_SECONDS = 5         # 1 MPS with margin
 DEFAULT_PER_MINUTE_CAP = 12         # AT&T ~15/min with margin
-DEFAULT_MAX_SEGMENTS_PER_MESSAGE = 4
+DEFAULT_MAX_SEGMENTS_PER_MESSAGE = 2     # Kes 2026-10-02: one segment if possible, at most two
 MIN_WORDS = 3                       # a real sentence - blocks stray tokens such as "warm_lead"
 WARN_FRACTION = 0.8                 # alert when this much of the day's budget is used
 
@@ -42,6 +43,28 @@ _GSM_BASIC = set(
 )
 _GSM_EXT = set("^{}\\[~]|€\f")
 _PLACEHOLDER = re.compile(r"\{\{|\}\}|\{%|%\}|\b(?:None|null|undefined|nan)\b|\[\[|<[a-z/][^>]*>", re.I)
+
+
+_SMART = {"‘": "'", "’": "'", "‚": "'", "‛": "'", "“": '"', "”": '"', "„": '"',
+          "–": "-", "—": "-", "−": "-", "…": "...", " ": " ", " ": " ", "​": "",
+          "•": "-", "·": "-"}
+
+
+def normalize_sms(text: str | None) -> str:
+    """Plain GSM-7 text: curly quotes / dashes / ellipsis -> ASCII, emoji and other non-GSM characters dropped.
+    One curly apostrophe switches a text to UCS-2 (70 chars per segment) - a 180-character text would bill 3 segments."""
+    import unicodedata
+
+    out = []
+    for ch in text or "":
+        ch = _SMART.get(ch, ch)
+        for c in ch:
+            if c in _GSM_BASIC or c in _GSM_EXT:
+                out.append(c)
+            else:
+                folded = unicodedata.normalize("NFKD", c).encode("ascii", "ignore").decode()
+                out.append(folded)
+    return re.sub(r"[ 	]{2,}", " ", "".join(out)).strip()
 
 
 def count_segments(text: str | None) -> int:
@@ -91,6 +114,8 @@ class GateConfig:
     allowed_link_domains: str = ""
     expected_class_start: str | None = None
     expected_open_house: str | None = None
+    forbidden_terms: tuple = ()               # retired course names (offer.py) - never in any SMS
+    notification_only: bool = False           # follow-up SMS: missed-call / reminder notices, no marketing
 
     @property
     def effective_daily_cap(self) -> int:
@@ -129,6 +154,13 @@ def content_violations(text: str | None, cfg: GateConfig) -> list[str]:
         out.append("contains a link (links are not allowed in SMS)")
     if count_segments(body) > cfg.max_segments_per_message:
         out.append(f"longer than {cfg.max_segments_per_message} segments")
+    hits = offer.forbidden_hits(body, cfg.forbidden_terms)
+    if hits:
+        out.append("names a course we no longer offer: " + ", ".join(hits))
+    if cfg.notification_only:
+        m = offer.marketing_hit(body)
+        if m:
+            out.append(f"marketing wording in a notification SMS: {m!r}")
     if cfg.expected_class_start is not None or cfg.expected_open_house is not None:
         from app.core.wrong_date_guard import find_wrong_dates
 
@@ -186,6 +218,7 @@ def config_from(getter: Any, session: Any, settings: Any, class_start: str | Non
         per_minute_cap=int(num("sms_per_minute_cap", DEFAULT_PER_MINUTE_CAP)),
         max_segments_per_message=int(num("sms_max_segments_per_message", DEFAULT_MAX_SEGMENTS_PER_MESSAGE)),
         allowed_link_domains=getter("sms_allowed_link_domains", session, settings, "") or "",
+        forbidden_terms=offer.parse_terms(getter("offer_forbidden_terms", session, settings, offer.DEFAULT_FORBIDDEN_TERMS)),
         expected_class_start=class_start,
         expected_open_house=open_house,
     )

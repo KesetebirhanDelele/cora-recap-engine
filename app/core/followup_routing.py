@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.sms_eligibility import contact_block_reason
+from app.core.sms_gate import normalize_sms
 from app.core.sms_links import (
     email_html_from_text,
     email_subject_from_text,
@@ -82,6 +83,7 @@ def build_followup_updates(
             updates[settings.ghl_field_support_ticket_2] = body[:LEGACY_TICKET2_MAX]
         return FollowupPlan(updates, None, "sms_legacy_email")
 
+    body = normalize_sms(body)            # plain GSM-7: keeps the text at 1-2 segments (spec/37)
     record = ghl_contact or {}
     if isinstance(record.get("contact"), dict):
         record = record["contact"]

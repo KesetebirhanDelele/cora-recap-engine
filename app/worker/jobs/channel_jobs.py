@@ -163,7 +163,7 @@ def send_sms_job(job_id: str) -> None:
 
             attempt_number = int(payload.get("attempt_number") or 1)
             context = get_conversation_context(session, contact_id, attempt_number=attempt_number)
-            result = generate_vm_followup(context, settings, session)
+            result = generate_vm_followup(context, settings, session, channel="sms")
 
             now = datetime.now(tz=timezone.utc)
 
@@ -320,7 +320,7 @@ def send_email_job(job_id: str) -> None:
 
             attempt_number = int(payload.get("attempt_number") or 1)
             context = get_conversation_context(session, contact_id, attempt_number=attempt_number)
-            result = generate_vm_followup(context, settings, session)
+            result = generate_vm_followup(context, settings, session, channel="email")
 
             now = datetime.now(tz=timezone.utc)
 

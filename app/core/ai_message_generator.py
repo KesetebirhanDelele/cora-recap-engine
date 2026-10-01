@@ -24,8 +24,9 @@ Injectable _client for tests: pass mock openai.OpenAI via _client kwarg.
 """
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from app.core.conversation_context import ConversationContext
@@ -37,6 +38,7 @@ SMS_MAX_CHARS = 160
 _SMS_TRUNCATE_AT = 157
 
 VM_SMS_MAX_CHARS = 240
+SMS_ONE_SEGMENT_TARGET = 160     # first draft should fit one segment; two segments (240) is the ceiling
 _VM_SMS_TRUNCATE_AT = 237
 
 # Maps attempt_number to prompt version
@@ -161,87 +163,182 @@ def generate_vm_followup(
     settings: Any = None,
     session: Any = None,
     *,
+    channel: str | None = None,
     _client: Any = None,
 ) -> VmFollowupResult:
     """
-    Generate a tier-aware voicemail follow-up SMS + email for a lead.
+    Tier-aware voicemail follow-up for a lead (spec/37).
 
-    Selects the prompt version based on context.attempt_number:
-      1 → tier_1, 2 → tier_2, 3 → tier_3, 4+ → tier_final
-
-    Brand context (sender_name, brand_name, etc.) is read from app_config
-    via the session when provided, falling back to Settings/.env values.
-
-    Student success stories are injected from knowledge_base/video_transcripts.txt.
-
-    Returns VmFollowupResult. Falls back to template values on any error.
+    channel="sms"   -> only the SMS (a missed-call NOTIFICATION, prompt family vm_sms_notice)
+    channel="email" -> only the email (the program description, prompt family vm_followup_generator)
+    channel=None    -> both (legacy callers)
+    Prompt version by context.attempt_number: 1 tier_1, 2 tier_2, 3 tier_3, 4+ tier_final.
+    Every result is checked for forbidden (retired-course) wording and, for SMS, marketing wording and length;
+    one corrective retry, then a safe deterministic fallback. The pre-send SMS gate checks again.
     """
+    sms_text = ""
+    email = None
+    if channel in (None, "sms"):
+        sms_text = generate_vm_sms(context, settings, session, _client=_client)
+    if channel in (None, "email"):
+        email = generate_vm_email(context, settings, session, _client=_client)
+    if email is None:
+        return VmFollowupResult(sms_text=sms_text, email_subject="", email_html="", email_text="", preview_text="")
+    return VmFollowupResult(
+        sms_text=sms_text, email_subject=email["email_subject"], email_html=email["email_html"],
+        email_text=email["email_text"], preview_text=email["preview_text"],
+    )
+
+
+def _offer_terms(session: Any, settings: Any) -> tuple[str, ...]:
+    from app.core import offer
+
+    raw: str | None = offer.DEFAULT_FORBIDDEN_TERMS
+    try:
+        if session is not None:
+            from app.core.app_config import get_str
+
+            raw = get_str("offer_forbidden_terms", session, settings, offer.DEFAULT_FORBIDDEN_TERMS)
+        elif settings is not None and getattr(settings, "offer_forbidden_terms", None) is not None:
+            raw = str(settings.offer_forbidden_terms)
+    except Exception:
+        logger.warning("offer_forbidden_terms unreadable - using defaults")
+    return offer.parse_terms(raw)
+
+
+def _finish_vm_sms(text: str, brand: dict[str, str]) -> str:
+    """Plain GSM text that ends with the opt-out line and fits VM_SMS_MAX_CHARS."""
+    from app.core.sms_gate import normalize_sms
+
+    optout = normalize_sms(brand["unsubscribe_text"]).strip()
+    body = normalize_sms(text)
+    if optout and body.lower().rstrip(". ").endswith(optout.lower().rstrip(". ")):
+        body = body[: len(body.rstrip(". ")) - len(optout.rstrip(". "))].rstrip(" .,-")
+    room = VM_SMS_MAX_CHARS - len(optout) - 1 if optout else VM_SMS_MAX_CHARS
+    if len(body) > room:
+        body = body[:room].rsplit(" ", 1)[0].rstrip(" .,-") + "."
+    if body and body[-1] not in ".!?":
+        body += "."                                   # "...a good time. Text STOP to stop alerts"
+    return f"{body} {optout}".strip()
+
+
+def _sms_problems(text: str, terms: tuple[str, ...]) -> list[str]:
+    from app.core import sms_gate
+
+    cfg = sms_gate.GateConfig(forbidden_terms=terms, notification_only=True, allowed_link_domains="")
+    return sms_gate.content_violations(text, cfg)
+
+
+def _sms_notice_fallback(context: ConversationContext, brand: dict[str, str]) -> str:
+    first = (context.lead_first_name or "there").strip() or "there"
+    return _finish_vm_sms(
+        f"Hi {first}, it's Cora from {brand['brand_name']}. I just tried to call you about the "
+        f"{brand['offer_name']}. What time works for you to talk?", brand)
+
+
+def generate_vm_sms(
+    context: ConversationContext, settings: Any = None, session: Any = None, *, _client: Any = None,
+) -> str:
+    """The missed-call SMS: a short notification, never marketing (spec/37). Always returns sendable text."""
+    brand: dict[str, str] = {}
     try:
         from app.adapters.openai_client import OpenAIClient
-        from app.prompts.families import vm_followup_generator  # noqa: F401 — register prompts
-        from app.prompts.knowledge_base import load_video_transcripts
+        from app.prompts.families import vm_sms_notice  # noqa: F401 - register prompts
         from app.prompts.registry import get_prompt
 
+        brand = _load_brand_context(session, settings)
+        terms = _offer_terms(session, settings)
         version = _ATTEMPT_TO_PROMPT_VERSION.get(context.attempt_number, "tier_final")
-        prompt_entry = get_prompt("vm_followup_generator", version)
-
-        brand_ctx = _load_brand_context(session, settings)
-        prior = _format_prior_messages(context.outbound_messages)
-        ghl_thread = _format_ghl_thread(context.ghl_messages)
-        video_transcripts = load_video_transcripts(sample_size=5)
-
-        messages = prompt_entry.build_messages(
+        entry = get_prompt("vm_sms_notice", version)
+        messages = entry.build_messages(
             lead_first_name=context.lead_first_name or "there",
-            campaign_name=context.campaign_name or "our program",
-            video_transcripts=video_transcripts,
-            prior_messages=prior,
-            ghl_conversation_thread=ghl_thread,
-            **brand_ctx,
+            prior_messages=_format_prior_messages(context.outbound_messages),
+            ghl_conversation_thread=_format_ghl_thread(context.ghl_messages),
+            **brand,
         )
-
-        # Inject brand context into the system prompt too
         messages[0]["content"] = messages[0]["content"].format(
-            brand_name=brand_ctx["brand_name"],
-            video_transcripts=video_transcripts,
-        )
-
+            brand_name=brand["brand_name"], offer_name=brand["offer_name"])
         client = OpenAIClient(settings=settings, _client=_client)
-        result = client.chat_completion(
-            messages=messages,
-            model=_get_model(settings),
-            response_format={"type": "json_object"},
-            _retry_delay=0.0,
-        )
-
-        sms_text = _truncate_vm_sms(result.get("sms_text", "").strip())
-        email_subject = result.get("email_subject", "").strip()
-        email_html = result.get("email_html", "").strip()
-        email_text = result.get("email_text", "").strip()
-
-        if not sms_text or not email_subject or not email_html:
-            logger.warning(
-                "generate_vm_followup: incomplete response | contact_id=%s attempt=%d",
-                context.contact_id, context.attempt_number,
-            )
-            return _vm_fallback(settings)
-
-        return VmFollowupResult(
-            sms_text=sms_text,
-            email_subject=email_subject,
-            email_html=email_html,
-            email_text=email_text or email_html,
-            preview_text=result.get("preview_text", "").strip(),
-            selected_story_title=result.get("selected_story_title", "").strip(),
-            story_summary=result.get("story_summary", "").strip(),
-            story_link=result.get("story_link", "").strip(),
-        )
-
+        for attempt in range(2):
+            result = client.chat_completion(
+                messages=messages, model=_get_model(settings),
+                response_format={"type": "json_object"}, _retry_delay=0.0)
+            text = _finish_vm_sms(str(result.get("sms_text", "")), brand)
+            problems = _sms_problems(text, terms)
+            if text and not problems and (attempt == 1 or len(text) <= SMS_ONE_SEGMENT_TARGET):
+                return text
+            if text and not problems:
+                problems = [f"{len(text)} characters - shorten it to {SMS_ONE_SEGMENT_TARGET} or fewer "
+                            "including the opt-out line (one SMS segment)"]
+            logger.warning("generate_vm_sms: draft rejected (%s) | contact_id=%s attempt=%d",
+                           "; ".join(problems) or "empty", context.contact_id, attempt + 1)
+            messages = messages + [
+                {"role": "assistant", "content": json.dumps({"sms_text": text})},
+                {"role": "user", "content": "That draft was rejected: " + ("; ".join(problems) or "empty")
+                 + ". Rewrite it as a short missed-call notification only, following every hard rule."},
+            ]
     except Exception as exc:
-        logger.warning(
-            "generate_vm_followup: AI failed, using fallback | contact_id=%s: %s",
-            context.contact_id, exc,
+        logger.warning("generate_vm_sms: AI failed, using fallback | contact_id=%s: %s", context.contact_id, exc)
+    if not brand:
+        brand = {"brand_name": "Colaberry", "offer_name": "AI Systems Architect Accelerator",
+                 "unsubscribe_text": "Text STOP to stop alerts"}
+    return _sms_notice_fallback(context, brand)
+
+
+def generate_vm_email(
+    context: ConversationContext, settings: Any = None, session: Any = None, *, _client: Any = None,
+) -> dict[str, str]:
+    """The follow-up email: describes the one program on offer (spec/37). Always returns usable content."""
+    from app.core import offer
+
+    try:
+        from app.adapters.openai_client import OpenAIClient
+        from app.prompts.families import vm_followup_generator  # noqa: F401 - register prompts
+        from app.prompts.registry import get_prompt
+
+        brand = _load_brand_context(session, settings)
+        terms = _offer_terms(session, settings)
+        version = _ATTEMPT_TO_PROMPT_VERSION.get(context.attempt_number, "tier_final")
+        entry = get_prompt("vm_followup_generator", version)
+        messages = entry.build_messages(
+            lead_first_name=context.lead_first_name or "there",
+            campaign_name="AI training",
+            prior_messages=_format_prior_messages(context.outbound_messages),
+            ghl_conversation_thread=_format_ghl_thread(context.ghl_messages),
+            **brand,
         )
-        return _vm_fallback(settings)
+        messages[0]["content"] = messages[0]["content"].format(
+            brand_name=brand["brand_name"], offer_name=brand["offer_name"], offer_facts=brand["offer_facts"])
+        client = OpenAIClient(settings=settings, _client=_client)
+        for attempt in range(2):
+            result = client.chat_completion(
+                messages=messages, model=_get_model(settings),
+                response_format={"type": "json_object"}, _retry_delay=0.0)
+            out = {
+                "email_subject": str(result.get("email_subject", "")).strip(),
+                "preview_text": str(result.get("preview_text", "")).strip(),
+                "email_html": str(result.get("email_html", "")).strip(),
+                "email_text": str(result.get("email_text", "")).strip(),
+            }
+            out["email_text"] = out["email_text"] or out["email_html"]
+            hits = offer.forbidden_hits(" ".join(out.values()), terms)
+            if out["email_subject"] and out["email_html"] and not hits:
+                return out
+            why = ("names a course we no longer offer: " + ", ".join(hits)) if hits else "incomplete"
+            logger.warning("generate_vm_email: draft rejected (%s) | contact_id=%s attempt=%d",
+                           why, context.contact_id, attempt + 1)
+            messages = messages + [
+                {"role": "assistant", "content": json.dumps(out)},
+                {"role": "user", "content": f"That draft was rejected: {why}. Rewrite it, offering only the "
+                                            f"{brand['offer_name']} and following every hard rule."},
+            ]
+    except Exception as exc:
+        logger.warning("generate_vm_email: AI failed, using fallback | contact_id=%s: %s", context.contact_id, exc)
+    fb = get_email_fallback()
+    return {
+        "email_subject": fb.subject, "preview_text": "",
+        "email_html": f"<p>{fb.body.replace(chr(10), '</p><p>')}</p>", "email_text": fb.body,
+    }
 
 
 def generate_ghl_call_analysis(
@@ -478,6 +575,7 @@ def _load_brand_context(session: Any, settings: Any) -> dict[str, str]:
         def _gs(key: str, default: str = "") -> str:  # type: ignore[misc]
             return str(getattr(settings, key, None) or default)
 
+    from app.core import offer
     from app.core.schedule_context import (
         DEFAULT_FREE_SIGNUP_URL,
         NONE_SCHEDULED,
@@ -503,6 +601,9 @@ def _load_brand_context(session: Any, settings: Any) -> dict[str, str]:
         "live_open_house_link":       rsvp if oh_active else "",
         "explainer_video_link":       _gs("explainer_open_house_video_link", ""),
         "unsubscribe_text":           _gs("unsubscribe_text", "Text STOP to stop alerts"),
+        "offer_name":                 _gs("offer_name", offer.DEFAULT_OFFER_NAME) or offer.DEFAULT_OFFER_NAME,
+        "offer_facts":                (_gs("offer_facts", offer.DEFAULT_OFFER_FACTS) or offer.DEFAULT_OFFER_FACTS)
+                                      .replace("{free_url}", free_url),
     }
 
 

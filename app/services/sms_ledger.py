@@ -13,6 +13,7 @@ Budget = segments of rows in (reserved, sent) since 00:00 US Pacific.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import uuid
@@ -109,7 +110,7 @@ def reserve(
     with session_factory() as s:
         if s.get_bind().dialect.name == "postgresql":
             s.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _LOCK_KEY})
-        cfg = _config(s, settings)
+        cfg = dataclasses.replace(_config(s, settings), notification_only=(source == "followup"))
         before = usage(s, now)
         d = gate.decide(body, before, cfg)
 
