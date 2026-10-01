@@ -122,6 +122,11 @@ def _upsert_event(session: Session, *, kind: str, channel: str, contact_id: str,
 
 def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: datetime, now: datetime,
                   ghl: Any = None, settings: Any = None, llm_budget: list[int] | None = None) -> None:
+    if channel in ("email", "sms"):
+        from app.core import optout as _oo
+
+        if _oo.is_own_echo(m.get("body")):          # Cora's own email / footer logged back as "inbound" - not a reply
+            return
     inserted = _upsert_event(
         session, kind="reply", channel=channel, contact_id=contact_id, external_id=m["id"],
         status_raw=m.get("status"), outcome=None, error=None, event_at=at, now=now,

@@ -388,3 +388,34 @@ def test_dont_text_call_me_opts_out_of_sms_only():
 def test_adjacent_verb_and_object_still_match(said, channel, scope):
     r = oo.classify(said, channel)
     assert r.kind == oo.DND and set(r.scope) == scope, r
+
+
+# ── found live: Cora's own email logged back as an "inbound reply" is not an opt-out ──
+OWN_EMAIL = ("Hi there! This is Cora from Colaberry. I called earlier to connect but missed you. If you have questions, "
+             "feel free to reply! Text STOP to stop alerts. If you no longer wish to receive these emails you may "
+             "unsubscribe [https://services.msgsndr.com/emails/build")
+
+
+def test_cora_own_email_logged_back_as_inbound_is_never_an_opt_out():
+    assert oo.is_own_echo(OWN_EMAIL)
+    assert oo.classify(OWN_EMAIL, "email").kind == oo.NONE
+    assert oo.is_own_echo("Discover Your Potential with Colaberry!\n\n\nIf you no longer wish to receive these emails you may unsubscribe")
+    assert oo.classify("Hi there,\n\n" + OWN_EMAIL, "email").kind == oo.NONE
+
+
+def test_a_real_reply_that_quotes_cora_is_still_judged_on_the_leads_own_words():
+    quoted_unmarked = "Please remove me from your list.\n\n" + OWN_EMAIL
+    assert not oo.is_own_echo(quoted_unmarked)
+    r = oo.classify(quoted_unmarked, "email")
+    assert r.kind == oo.DND and set(r.scope) == set(ALL)
+    marked = "Thanks, sounds good!\n\nOn Tue, Sep 30, 2026 at 10:00 AM Cora <hi@c.test> wrote:\n> " + OWN_EMAIL
+    assert oo.classify(marked, "email").kind == oo.NONE
+
+
+@db
+def test_echo_is_not_recorded_as_a_reply_and_never_reaches_dnd(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg(OWN_EMAIL, "echo1"), contact_id="e1") == "none"
+    assert ghl.dnd_calls == [] and _rows(session) == []

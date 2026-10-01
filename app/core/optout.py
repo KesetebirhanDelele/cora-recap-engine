@@ -94,14 +94,39 @@ def _conjunctions(text: str, end: int) -> set[str]:
     return out
 
 
+# Cora's own wording and the platform's email footer. GHL logs some of OUR outgoing emails as inbound messages, and a
+# real reply may quote us without ">" markers. Both contain the word "unsubscribe" ("...If you no longer wish to
+# receive these emails you may unsubscribe [link]") - that is NOT the lead asking to stop (spec/36, found live:
+# 5 DNDs were wrongly applied to leads who had said nothing).
+_OWN = re.compile(r"(?i)this is cora from|it'?s cora from|text stop to stop alerts|"
+                  r"if you no longer wish to receive these emails|unsubscribe\s*[\[<(]?\s*https?://|"
+                  r"services\.msgsndr\.com/emails")
+_PERSONAL = re.compile(r"(?i)\b(i|i'm|i've|i'll|me|my|we|please|thanks?|thank|call|stop|remove|yes|no|okay|ok|sure|"
+                       r"interested|sorry)\b")
+
+
+def split_own(text: str | None) -> tuple[str, bool]:
+    """(what comes before Cora's own wording, whether such wording was found)."""
+    t = text or ""
+    m = _OWN.search(t)
+    return (t[: m.start()], True) if m else (t, False)
+
+
+def is_own_echo(text: str | None) -> bool:
+    """True when the 'reply' is just Cora's own email / footer logged back (nothing personal written before it)."""
+    lead, found = split_own(text)
+    return found and not _PERSONAL.search(lead)
+
+
 def clean_reply(text: str | None, channel: str) -> str:
-    """Only what the lead wrote this time: no quoted history, no signatures / footers, capped length."""
+    """Only what the lead wrote this time: no quoted history, no signatures / footers / Cora's own text, capped."""
     t = (text or "").replace("\r", "")
     if channel == EMAIL:
         t = _QUOTE_LINE.sub("", t)
         m = _QUOTE_CUT.search(t)
         if m:
             t = t[: m.start()]
+    t, _ = split_own(t)
     return re.sub(r"\s+", " ", t).strip()[:MAX_CHARS]
 
 
