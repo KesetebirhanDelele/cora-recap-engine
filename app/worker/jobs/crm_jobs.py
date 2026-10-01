@@ -18,7 +18,14 @@ from datetime import datetime, timezone
 
 from app.config import get_settings
 from app.db import get_sync_session
-from app.worker.claim import claim_job, complete_job, fail_job, get_worker_id, mark_running, release_job_to_pending
+from app.worker.claim import (
+    claim_job,
+    complete_job,
+    fail_job,
+    get_worker_id,
+    mark_running,
+    release_job_to_pending,
+)
 from app.worker.exceptions import create_exception
 
 logger = logging.getLogger(__name__)
@@ -534,13 +541,61 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     plan.sms_skip_reason, contact_id, job_id,
                 )
 
+            # ── Pre-send SMS gate (spec/34): writing Ticket #4 SENDS the text, so every SMS is
+            # checked first - TCPA hours, content rules, Pacific-day budget (max 999 segments),
+            # provider pacing. A text that does not fit today moves to the next legal send time.
+            sms_ledger_id: str | None = None
+            sms_field = settings.ghl_field_support_ticket_4
+            if plan.route == "sms" and not plan.sms_skip_reason and sms_field and sms_field in label_updates:
+                from datetime import datetime as _dt
+                from datetime import timezone as _tz
+
+                from app.core import sms_gate
+                from app.core.campaign_schedule import get_contact_timezone
+                from app.services import sms_ledger
+
+                _now = _dt.now(tz=_tz.utc)
+                _tz_name = get_contact_timezone(session, contact_id, settings)
+                _legal = sms_gate.next_legal_send_time(_now, _tz_name)
+                _until = _legal if _legal > _now else None
+                if _until is None and flags.ghl_writes_enabled:
+                    res = sms_ledger.reserve(settings, contact_id=contact_id, body=label_updates[sms_field],
+                                             source="followup", tz_name=_tz_name, now=_now)
+                    if res.allowed:
+                        sms_ledger_id = res.ledger_id
+                    elif res.defer_until is not None:
+                        _until = res.defer_until
+                    else:                               # content rule broken -> never texted
+                        label_updates.pop(sms_field, None)
+                        logger.warning(
+                            "update_ghl_after_vm_message: SMS blocked by gate (%s) | contact_id=%s job_id=%s",
+                            res.reason, contact_id, job_id)
+                if _until is not None:
+                    logger.info(
+                        "update_ghl_after_vm_message: SMS deferred to %s (%s) | contact_id=%s job_id=%s",
+                        _until.isoformat(), "outside TCPA hours or budget/pacing", contact_id, job_id)
+                    release_job_to_pending(
+                        session, job, defer_seconds=max(int((_until - _now).total_seconds()), 1))
+                    session.commit()
+                    return
+
             field_updates = _resolve_to_field_ids(ghl, label_updates) if label_updates else {}
             if field_updates:
-                write_result = ghl.update_contact_fields(
-                    contact_id=contact_id or "unknown",
-                    field_updates=field_updates,
-                    mode_flags=flags,
-                )
+                try:
+                    write_result = ghl.update_contact_fields(
+                        contact_id=contact_id or "unknown",
+                        field_updates=field_updates,
+                        mode_flags=flags,
+                    )
+                except Exception:
+                    if sms_ledger_id:
+                        sms_ledger.mark_failed(sms_ledger_id, "GHL write failed")
+                    raise
+                if sms_ledger_id:
+                    if write_result.get("shadow"):
+                        sms_ledger.mark_failed(sms_ledger_id, "shadow mode - not sent")
+                    else:
+                        sms_ledger.mark_sent(sms_ledger_id)
                 # Shadow mode: log what would have been written to GHL so
                 # operators can inspect the exact fields via Lead Journey.
                 if write_result.get("shadow"):

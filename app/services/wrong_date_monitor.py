@@ -720,6 +720,27 @@ def send_correction(
     if before_write is not None:
         before_write()
 
+    # Pre-send SMS gate (spec/34): content rules, Pacific-day budget (max 999 segments), pacing.
+    # Not allowed -> the incident simply stays open; nothing is written to GHL.
+    ledger_id = None
+    if channel == "sms":
+        from app.core.campaign_schedule import get_contact_timezone
+        from app.services import sms_ledger
+
+        res = sms_ledger.reserve(
+            settings, contact_id=contact_id, body=rec_body, source="correction",
+            tz_name=get_contact_timezone(session, contact_id, settings), now=now,
+            session_factory=sms_ledger.factory_for(session))
+        if not res.allowed:
+            out = _skipped_result(
+                Verdict(HOLD, f"SMS gate: {res.reason}", kind="sms_gate",
+                        next_open=res.defer_until.isoformat() if res.defer_until else None),
+                correction, channel)
+            out["sms_budget_exhausted"] = res.code == "daily_cap"
+            out["gate_code"] = res.code
+            return out
+        ledger_id = res.ledger_id
+
     col = spec.ledger_col   # fixed internal constant, never user input
     claimed = session.execute(
         text(f"""
@@ -732,12 +753,16 @@ def send_correction(
         {"op": operator_id, "now": now, "txt": correction, "ch": channel, "id": incident_id},
     ).fetchone()
     if claimed is None:
+        if ledger_id:
+            sms_ledger.mark_failed(ledger_id, "incident already closed", sms_ledger.factory_for(session))
         raise IncidentNotOpen(incident_id)
     session.flush()
 
     try:
         _push_to_ghl(settings, ghl, flags, real_id, values, field_cache)
     except Exception:
+        if ledger_id:
+            sms_ledger.mark_failed(ledger_id, "GHL write failed", sms_ledger.factory_for(session))
         session.execute(
             text(f"""
                 UPDATE wrong_date_incidents
@@ -749,6 +774,9 @@ def send_correction(
         )
         session.flush()
         raise
+
+    if ledger_id:
+        sms_ledger.mark_sent(ledger_id, sms_ledger.factory_for(session))
 
     # History: the correction is a real outbound message (its dates are correct,
     # so the scanner will not flag it).
@@ -931,6 +959,10 @@ def send_corrections_bulk(
                 return _result(tally, total, max(total - idx - 1, 0), True, cap, cap_hit, session, channel)
             continue
         if r.get("skipped"):
+            if r.get("sms_budget_exhausted"):       # today's 999-segment budget is used: stop, resume tomorrow
+                tally.note_hold(r.get("next_open"))
+                cap_hit, remaining = True, total - idx
+                break
             if r.get("held"):
                 tally.note_hold(r.get("next_open"))
             else:
@@ -982,7 +1014,23 @@ def send_test_correction(
     stamp = now.strftime("%H:%M:%S")
     values, subject, body = _channel_values(
         session, settings, channel, build_correction_text(session, settings, channel), test_stamp=stamp)
-    _push_to_ghl(settings, ghl, flags, real_id, values, None)
+    ledger_id = None
+    if channel == "sms":
+        from app.services import sms_ledger
+
+        res = sms_ledger.reserve(settings, contact_id=real_id, body=body, source="test", now=now,
+                                 session_factory=sms_ledger.factory_for(session))
+        if not res.allowed:
+            return {"sent": False, "skipped": True, "reason": f"SMS gate: {res.reason}", "channel": channel}
+        ledger_id = res.ledger_id
+    try:
+        _push_to_ghl(settings, ghl, flags, real_id, values, None)
+    except Exception:
+        if ledger_id:
+            sms_ledger.mark_failed(ledger_id, "GHL write failed", sms_ledger.factory_for(session))
+        raise
+    if ledger_id:
+        sms_ledger.mark_sent(ledger_id, sms_ledger.factory_for(session))
     session.execute(
         text("""
             INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)

@@ -338,3 +338,55 @@ def test_budget_never_blocks_progress(session, settings, monkeypatch):
     with p1, p2, p3:
         first = wdm.send_corrections_bulk(session, settings, "kes")
     assert first["sent"] == 1 and first["remaining"] == 2           # at least one lead per request
+
+
+# ── pre-send SMS gate (spec/34) on the correction path ───────────────────────
+
+def _gate_rows(session):
+    return session.execute(text("SELECT source, status, code, segments FROM sms_send_ledger ORDER BY created_at")).fetchall()
+
+
+def test_every_correction_sms_is_recorded_in_the_sms_ledger(session, settings):
+    _cfg(session, "sms_corrections_enabled", "true")
+    _setup(session, settings, ["a", "b"])
+    ghl_cls = MagicMock()
+    p1, p2, p3 = _live_patches(ghl_cls)
+    with p1, p2, p3:
+        r = wdm.send_corrections_bulk(session, settings, "kes", channel="sms")
+    assert r["sent"] == 2
+    assert _gate_rows(session) == [("correction", "sent", "ok", 2)] * 2      # the correction text is 2 segments
+    assert "myfreeaiclass" not in session.execute(text("SELECT string_agg(body, ' ') FROM sms_send_ledger")).scalar()
+
+
+def test_budget_exhausted_stops_the_bulk_run_and_leaves_incidents_open(session, settings):
+    _cfg(session, "sms_corrections_enabled", "true")
+    _cfg(session, "sms_daily_segment_cap", "2")        # room for exactly one 2-segment correction
+    _setup(session, settings, ["a", "b", "c"])
+    ghl_cls = MagicMock()
+    p1, p2, p3 = _live_patches(ghl_cls)
+    with p1, p2, p3:
+        r = wdm.send_corrections_bulk(session, settings, "kes", channel="sms")
+    assert r["sent"] == 1 and r["daily_cap_reached"] is True and r["remaining"] == 2
+    assert len(_writes(ghl_cls)) == 1 and len(_incident_ids(session, "open")) == 2
+    assert [x[1] for x in _gate_rows(session)] == ["sent", "deferred"]
+    assert session.execute(text("SELECT count(*) FROM audit_log WHERE action='sms_budget_exhausted'")).scalar() == 1
+
+
+def test_configured_cap_can_never_exceed_999(session, settings):
+    from app.services import sms_ledger
+
+    _cfg(session, "sms_daily_segment_cap", "5000")
+    assert sms_ledger.snapshot(session, settings)["daily_cap"] == 999
+
+
+def test_failed_ghl_write_releases_the_sms_budget(session, settings):
+    _cfg(session, "sms_corrections_enabled", "true")
+    _setup(session, settings, ["a"])
+    ghl_cls = MagicMock()
+    ghl_cls.return_value.update_contact_fields.side_effect = RuntimeError("GHL 500")
+    p1, p2, p3 = _live_patches(ghl_cls)
+    with p1, p2, p3:
+        wdm.send_corrections_bulk(session, settings, "kes", channel="sms")
+    assert [x[1] for x in _gate_rows(session)] == ["failed"]
+    from app.services import sms_ledger
+    assert sms_ledger.snapshot(session, settings)["segments_today"] == 0

@@ -942,6 +942,17 @@ def action_acknowledge_alert(
     return {"status": "ok", "alert_id": body.alert_id, "audit_log_id": audit.id}
 
 
+# ── SMS Monitor (spec/34) ────────────────────────────────────────────────────
+
+@router.get("/sms-monitor")
+def get_sms_monitor(session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Today's (US Pacific day) SMS budget, gate verdicts and the most recent texts."""
+    from app.config import get_settings
+    from app.services import sms_ledger
+
+    return sms_ledger.snapshot(session, get_settings())
+
+
 # ── Wrong Date Monitor (spec/32) ─────────────────────────────────────────────
 
 @router.get("/wrong-dates")

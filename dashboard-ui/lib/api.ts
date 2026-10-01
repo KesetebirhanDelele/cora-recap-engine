@@ -496,6 +496,24 @@ export interface WrongDatesResponse {
   incidents: WrongDateIncident[];
 }
 
+export interface SmsMonitorRow {
+  at: string; source: string; status: string; code: string; segments: number;
+  contact_id: string; reason: string; preview: string;
+}
+
+export interface SmsMonitorResponse {
+  day_resets_at: string; daily_cap: number; hard_max: number; segments_today: number; remaining: number;
+  level: "ok" | "warning" | "exhausted"; messages_today: number; blocked_today: number;
+  deferred_today: number; failed_today: number; by_source: Record<string, number>;
+  by_hour_pacific: Record<string, number>;
+  limits: { min_gap_seconds: number; per_minute_cap: number; max_segments_per_message: number };
+  recent: SmsMonitorRow[];
+}
+
+export async function fetchSmsMonitor(): Promise<SmsMonitorResponse> {
+  return get<SmsMonitorResponse>("/dashboard/sms-monitor");
+}
+
 export async function fetchWrongDates(
   status: "open" | "corrected" | "dismissed" = "open",
 ): Promise<WrongDatesResponse> {

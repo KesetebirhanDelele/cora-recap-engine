@@ -38,7 +38,7 @@ APPT_ONLY = "Great talking to you! We'll call you on Oct 6 to finish up."
 def session():
     engine = create_engine(DB_URL)
     with Session(engine) as s:
-        for t in ("wrong_date_incidents", "outbound_messages", "alert_events"):
+        for t in ("wrong_date_incidents", "outbound_messages", "alert_events", "sms_send_ledger"):
             s.execute(text(f"DELETE FROM {t}"))
         s.execute(text("DELETE FROM audit_log WHERE entity_type = 'wrong_date_incident'"))
         s.execute(text("DELETE FROM app_config WHERE key IN ('correction_daily_cap', "
@@ -51,6 +51,8 @@ def session():
             "unsubscribe_text": "Text STOP to stop alerts",
             "correction_send_delay_seconds": "0",
             "correction_email_delay_seconds": "0",
+            "sms_min_gap_seconds": "0",          # tests send back-to-back; the pre-send gate's pacing is tested in test_sms_gate
+            "sms_daily_segment_cap": "999",
         }.items():
             s.execute(text("""
                 INSERT INTO app_config (key, value, updated_by) VALUES (:k, :v, 'test')
