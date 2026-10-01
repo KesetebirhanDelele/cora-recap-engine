@@ -2386,3 +2386,7 @@ Timezone noise (approved by Kes, fixed locally): `get_contact_timezone` logged "
 
 ### Deployed (2026-10-01, night)
 Merged `fix/bulk-send-request-timeout` (`9a3e5e3`) -> `feat/ghl-call-conversation-sync`, redeployed Hetzner (no migration; health ok). Verified live: bulk time budget 18 s active, US/Central -> America/Chicago. Open incidents unchanged (188 incidents / 118 leads); nothing sent by the deploy. Next: Kes re-clicks "Send correction email to all" (100/day cap; 11 already sent today).
+
+### Correction run completed (2026-10-01, ~02:17 UTC)
+All 219 wrong-date incidents / 137 leads processed via "Send correction email to all" (in short rounds after the proxy-timeout fix): 86 leads emailed (136 incidents, none twice, no failures, cap 100 not reached); 51 leads auto-skipped (83 incidents): 29 tagged 'do not contact', 16 no email address, 5 DND all channels, 1 Email DND. Open = 0. SMS corrections remain off. Ali summary email drafted in Gmail (not sent).
+**Remaining/ongoing:** new wrong-date messages (if any) will reappear on the tile; re-verify the Ticket #2 email-body issue and the GHL-native SMS automation dates (see current-state section above).
