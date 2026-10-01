@@ -26,6 +26,7 @@ from app.core.sms_eligibility import BLOCK, cora_state_verdict, is_stop_reply
 logger = logging.getLogger(__name__)
 
 LLM_MIN_CONFIDENCE = 0.85
+TRIAGE_DISMISS_MIN = 0.8        # LLM says "not an opt-out" at >= this -> dismissed (reason kept on the row)
 SHORT_REPLY_CHARS = 200          # "not interested"/"wrong number" auto-close only on short replies
 _monotonic = time.monotonic
 
@@ -548,7 +549,7 @@ def fill_contact_info(session: Session, rows: list[dict], ghl: Any | None, budge
 
 def triage_unclear(session: Session, settings: Any, limit: int = 10) -> dict[str, int]:
     """Word matching only NOMINATES a line ("leave me a message", "not in my spam" hit the hint words). Before a human
-    reads it, an LLM reads the quote: clearly not an opt-out (>= 0.9) -> dismissed with the reason on record; otherwise
+    reads it, an LLM reads the quote: clearly not an opt-out (>= 0.8) -> dismissed with the reason on record; otherwise
     its verdict is attached to the row and the human decides."""
     rows = session.execute(text("""
         SELECT id, source, excerpt FROM optout_actions
@@ -564,7 +565,7 @@ def triage_unclear(session: Session, settings: Any, limit: int = 10) -> dict[str
             continue
         decision, conf, why = v
         note = f"[LLM {conf:.2f}] {decision}: {why}"[:290]
-        if decision == "other" and conf >= 0.9:
+        if decision == "other" and conf >= TRIAGE_DISMISS_MIN:
             session.execute(text("UPDATE optout_actions SET status='dismissed', decided_by='llm', resolved_at=:n, reason=:r WHERE id=:i"),
                             {"n": _now(), "r": "not an opt-out " + note[:270], "i": rid})
             _audit(session, "optout_dismissed", rid, {"by": "llm", "confidence": conf})
