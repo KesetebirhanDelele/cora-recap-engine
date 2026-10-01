@@ -33,24 +33,37 @@ _QUOTE_LINE = re.compile(r"(?m)^\s*>.*$")
 _AUTO = re.compile(r"(?i)out of office|automatic reply|auto[- ]?reply|autoreply|undeliverable|delivery status notification|"
                    r"mailer-daemon|vacation (reply|responder)|away from (my )?(desk|email)")
 _NEG_STOP = re.compile(r"(?i)\b(?:don'?t|do not|not|never)\s+stop\b|\bstop\s+by\b|\bstop\s+(?:in|over)\b")
-_VERB = r"(?:stop|quit|cease|never|don'?t|do\s+not|dont|no\s+more|please\s+don'?t|not\s+to)"
-_WORDS = r"(?:\w+\s+){0,4}"
+# A stop request needs the verb to sit RIGHT next to its object ("stop calling", "don't text me", "no more emails",
+# "don't send me any more emails"). Loose "verb ... within 4 words ... object" matching misfired on
+# "I never received the email" and "don't forget to email me" (spec/36, found scanning production transcripts).
+_STOP = r"(?:stop|quit|cease|no\s+more)"
+_DONT = r"(?:(?:please\s+)?(?:do\s*not|don'?t|dont)(?:\s+ever)?|never|(?:asked|told)\s+you\s+not\s+to)"
+_LEAD = rf"(?:{_STOP}|{_DONT})"
+_FILL = r"(?:\s+(?:send(?:ing)?|giv(?:e|ing)|leav(?:e|ing))\s+me)?(?:\s+(?:all|any|more|further|these|those|the|your|my|me))*"
 
-_CALL_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:call|calling|calls|phone|phoning|ring|ringing|dial)\b")
-_SMS_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:text|texting|texts|sms)\b")
-_EMAIL_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:e-?mail|e-?mails|emailing|mail|mailing)\b")
-_MSG_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:messag\w+|contact\w*|communicat\w+|reach\w*\s+out)\b")
+
+def _rx(obj: str) -> re.Pattern:
+    return re.compile(rf"(?i)\b{_LEAD}{_FILL}\s+{obj}\b(?!\s+(?:back|you\b))")
+
+
+_CALL_RE = _rx(r"(?:calls?|calling|phon(?:e|es|ing)|ring(?:ing)?|dial(?:ing)?)")
+_SMS_RE = _rx(r"(?:texts?|texting|sms)")
+_EMAIL_RE = _rx(r"(?:e-?mails?|emailing|mailing|mail)")
+_MSG_RE = _rx(r"(?:messag\w+)")
 _ALL_RE = [re.compile(p, re.I) for p in (
-    r"\bunsubscribe\b", r"\bopt[\s-]?out\b", r"\b(?:remove|take)\s+(?:me|my\s+(?:number|name|email|info|information|phone))\b",
+    r"\bunsubscribe\b", r"\bopt[\s-]?out\b", r"\bremove\s+(?:me|my\s+(?:number|name|email|info|information|phone))\b",
+    r"\btake\s+(?:me|my\s+(?:number|name|email|info|information|phone))\s+off\b",
     r"\bleave\s+me\s+alone\b", r"\bdelete\s+my\s+(?:number|info|information|data|contact)\b", r"\bdo\s+not\s+contact\b",
-    r"\bdon'?t\s+contact\b", r"\bstop\s+(?:all\s+)?(?:communications?|contact)\b", r"\bblock\s+(?:me|this)\b",
+    r"\bdon'?t\s+contact\b", r"\bnever\s+contact\b", r"\b(?:stop|quit)\s+(?:contacting|communicating|reaching\s+out)\b",
+    r"\bstop\s+(?:all\s+)?(?:communications?|contact)\b", r"\bblock\s+(?:me|this\s+number)\b",
     r"\b(?:stop|quit)\s+(?:bothering|harassing|spamming)\b")]
 _KEYWORD = re.compile(r"(?i)^\W*(stop|stopall|stop all|unsubscribe|cancel|end|quit|opt[\s-]?out|remove|remove me|"
                       r"unsub|do not contact)\W*$")
 _NOT_INT = re.compile(r"(?i)\bnot\s+interested\b|\bno\s+thanks?\b|\bno\s+thank\s+you\b|\bnot\s+looking\b|\bnot\s+for\s+me\b")
 _WRONG = re.compile(r"(?i)\bwrong\s+(?:number|person)\b|\bno\s+one\s+(?:here\s+)?by\s+that\s+name\b|\bnot\s+(?:\w+\s+)?my\s+number\b")
-_HINT = re.compile(r"(?i)\b(stop|remove|unsubscribe|leave|harass\w*|spam\w*|report(?:ed|ing)?|sue|lawyer|attorney|tcpa|"
-                   r"no\s+more|quit|enough|annoying|bother\w*|block|fcc|do\s+not|don'?t\s+(?:want|need|send|contact))\b")
+_HINT = re.compile(r"(?i)\b(stop|remove|unsubscribe|leave\s+me|harass\w*|spam\w*|report(?:ed|ing)?|sue|lawyer|attorney|tcpa|"
+                   r"no\s+more|quit|annoying|bother\w*|block|fcc|had\s+enough|enough\s+already|that'?s\s+enough|"
+                   r"do\s+not\s+(?:want|need)|don'?t\s+(?:want|need)\s+(?:any|this|your|more|to\s+be))\b")
 
 
 @dataclass(frozen=True)
@@ -59,6 +72,26 @@ class OptOut:
     scope: frozenset = frozenset()        # channels to DND (kind == dnd)
     confidence: str = MEDIUM
     phrase: str = ""                      # what matched (for the audit trail / review list)
+
+
+_OBJS = r"(calls?|calling|phon\w+|texts?|texting|sms|e-?mails?|emailing|mail\w*|messag\w+)\b"
+_CONJ_FIRST = re.compile(r"(?i)^\s*(?:,\s*)?(?:or|and|&|/)\s*(?:the\s+)?" + _OBJS)      # "don't call OR text me"
+_CONJ_NEXT = re.compile(r"(?i)^\s*(?:,\s*)?(?:(?:or|and|&|/)\s*)?(?:the\s+)?" + _OBJS)  # "..., text, or email"
+
+
+def _conjunctions(text: str, end: int) -> set[str]:
+    """Channels named right after an opt-out phrase: 'don't call or text me' - the 'text' after 'call or'.
+    The first extra channel needs an explicit or/and ("don't text, call" means: text no, call yes)."""
+    out: set[str] = set()
+    for i in range(3):
+        m = (_CONJ_FIRST if i == 0 else _CONJ_NEXT).match(text[end:])
+        if not m:
+            break
+        w = m.group(1).lower()
+        out |= ({CALL} if w.startswith(("call", "phon")) else {SMS} if w.startswith(("text", "sms"))
+                else {EMAIL} if "mail" in w else {SMS, EMAIL})
+        end += m.end()
+    return out
 
 
 def clean_reply(text: str | None, channel: str) -> str:
@@ -97,6 +130,7 @@ def classify(text: str | None, channel: str) -> OptOut:
         if m:
             scope |= channels
             phrase = phrase or m.group(0)
+            scope |= _conjunctions(probe, m.end())        # "don't call or text me" -> call + sms
     for rx in _ALL_RE:
         m = rx.search(probe)
         if m:

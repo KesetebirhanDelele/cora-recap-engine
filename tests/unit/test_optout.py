@@ -215,7 +215,7 @@ def test_review_apply_with_chosen_scope_dismiss_and_undo(session):
     ghl = FakeGHL({"r1": {"id": "r1", "dnd": False, "dndSettings": {"Email": {"status": "active"}}}})
     with patch.object(optout, "llm_judge", return_value=None):
         optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("enough already", "x1"), contact_id="r1")
-        optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("enough is enough", "x2"), contact_id="r2")
+        optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("I have had enough of this", "x2"), contact_id="r2")
     ids = [r[0] for r in session.execute(text("SELECT id FROM optout_actions WHERE status='review' ORDER BY contact_id")).fetchall()]
     assert len(ids) == 2
     assert optout.review_apply(session, SETTINGS, ids[0], "kes", {"sms", "email"}, ghl=ghl) == "applied"
@@ -361,3 +361,30 @@ def test_operator_apply_that_fails_stays_visible_on_the_tile_and_out_of_the_batc
     assert out["remaining"] == 0                                               # failed item is not re-tried forever
     bad.fail = False
     assert optout.review_apply(session, SETTINGS, rid, "kes", ghl=bad) == "applied"
+
+
+# ── false positives found scanning production transcripts (2026-10-01) ──
+@pytest.mark.parametrize("said,channel", [
+    ("I never received the email", "email"), ("please don't forget to email me the details", "email"),
+    ("take me through the program", "call"), ("I don't have time to call you back", "call"),
+    ("Please do not leave a message after the tone", "call"), ("I have enough information, thanks", "email"),
+    ("I don't want to miss the open house, can you text me the link?", "sms"),
+    ("Never mind, I found it", "sms"),
+])
+def test_ordinary_sentences_that_share_words_with_opt_outs_are_not_opt_outs(said, channel):
+    assert oo.classify(said, channel).kind in (oo.NONE, oo.UNCLEAR), said
+
+
+def test_dont_text_call_me_opts_out_of_sms_only():
+    r = oo.classify("can you call me tomorrow? don't text, call", "sms")
+    assert r.kind == oo.DND and set(r.scope) == {SMS}
+
+
+@pytest.mark.parametrize("said,channel,scope", [
+    ("don't send me any more emails", "email", {EMAIL}), ("I asked you not to call me", "call", {CALL}),
+    ("never call me again", "call", {CALL}), ("stop sending me texts", "sms", {SMS}),
+    ("don't call or text me", "call", {CALL, SMS}), ("take me off your list", "call", ALL),
+])
+def test_adjacent_verb_and_object_still_match(said, channel, scope):
+    r = oo.classify(said, channel)
+    assert r.kind == oo.DND and set(r.scope) == scope, r
