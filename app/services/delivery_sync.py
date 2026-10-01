@@ -34,6 +34,30 @@ PAGE = 30
 _monotonic = time.monotonic
 
 
+class _RateLimiter:
+    """At most `rate` GHL calls per second across all threads (GHL answers 429 above its burst limit, and Cora's
+    other jobs share the same location quota)."""
+
+    def __init__(self, rate: float) -> None:
+        import threading
+
+        self._gap = 1.0 / rate
+        self._next = 0.0
+        self._lock = threading.Lock()
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self._gap
+        if slot > now:
+            time.sleep(slot - now)
+
+
+GHL_CALLS_PER_SECOND = 5.0
+_limiter = _RateLimiter(GHL_CALLS_PER_SECOND)
+
+
 def _cfg(session: Session, settings: Any, key: str, default: str) -> str:
     from app.core.app_config import get_str
 
@@ -126,6 +150,7 @@ def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) ->
 
     def msgs_of(conv: dict) -> list[dict]:
         try:
+            _limiter.wait()
             return ghl.get_conversation_messages(conv["id"], limit=30)
         except Exception as exc:
             logger.warning("delivery_sync: messages fetch failed: %s", exc)
@@ -154,6 +179,7 @@ def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) ->
 
     def status_of(item: tuple[str, str]) -> tuple[str, str | None]:
         try:
+            _limiter.wait()
             return item[0], ghl.get_email_status(item[1])
         except Exception as exc:
             logger.warning("delivery_sync: email status lookup failed: %s", exc)

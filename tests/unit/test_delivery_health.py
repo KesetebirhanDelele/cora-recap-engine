@@ -368,3 +368,16 @@ def test_forward_pass_that_cannot_finish_resumes_next_run_and_only_then_moves_th
     _sync(session, settings, ghl, NOW + timedelta(minutes=3))
     st2 = delivery_sync._state(session)
     assert st2["fwd_resume"] is None and st2["watermark"] != first_watermark     # finished: watermark advanced
+
+
+def test_rate_limiter_spaces_calls_across_threads():
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.services.delivery_sync import _RateLimiter
+
+    lim = _RateLimiter(20.0)                    # one call per 50 ms
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda _: lim.wait(), range(10)))
+    assert time.monotonic() - started >= 0.40   # 10 calls need >= 9 gaps of 50 ms
