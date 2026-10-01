@@ -282,7 +282,7 @@ export default function WrongDatesClient() {
         </div>
         {data?.correction_previews && (
           <div style={{ fontSize: "0.78rem", color: "#475569", marginTop: 6 }}>
-            Correction email preview: &quot;{data.correction_previews.email}&quot;
+            Correction email — subject: &quot;{data.correction_email_subject}&quot;; body: &quot;{data.correction_previews.email}&quot;
             {data.sms_enabled && <div>Correction SMS preview: &quot;{data.correction_previews.sms}&quot;</div>}
           </div>
         )}

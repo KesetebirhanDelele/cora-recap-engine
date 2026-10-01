@@ -87,6 +87,7 @@ _APPOINTMENT_KW = re.compile(
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z])|\n+")
 _TAG = re.compile(r"<[^>]+>")
+_BLOCK_BREAK = re.compile(r"(?i)<\s*br\s*/?\s*>|</\s*(?:p|li|div|tr|td|th|h[1-6]|ul|ol|table|blockquote)\s*>")
 
 
 @dataclass(frozen=True)
@@ -147,7 +148,10 @@ def parse_config_date(value: str | None) -> ParsedDate | None:
 def clean_text(body: str | None, subject: str | None = None) -> str:
     """Flatten email HTML / entities so dates split across tags still parse."""
     parts = [p for p in (subject, body) if p]
-    text = " ".join(parts)
+    text = "\n".join(parts)
+    # Block-level tags are sentence boundaries: "<li>class starts Nov 12</li><li>Open House Oct 29</li>"
+    # must not read as one sentence (the nearest-keyword rule would then mislabel the first date).
+    text = _BLOCK_BREAK.sub("\n", text)
     text = _TAG.sub(" ", text)
     text = html.unescape(text).replace("\xa0", " ")
     return re.sub(r"[ \t]+", " ", text)

@@ -363,6 +363,79 @@ def build_correction_text(session: Session, settings: Any, channel: str = "email
     return msg
 
 
+DEFAULT_EMAIL_SUBJECT = "Correction: our class and Open House dates"
+# GHL fields behind the "AI Agent - Send Email" workflow (after its Subject/Body were un-swapped
+# 2026-10-01): Subject = Support Issue Ticket #2, Body = Message. The trigger is Ticket #2 changing.
+EMAIL_SUBJECT_ATTR = "ghl_field_support_ticket_2"
+EMAIL_BODY_ATTR = "ghl_field_message"
+
+
+def correction_email_subject(session: Session, settings: Any) -> str:
+    """Short subject for the correction email. Originates here (app_config
+    `correction_email_subject`), never from whatever happens to be in a GHL field."""
+    subject = " ".join(_config(session, settings, "correction_email_subject", DEFAULT_EMAIL_SUBJECT).split())
+    return subject[:120] or DEFAULT_EMAIL_SUBJECT
+
+
+def build_correction_email(session: Session, settings: Any) -> tuple[str, str]:
+    """(subject, html_body) for the correction email, from the CURRENT Settings values."""
+    from html import escape
+
+    from app.core.schedule_context import DEFAULT_FREE_SIGNUP_URL, is_unset
+
+    class_start, open_house = expected_dates(session, settings)
+    sender = _config(session, settings, "sender_name", "Cora from Colaberry")
+    rsvp = _config(session, settings, "live_open_house_link")
+    free_url = _config(session, settings, "free_signup_url", DEFAULT_FREE_SIGNUP_URL) or DEFAULT_FREE_SIGNUP_URL
+    free_href = free_url if free_url.startswith("http") else f"https://{free_url}"
+
+    has_class = not is_unset(class_start)
+    has_oh = not is_unset(open_house)
+    items = []
+    if has_class:
+        items.append(f"<li>Next class starts: <strong>{escape(class_start)}</strong></li>")
+    if has_oh:
+        rsvp_html = f' &mdash; <a href="{escape(rsvp, quote=True)}">RSVP here</a>' if rsvp else ""
+        items.append(f"<li>Next Open House: <strong>{escape(open_house)}</strong>{rsvp_html}</li>")
+    if has_class or has_oh:
+        facts = "<p>We recently sent you a message with an incorrect date. Here is the correct information:</p>"
+        if items:
+            facts += "<ul>" + "".join(items) + "</ul>"
+        if not has_class:
+            facts += "<p>There is no class scheduled yet.</p>"
+        elif not has_oh:
+            facts += "<p>There is no Open House scheduled right now.</p>"
+    else:
+        facts = ("<p>We recently sent you a message with a date that is no longer correct. "
+                 "We don't have a class or Open House scheduled right now.</p>")
+    html = (
+        "<p>Hi there,</p>" + facts
+        + f'<p>You can also start learning for free anytime at <a href="{escape(free_href, quote=True)}">'
+          f"{escape(free_url)}</a>.</p>"
+        + "<p>Sorry for any confusion!</p>"
+        + f"<p>{escape(sender)}</p>"
+    )
+    return correction_email_subject(session, settings), html
+
+
+def _channel_values(
+    session: Session, settings: Any, channel: str, text_body: str, test_stamp: str | None = None,
+) -> tuple[dict[str, str], str, str]:
+    """(GHL field values keyed by Settings attribute, subject-for-record, body-for-record).
+
+    email: Ticket #2 <- short subject, Message <- HTML body (both written in ONE update; the
+           workflow's 5 s wait means Message is in place when it fires).
+    sms:   Ticket #4 <- the text."""
+    if channel == "email":
+        subject, html = build_correction_email(session, settings)
+        if test_stamp:
+            subject = f"TEST [{test_stamp} UTC] {subject}"
+            html = "<p><strong>TEST &mdash; please ignore.</strong></p>" + html
+        return {EMAIL_SUBJECT_ATTR: subject, EMAIL_BODY_ATTR: html}, subject, html
+    body = (f"TEST [{test_stamp}] - please ignore. " if test_stamp else "") + text_body
+    return {channel_spec("sms").field_attr: body}, "", body
+
+
 class IncidentNotOpen(Exception):
     """Incident missing or already corrected/dismissed."""
 
@@ -563,33 +636,32 @@ def _skipped_result(verdict: Verdict, correction: str, channel: str) -> dict[str
 
 
 def _push_to_ghl(
-    settings: Any, ghl: Any, flags: Any, real_contact_id: str, correction: str,
-    channel: str, field_cache: dict | None = None,
+    settings: Any, ghl: Any, flags: Any, real_contact_id: str, values: dict[str, str],
+    field_cache: dict | None = None,
 ) -> None:
-    """Write the correction text into the GHL field that channel's workflow sends.
+    """Write `values` ({Settings attribute of a GHL field label: text}) in ONE contact update.
 
-    email: Support Issue Ticket #2 -> workflow "AI Agent - Send Email" (body = Ticket #2).
-    sms:   Support issue Ticket #4 -> workflow "AI Agent - Send SMS" (body = Ticket #4).
-    The new text differs from the lead's previous value, which is what makes the
-    workflow's "has changed" trigger fire; sending byte-identical text to the same
-    lead twice changes nothing, so GHL cannot double-send it either."""
+    email: Ticket #2 <- subject (its change starts workflow "AI Agent - Send Email"), Message <- body.
+    sms:   Ticket #4 <- text (its change starts workflow "AI Agent - Send SMS").
+    New text differs from the lead's previous value, which is what makes "has changed" fire;
+    byte-identical text sent twice changes nothing, so GHL cannot double-send it either."""
     from app.worker.jobs.crm_jobs import _resolve_to_field_ids
 
-    spec = channel_spec(channel)
-    label = getattr(settings, spec.field_attr, None)
-    if not label:
-        raise RuntimeError(
-            f"{spec.field_attr.upper()} is not configured - the {channel} workflow reads that field, "
-            "so a correction cannot be sent without it"
-        )
     cache = field_cache if field_cache is not None else {}
-    key = f"{channel}_id"
-    if key not in cache:
-        resolved = _resolve_to_field_ids(ghl, {label: "x"})
-        if not resolved:
-            raise RuntimeError(f"Could not resolve GHL field {label!r} to an ID")
-        cache[key] = next(iter(resolved))
-    ghl.update_contact_fields(real_contact_id, {cache[key]: correction}, mode_flags=flags)
+    updates: dict[str, str] = {}
+    for attr, value in values.items():
+        label = getattr(settings, attr, None)
+        if not label:
+            raise RuntimeError(
+                f"{attr.upper()} is not configured - a correction cannot be sent without it"
+            )
+        if attr not in cache:
+            resolved = _resolve_to_field_ids(ghl, {label: "x"})
+            if not resolved:
+                raise RuntimeError(f"Could not resolve GHL field {label!r} to an ID")
+            cache[attr] = next(iter(resolved))
+        updates[cache[attr]] = value
+    ghl.update_contact_fields(real_contact_id, updates, mode_flags=flags)
 
 
 def send_correction(
@@ -626,6 +698,7 @@ def send_correction(
     contact_id = row[0]
 
     correction = build_correction_text(session, settings, channel)
+    values, rec_subject, rec_body = _channel_values(session, settings, channel, correction)
     flags = get_mode_flags(session, settings)
     if not flags.ghl_writes_enabled:
         return {"shadow": True, "correction_text": correction, "sent": False, "channel": channel}
@@ -664,7 +737,7 @@ def send_correction(
     session.flush()
 
     try:
-        _push_to_ghl(settings, ghl, flags, real_id, correction, channel, field_cache)
+        _push_to_ghl(settings, ghl, flags, real_id, values, field_cache)
     except Exception:
         session.execute(
             text(f"""
@@ -682,10 +755,11 @@ def send_correction(
     # so the scanner will not flag it).
     session.execute(
         text("""
-            INSERT INTO outbound_messages (id, contact_id, channel, body, status, created_at)
-            VALUES (:id, :cid, :ch, :body, 'sent', :now)
+            INSERT INTO outbound_messages (id, contact_id, channel, subject, body, status, created_at)
+            VALUES (:id, :cid, :ch, :subj, :body, 'sent', :now)
         """),
-        {"id": str(uuid.uuid4()), "cid": row[0], "ch": channel, "body": correction, "now": now},
+        {"id": str(uuid.uuid4()), "cid": row[0], "ch": channel, "subj": rec_subject or None,
+         "body": rec_body, "now": now},
     )
     session.execute(
         text("""
@@ -907,8 +981,9 @@ def send_test_correction(
 
     now = datetime.now(tz=timezone.utc)
     stamp = now.strftime("%H:%M:%S")
-    body = f"TEST [{stamp} UTC] - please ignore. " + build_correction_text(session, settings, channel)
-    _push_to_ghl(settings, ghl, flags, real_id, body, channel, None)
+    values, subject, body = _channel_values(
+        session, settings, channel, build_correction_text(session, settings, channel), test_stamp=stamp)
+    _push_to_ghl(settings, ghl, flags, real_id, values, None)
     session.execute(
         text("""
             INSERT INTO audit_log (id, entity_type, entity_id, action, operator_id, context_json, created_at)
@@ -917,4 +992,4 @@ def send_test_correction(
         {"id": str(uuid.uuid4()), "eid": real_id, "op": operator_id, "now": now,
          "ctx": json.dumps({"channel": channel, "field": spec.field_attr})},
     )
-    return {"sent": True, "skipped": False, "channel": channel, "correction_text": body}
+    return {"sent": True, "skipped": False, "channel": channel, "correction_text": body, "subject": subject}

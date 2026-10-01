@@ -484,6 +484,7 @@ export interface WrongDatesResponse {
   stats: { open: number; closed_24h: number; corrected_24h: number; dismissed_24h: number; new_24h: number };
   correction_preview: string | null;
   correction_previews: { email: string; sms: string };
+  correction_email_subject: string;
   sms_enabled: boolean;
   test_available: boolean;
   email_daily_cap: number;

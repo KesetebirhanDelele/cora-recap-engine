@@ -963,6 +963,7 @@ def get_wrong_dates(
         "stats": wdm.incident_stats(session),
         "correction_preview": previews["email"],          # kept for older clients
         "correction_previews": previews,
+        "correction_email_subject": wdm.correction_email_subject(session, settings),
         "sms_enabled": wdm.sms_enabled(session, settings),
         "test_available": bool(wdm._config(session, settings, "correction_test_contacts", "").strip()),
         "email_daily_cap": wdm._daily_cap(session, settings, "email"),

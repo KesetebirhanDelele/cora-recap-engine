@@ -27,9 +27,9 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 - Prompts get `{schedule_block}`: both set → dates + RSVP; any unset → a SCHEDULE OVERRIDE (never write a date for it, ignore guidelines asking for it, invite the lead to start free at `www.myfreeaiclass.com`; RSVP link withheld when the open house is unset). Override the address with `free_signup_url`.
 
 ## How corrections are delivered (verified against live GHL, 2026-10-01)
-- Cora's follow-ups — **including the ones Cora records as "SMS"** — reach leads as outbound **emails**: writing `Support Issue Ticket #2` starts GHL workflow **"AI Agent - Send Email"** (body = Ticket #2). Evidence: GHL conversations for 6 leads show only TYPE_EMAIL from Cora; a recorded SMS text arrived as an email one minute later.
+- Cora's follow-ups — **including the ones Cora records as "SMS"** — reach leads as outbound **emails** through GHL workflow **"AI Agent - Send Email"**: trigger *Support Issue Ticket #2 has changed*, 5 s wait, then the email. Evidence: GHL conversations for 6 leads show only TYPE_EMAIL from Cora; a recorded SMS text arrived as an email a minute later. **Mapping (corrected in GHL 2026-10-01):** Subject = `{{contact.support_issue_ticket_2}}`, Body = `{{contact.message}}`, From Name = `Colaberry Admissions Team` (or default). Before that fix the two were SWAPPED (subject = the whole message, body = only the short subject) — the engine itself always wrote them correctly (Ticket #2 = subject, Message = body; verifiable in `scheduled_jobs.payload_json` of `update_ghl_after_vm_message`).
 - GHL workflow **"AI Agent - Send SMS"**: trigger *Contact Changed → Support issue Ticket #4 has changed*, 5 s wait, SMS body = `{{contact.support_issue_ticket_4}}`. Do NOT confuse with the NUMERICAL field "Support Ticket #4" (nothing uses it). It never matched for a month because the trigger watched the wrong field; fixed in GHL 2026-10-01 and re-verified (API write → SMS in 6 s).
-- Corrections write ONLY the channel's field: email → Ticket #2, sms → Ticket #4. New text differs from the lead's previous value (that is what makes "has changed" fire); identical text sent twice changes nothing, so GHL cannot double-send.
+- **Correction writes (one update):** email → Ticket #2 = short SUBJECT (originates from the engine: `app_config correction_email_subject`, default "Correction: our class and Open House dates") **and** Message = HTML BODY (`build_correction_email`); sms → Ticket #4 = text. New text differs from the lead's previous value (that is what makes "has changed" fire); identical text sent twice changes nothing, so GHL cannot double-send it. If the workflow's Subject/Body mapping is ever changed again the correction format breaks — re-run the tile's "Send test email to me" after any GHL change.
 - **If someone edits a workflow trigger/field, corrections silently stop.** Use "Send test email/SMS to me" on the tile after any GHL workflow change.
 
 ## Correction flow and safeguards (per lead, nothing written until all pass)
@@ -51,6 +51,7 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 |---|---|---|
 | `next_class_start`, `next_open_house_date`, `live_open_house_link` | — | Settings page |
 | `free_signup_url` | `www.myfreeaiclass.com` | fallback invitation |
+| `correction_email_subject` | `Correction: our class and Open House dates` | subject of the correction email (written to Ticket #2) |
 | `sms_corrections_enabled` | `false` | allow SMS corrections |
 | `correction_test_contacts` | empty (feature off) | comma-separated allowed test emails |
 | `correction_email_delay_seconds` / `correction_email_daily_cap` | 3 / 100 | email pacing / cap |
@@ -65,7 +66,7 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 
 ## Known limits / open items
 - Only messages in `outbound_messages` are checked. GHL-native automations (e.g. the "Exciting news! Colaberry's AI Systems Architect Accelerator…" SMS) are invisible to this monitor.
-- Cora's real email follow-ups put only the subject in Ticket #2 (the email body), so leads may receive just the subject line — verify in GHL.
+- First correction run (86 emails, 2026-10-01) went out under the swapped workflow: subject AND body both carried the full correction text (dates correct, subject long). Not re-sent. Regular Cora follow-ups were affected by the same swap until the GHL fix.
 - `Mark as Lead` does not resolve to a GHL field id (label mismatch) — pre-existing, separate.
 - Classification is keyword-heuristic; a false positive costs one Dismiss click.
 - Year-less configured dates are never auto-cleared.

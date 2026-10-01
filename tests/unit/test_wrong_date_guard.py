@@ -188,3 +188,23 @@ def test_none_body_is_safe():
 
 def test_invalid_calendar_date_ignored():
     assert _check("Class starts Feb 31.") == []
+
+
+# ── HTML block structure counts as sentence boundaries ───────────────────────
+
+def test_correction_email_html_list_is_not_flagged():
+    html = ("<p>Hi there,</p><p>We recently sent you a message with an incorrect date. Here is the correct information:</p>"
+            "<ul><li>Next class starts: <strong>November 12, 2026</strong></li>"
+            "<li>Next Open House: <strong>October 29, 2026</strong> &mdash; <a href='x'>RSVP here</a></li></ul>"
+            "<p>Sorry for any confusion!</p>")
+    assert _check(html, "Correction: our class and Open House dates") == []
+
+
+def test_html_list_with_a_wrong_date_is_still_caught():
+    html = "<ul><li>Next class starts: <b>May 30, 2026</b></li><li>Next Open House: <b>October 29, 2026</b></li></ul>"
+    wrong = _check(html)
+    assert [(w.kind, w.raw) for w in wrong] == [(KIND_CLASS, "May 30, 2026")]
+
+
+def test_br_and_paragraph_breaks_separate_facts():
+    assert _check("Class starts Nov 12<br>Open house Oct 29<br/>We will call you Oct 6") == []

@@ -83,7 +83,7 @@ def test_sms_writes_only_ticket4_when_enabled(session, settings):
     assert _ledger(session, "a") == ("corrected", "sms", False, True)
 
 
-def test_email_writes_only_ticket2_and_stamps_email_ledger(session, settings):
+def test_email_writes_subject_to_ticket2_and_html_body_to_message(session, settings):
     _setup(session, settings, ["a"])
     ghl_cls = MagicMock()
     p1, p2, p3 = _live_patches(ghl_cls)
@@ -91,9 +91,39 @@ def test_email_writes_only_ticket2_and_stamps_email_ledger(session, settings):
         r = wdm.send_corrections_bulk(session, settings, "kes")
     assert r["sent"] == 1 and r["channel"] == "email"
     [(contact, fields)] = _writes(ghl_cls)
-    assert list(fields) == ["id-Support Issue Ticket #2"]
-    assert "Text STOP" not in fields["id-Support Issue Ticket #2"]
+    assert set(fields) == {"id-Support Issue Ticket #2", "id-Message"}        # one update, two fields
+    subject, body = fields["id-Support Issue Ticket #2"], fields["id-Message"]
+    assert subject == "Correction: our class and Open House dates"            # originates from the engine
+    assert len(subject) < 80 and "Quick correction" not in subject
+    assert body.startswith("<p>Hi there,</p>") and "November 12, 2026" in body and "October 29, 2026" in body
+    assert 'href="https://example.test/rsvp"' in body and "www.myfreeaiclass.com" in body
+    assert "Text STOP" not in body and subject not in body.replace("Correction:", "")
     assert _ledger(session, "a") == ("corrected", "email", True, False)
+    rec = session.execute(text(
+        "SELECT subject, left(body, 16) FROM outbound_messages WHERE contact_id='a' AND body LIKE '<p>Hi there,%'")).fetchone()
+    assert rec == (subject, "<p>Hi there,</p>")                                # history keeps subject + html
+
+
+def test_email_subject_is_configurable_and_normalised(session, settings):
+    _cfg(session, "correction_email_subject", "  Updated   dates \n for you ")
+    assert wdm.correction_email_subject(session, settings) == "Updated dates for you"
+    _cfg(session, "correction_email_subject", "x" * 500)
+    assert len(wdm.correction_email_subject(session, settings)) == 120
+    _cfg(session, "correction_email_subject", "   ")
+    assert wdm.correction_email_subject(session, settings) == wdm.DEFAULT_EMAIL_SUBJECT
+
+
+def test_correction_email_variants_and_escaping(session, settings):
+    _cfg(session, "sender_name", "Cora & Co <team>")
+    _, html = wdm.build_correction_email(session, settings)
+    assert "Cora &amp; Co &lt;team&gt;" in html and "<team>" not in html           # escaped
+    _cfg(session, "next_open_house_date", "")
+    _, html = wdm.build_correction_email(session, settings)
+    assert "November 12, 2026" in html and "no Open House scheduled" in html and "RSVP here" not in html
+    _cfg(session, "next_class_start", "")
+    subject, html = wdm.build_correction_email(session, settings)
+    assert "don't have a class or Open House scheduled" in html and "<li>" not in html
+    assert "myfreeaiclass.com" in html and subject == wdm.DEFAULT_EMAIL_SUBJECT
 
 
 def test_failed_write_clears_the_email_ledger(session, settings):
@@ -196,22 +226,35 @@ def test_test_send_only_to_allow_listed_address(session, settings):
     assert _writes(ghl_cls) == []
 
 
-@pytest.mark.parametrize("channel,field", [("email", "id-Support Issue Ticket #2"), ("sms", "id-Support Ticket #4")])
-def test_test_send_works_for_both_channels_even_with_sms_disabled(session, settings, channel, field):
+def test_test_email_has_a_labelled_subject_and_html_body_even_with_sms_disabled(session, settings):
     _cfg(session, "correction_test_contacts", "me@example.test")
     _setup(session, settings, ["real-lead"])
     ghl_cls = _test_ghl([{"id": "c1", "email": "me@example.test"}])
     p1, p2, p3 = _live_patches(ghl_cls)
     with p1, p2, p3:
-        r = wdm.send_test_correction(session, settings, channel, "kes")
+        r = wdm.send_test_correction(session, settings, "email", "kes")
         session.commit()
     assert r["sent"] is True
     [(contact, fields)] = _writes(ghl_cls)
-    assert contact == "c1" and list(fields) == [field] and fields[field].startswith("TEST [")
-    assert "please ignore" in fields[field]
+    assert contact == "c1" and set(fields) == {"id-Support Issue Ticket #2", "id-Message"}
+    subject, body = fields["id-Support Issue Ticket #2"], fields["id-Message"]
+    assert subject.startswith("TEST [") and subject.endswith("Correction: our class and Open House dates")
+    assert "please ignore" in body and "November 12, 2026" in body
     assert _ledger(session, "real-lead")[0] == "open"           # no incident touched
-    assert wdm.sent_last_24h(session, "email") == 0 and wdm.sent_last_24h(session, "sms") == 0
+    assert wdm.sent_last_24h(session, "email") == 0
     assert session.execute(text("SELECT COUNT(*) FROM audit_log WHERE action='send_test_correction'")).scalar() >= 1
+
+
+def test_test_sms_writes_only_ticket4_even_with_sms_disabled(session, settings):
+    _cfg(session, "correction_test_contacts", "me@example.test")
+    ghl_cls = _test_ghl([{"id": "c1", "email": "me@example.test"}])
+    p1, p2, p3 = _live_patches(ghl_cls)
+    with p1, p2, p3:
+        r = wdm.send_test_correction(session, settings, "sms", "kes")
+    assert r["sent"] is True
+    [(contact, fields)] = _writes(ghl_cls)
+    assert list(fields) == ["id-Support Ticket #4"] and fields["id-Support Ticket #4"].startswith("TEST [")
+    assert "please ignore" in fields["id-Support Ticket #4"]
 
 
 def test_test_send_needs_exactly_one_exact_match(session, settings):

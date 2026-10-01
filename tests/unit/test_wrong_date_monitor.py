@@ -215,9 +215,10 @@ def test_send_correction_writes_ghl_field_and_closes_incident(session, settings)
     args = ghl_cls.return_value.update_contact_fields.call_args
     assert args.args[0] == "ghl-123"
     written = args.args[1]
-    # email is the default channel: ONLY Support Issue Ticket #2 (the email workflow's body) is written
-    assert list(written) == ["id-Support Issue Ticket #2"]
-    assert written["id-Support Issue Ticket #2"].startswith("Quick correction")
+    # email is the default channel: short SUBJECT -> Support Issue Ticket #2, HTML BODY -> Message
+    assert set(written) == {"id-Support Issue Ticket #2", "id-Message"}
+    assert written["id-Support Issue Ticket #2"] == "Correction: our class and Open House dates"
+    assert written["id-Message"].startswith("<p>Hi there,</p>") and CLASS in written["id-Message"]
     row = session.execute(text(
         "SELECT email_triggered_at, sms_triggered_at, correction_channel FROM wrong_date_incidents WHERE id=:i"),
         {"i": iid}).fetchone()
@@ -227,7 +228,7 @@ def test_send_correction_writes_ghl_field_and_closes_incident(session, settings)
     assert row[0] == "corrected" and row[1] == "kes" and CLASS in row[2]
     # history row + audit row + aggregate alert resolved
     assert session.execute(text(
-        "SELECT COUNT(*) FROM outbound_messages WHERE contact_id='ghl-123' AND body LIKE 'Quick correction%'")).scalar() == 1
+        "SELECT COUNT(*) FROM outbound_messages WHERE contact_id='ghl-123' AND body LIKE '<p>Hi there,</p>%' AND subject = 'Correction: our class and Open House dates'")).scalar() == 1
     assert session.execute(text(
         "SELECT COUNT(*) FROM audit_log WHERE entity_id=:i AND action='send_date_correction'"), {"i": iid}).scalar() == 1
     assert session.execute(text(
@@ -263,7 +264,7 @@ def test_ghl_failure_reopens_incident(session, settings):
             wdm.send_correction(session, settings, iid, "kes")
         session.commit()
     assert _incident_ids(session, "open") == [iid]
-    assert session.execute(text("SELECT COUNT(*) FROM outbound_messages WHERE body LIKE 'Quick correction%'")).scalar() == 0
+    assert session.execute(text("SELECT COUNT(*) FROM outbound_messages WHERE body LIKE '<p>Hi there,</p>%'")).scalar() == 0
 
 
 def test_shadow_mode_sends_nothing_and_leaves_incident_open(session, settings):

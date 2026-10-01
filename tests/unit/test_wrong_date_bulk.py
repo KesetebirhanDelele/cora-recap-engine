@@ -102,7 +102,7 @@ def test_bulk_send_one_sms_per_lead_and_resolves_field_once(session, settings):
 
     assert (r["sent"], r["failed"], r["remaining"], r["total_leads"]) == (3, 0, 0, 3)
     assert ghl_cls.return_value.update_contact_fields.call_count == 3        # 3 SMS, not 6
-    assert resolve.call_count == 1                        # the email field id is looked up once for the run
+    assert resolve.call_count == 2                        # subject + body field ids looked up once for the run
     assert _incident_ids(session, "open") == []
     assert len(_incident_ids(session, "corrected")) == 6
     # a second press finds nothing to do
