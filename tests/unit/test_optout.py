@@ -441,3 +441,8 @@ def test_real_short_replies_still_work_after_the_boilerplate_rules():
     assert r.kind == oo.DND and set(r.scope) == set(ALL)                       # request is in the first lines
     late = "Thanks for the info, very helpful.\n" + ("Best regards. " * 40) + "unsubscribe"
     assert oo.classify(late, "email").kind == oo.NONE                          # "unsubscribe" far down = footer
+
+
+def test_verification_code_texts_with_stop_links_are_not_opt_outs():
+    t = "Your Link verification code is: 150571. To stop receiving these messages, visit support.link.com/sms-opt-out"
+    assert oo.classify(t, "sms").kind == oo.NONE

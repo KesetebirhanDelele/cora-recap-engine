@@ -104,7 +104,8 @@ _OWN = re.compile(r"(?i)this is cora from|it'?s cora from|cora from colaberry|te
                   r"services\.msgsndr\.com/emails|"
                   # other senders' boilerplate that tells the reader HOW to stop (payment notices, reminders, newsletters)
                   r"reply\s+stop\s+to\b|msg\s*(?:&|and)?\s*data\s+rates|to\s+unsubscribe\b|click\s+(?:here\s+)?to\s+unsubscribe|"
-                  r"manage\s+(?:your\s+)?(?:email\s+)?(?:preferences|subscriptions?)")
+                  r"manage\s+(?:your\s+)?(?:email\s+)?(?:preferences|subscriptions?)|"
+                  r"verification\s+code|one[- ]?time\s+(?:pass)?code|to\s+stop\s+(?:receiving\s+)?these\s+(?:messages|smss?|texts)")
 _PERSONAL = re.compile(r"(?i)\b(i|i'm|i've|i'll|me|my|we|please|thanks?|thank|call|stop|remove|yes|no|okay|ok|sure|"
                        r"interested|sorry)\b")
 
