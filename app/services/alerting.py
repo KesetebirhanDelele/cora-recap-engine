@@ -197,6 +197,16 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     except Exception as exc:
         logger.error("alerting: wrong_date scan failed: %s", exc)
 
+    # Opt-out reconciliation (spec/36): leads Cora marked do-not-call vs GHL's real DND, a few per cycle.
+    try:
+        from app.core.app_config import get_str as _gs
+        if _gs("optout_reconcile_enabled", session, settings, "true").lower() in ("true", "1", "yes"):
+            from app.services.optout import reconcile_step
+            reconcile_step(session, settings, limit=15, budget_seconds=12.0)
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: opt-out reconcile failed: %s", exc)
+
     # Delivery health (spec/35): read GHL delivery status + replies, then the scheduled silence check.
     try:
         from app.services.delivery_sync import sync as _delivery_sync

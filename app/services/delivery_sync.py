@@ -103,7 +103,8 @@ def _is_final(session: Session, channel: str, external_id: str) -> bool:
     return bool(row and row[0] in (ch.DELIVERED, ch.FAILED))
 
 
-def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: datetime, now: datetime) -> None:
+def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: datetime, now: datetime,
+                  ghl: Any = None, settings: Any = None, llm_budget: list[int] | None = None) -> None:
     inserted = _upsert_event(
         session, kind="reply", channel=channel, contact_id=contact_id, external_id=m["id"],
         status_raw=m.get("status"), outcome=None, error=None, event_at=at, now=now,
@@ -114,10 +115,17 @@ def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: 
                     VALUES (:id, :c, :ch, :b, :at, :x) ON CONFLICT (external_id) WHERE external_id IS NOT NULL DO NOTHING"""),
             {"id": str(uuid.uuid4()), "c": contact_id, "ch": channel, "b": (m.get("body") or "")[:2000],
              "at": at, "x": m["id"]})
+        # Opt-out wording in the reply -> GHL DND by the lead's own words (spec/36). Never breaks the sync.
+        if settings is not None and ghl is not None:
+            from app.services import optout
+
+            optout.handle_reply(session, settings, ghl, channel=channel, message=m, contact_id=contact_id,
+                                llm_budget=llm_budget)
 
 
 def _process_conversation(session: Session, ghl: Any, conv: dict, since: datetime, now: datetime,
-                          stats: dict, deadline: float) -> None:
+                          stats: dict, deadline: float, settings: Any = None,
+                          llm_budget: list[int] | None = None) -> None:
     msgs = ghl.get_conversation_messages(conv["id"], limit=30)
     stats["conversations"] += 1
     contact_id = conv.get("contactId") or ""
@@ -129,7 +137,7 @@ def _process_conversation(session: Session, ghl: Any, conv: dict, since: datetim
         cid = m.get("contactId") or contact_id
         direction = (m.get("direction") or "").lower()
         if direction == "inbound":
-            _record_reply(session, channel, m, cid, at, now)
+            _record_reply(session, channel, m, cid, at, now, ghl, settings, llm_budget)
             stats["replies"] += 1
             continue
         if channel == "call" or direction != "outbound":
@@ -189,6 +197,7 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
     deadline = _monotonic() + RUN_BUDGET_SECONDS
     stats = {"conversations": 0, "deliveries": 0, "replies": 0, "out_of_time": False, "errors": 0}
     newest = watermark or horizon
+    llm_budget = [8]                   # at most 8 LLM opt-out judgements per run
     reached_end = False
     try:
         while not reached_end and stats["conversations"] < MAX_CONVERSATIONS_PER_RUN and _monotonic() < deadline:
@@ -206,7 +215,7 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
                 if lm is not None and lm > newest:
                     newest = lm
                 try:
-                    _process_conversation(session, ghl, conv, cutoff, now, stats, deadline)
+                    _process_conversation(session, ghl, conv, cutoff, now, stats, deadline, settings, llm_budget)
                 except Exception as exc:
                     stats["errors"] += 1
                     logger.warning("delivery_sync: conversation failed: %s", exc)

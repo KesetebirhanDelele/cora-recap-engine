@@ -496,6 +496,37 @@ export interface WrongDatesResponse {
   incidents: WrongDateIncident[];
 }
 
+export interface OptoutRow {
+  id: string; contact_id: string; source: string; kind: string; scope: string; confidence: string;
+  decided_by: string; status: string; phrase: string | null; excerpt: string | null; reason: string | null;
+  created_at: string | null; resolved_at: string | null;
+}
+
+export interface OptoutsResponse {
+  counts: Record<string, number>; review_by_source: Record<string, number>;
+  review: OptoutRow[]; applied: OptoutRow[]; failed: OptoutRow[]; reconcile_pending: number;
+}
+
+export async function fetchOptouts(): Promise<OptoutsResponse> {
+  return get<OptoutsResponse>("/dashboard/optouts");
+}
+
+export async function applyOptout(action_id: string, scope?: string[]): Promise<{ status: string }> {
+  return post("/dashboard/actions/optout-apply", { action_id, scope });
+}
+
+export async function dismissOptout(action_id: string): Promise<{ status: string }> {
+  return post("/dashboard/actions/optout-dismiss", { action_id });
+}
+
+export async function undoOptout(action_id: string): Promise<{ status: string }> {
+  return post("/dashboard/actions/optout-undo", { action_id });
+}
+
+export async function applyOptoutBatch(source = "reconcile"): Promise<{ applied: number; failed: number; remaining: number }> {
+  return post("/dashboard/actions/optout-apply-batch", { source });
+}
+
 export interface DeliveryChannel {
   channel: "email" | "sms" | "call"; label: string; level: "green" | "amber" | "red" | "grey"; reasons: string[];
   sent: number; delivered: number; failed: number; unconfirmed: number; rate: number | null;

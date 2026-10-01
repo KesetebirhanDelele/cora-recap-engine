@@ -1165,6 +1165,82 @@ def action_dismiss_wrong_date(
     return {"status": "dismissed", "incident_id": body.incident_id}
 
 
+# ── Opt-outs / DND review (spec/36) ─────────────────────────────────────────
+
+class OptoutActionRequest(BaseModel):
+    action_id: str
+    scope: list[str] | None = None        # subset of call / sms / email; omitted = the proposed scope
+
+
+class OptoutBatchRequest(BaseModel):
+    source: str = "reconcile"
+
+
+@router.get("/optouts")
+def get_optouts(session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Opt-outs awaiting review, recently applied DND (undoable), reconciliation progress."""
+    from app.services import optout
+
+    return optout.snapshot(session)
+
+
+@router.post("/actions/optout-apply")
+def action_optout_apply(body: OptoutActionRequest, auth: DashboardAuth,
+                        session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Apply the DND for one waiting opt-out (optionally with a different channel scope)."""
+    from app.config import get_settings
+    from app.services import optout
+
+    scope = {c for c in (body.scope or []) if c in ("call", "sms", "email")} or None
+    try:
+        result = optout.review_apply(session, get_settings(), body.action_id, auth["operator_id"], scope)
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    session.commit()
+    return {"status": result, "action_id": body.action_id}
+
+
+@router.post("/actions/optout-dismiss")
+def action_optout_dismiss(body: OptoutActionRequest, auth: DashboardAuth,
+                          session: Session = Depends(get_db)) -> dict[str, Any]:
+    from app.services import optout
+
+    try:
+        optout.review_dismiss(session, body.action_id, auth["operator_id"])
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    session.commit()
+    return {"status": "dismissed", "action_id": body.action_id}
+
+
+@router.post("/actions/optout-undo")
+def action_optout_undo(body: OptoutActionRequest, auth: DashboardAuth,
+                       session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Remove a DND that Cora added (restores Cora's lead flags too)."""
+    from app.config import get_settings
+    from app.services import optout
+
+    try:
+        optout.undo(session, get_settings(), body.action_id, auth["operator_id"])
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    session.commit()
+    return {"status": "undone", "action_id": body.action_id}
+
+
+@router.post("/actions/optout-apply-batch")
+def action_optout_apply_batch(body: OptoutBatchRequest, auth: DashboardAuth,
+                              session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Apply every waiting proposal of one source (e.g. the reconciliation). Time-boxed; the tile calls again until remaining is 0."""
+    from app.config import get_settings
+    from app.services import optout
+
+    return optout.apply_batch(session, get_settings(), auth["operator_id"], body.source)
+
+
 # ── WebSocket — real-time event feed ─────────────────────────────────────────
 
 @router.get("/campaign-overview")

@@ -278,6 +278,16 @@ def run_call_analysis(job_id: str) -> None:
                         settings=settings,
                     )
 
+                    # Real GHL DND by the lead's own words (spec/36) - Cora's flag alone never reached GHL.
+                    if intent_result["intent"] == "do_not_call":
+                        try:
+                            from app.services import optout
+
+                            optout.handle_call(session, settings, contact_id=contact_id,
+                                               call_event_id=call_event.id if call_event else "", transcript=transcript)
+                        except Exception as _oo_exc:
+                            logger.error("run_call_analysis: opt-out DND failed (non-fatal): %s", _oo_exc)
+
                     new_campaign = evaluate_campaign_switch(
                         campaign_name or "", intent_result["intent"]
                     )

@@ -1,4 +1,4 @@
-import { fetchHealth, fetchCardMetrics, fetchWrongDates, fetchDeliveryHealth } from "@/lib/api";
+import { fetchHealth, fetchCardMetrics, fetchWrongDates, fetchDeliveryHealth, fetchOptouts } from "@/lib/api";
 import SystemStatusBar from "@/components/SystemStatusBar";
 import { type NavCategory } from "@/components/NavigationCard";
 import DashboardSections, { type ResolvedNavGroup } from "@/components/DashboardSections";
@@ -13,7 +13,7 @@ interface NavItem {
   icon: string;
   description: string;
   category: NavCategory;
-  badgeKey?: keyof HealthResponse | "queue_issues" | "wrong_date_open" | "delivery_bad";
+  badgeKey?: keyof HealthResponse | "queue_issues" | "wrong_date_open" | "delivery_bad" | "optout_review";
   badgeCritical?: boolean;
 }
 
@@ -37,6 +37,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
       { href: "/activity",        title: "Live Activity",       icon: "⚡",  description: "Real-time stream of job events.", category: "operations", badgeKey: "jobs_completed_last_5m" },
       { href: "/exceptions",      title: "Exceptions Monitor",  icon: "⚠️",  description: "Real-time issue queue.", category: "operations", badgeKey: "open_exception_count", badgeCritical: true },
       { href: "/queue",           title: "Queue Health",        icon: "⚙️",  description: "Stuck jobs & expired leases.", category: "operations", badgeKey: "queue_issues" },
+      { href: "/optouts",         title: "Opt-outs & DND",      icon: "🛑", description: "Leads who asked us to stop — review, apply or undo DND in GHL.", category: "operations", badgeKey: "optout_review", badgeCritical: true },
       { href: "/delivery-health", title: "Delivery Health",     icon: "📬", description: "Email, SMS and calls: sent vs delivered, last delivery, and silence alerts.", category: "operations", badgeKey: "delivery_bad", badgeCritical: true },
       { href: "/sms-monitor",    title: "SMS Monitor",         icon: "💬", description: "Today's SMS budget (max 999 segments / Pacific day), pre-send gate verdicts and every text sent.", category: "operations" },
       { href: "/wrong-dates",    title: "Wrong Date Monitor",  icon: "📆", description: "Leads sent a wrong class-start / open-house date — send a correction.", category: "operations", badgeKey: "wrong_date_open", badgeCritical: true },
@@ -58,8 +59,9 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
   },
 ];
 
-function getBadge(item: NavItem, health: HealthResponse, wrongDateOpen: number, deliveryBad: number): number | undefined {
+function getBadge(item: NavItem, health: HealthResponse, wrongDateOpen: number, deliveryBad: number, optoutReview: number): number | undefined {
   if (!item.badgeKey) return undefined;
+  if (item.badgeKey === "optout_review") return optoutReview > 0 ? optoutReview : undefined;
   if (item.badgeKey === "delivery_bad") return deliveryBad > 0 ? deliveryBad : undefined;
   if (item.badgeKey === "wrong_date_open") return wrongDateOpen > 0 ? wrongDateOpen : undefined;
   if (item.badgeKey === "queue_issues") {
@@ -77,6 +79,7 @@ function resolveGroups(
   wrongDateClosed24h: number | null,
   deliverySummary: string | null,
   deliveryBad: number,
+  optoutReview: number,
 ): ResolvedNavGroup[] {
   return NAV_GROUPS.map((group) => ({
     label: group.label,
@@ -92,7 +95,7 @@ function resolveGroups(
             ? deliverySummary
             : item.description,
       category: item.category,
-      badge: health ? getBadge(item, health, wrongDateOpen, deliveryBad) : undefined,
+      badge: health ? getBadge(item, health, wrongDateOpen, deliveryBad, optoutReview) : undefined,
       badgeCritical: item.badgeCritical,
       indicator: computeIndicator(item.href, cardMetrics),
     })),
@@ -107,6 +110,10 @@ export default async function HomePage() {
   let wrongDateClosed24h: number | null = null;
   let deliverySummary: string | null = null;
   let deliveryBad = 0;
+  let optoutReview = 0;
+  try {
+    optoutReview = (await fetchOptouts()).counts.review ?? 0;
+  } catch { /* tile still renders without a badge */ }
   try {
     const dh = await fetchDeliveryHealth();
     deliveryBad = dh.channels.filter((c) => c.level === "red").length;
@@ -180,7 +187,7 @@ export default async function HomePage() {
       </div>
 
       {/* ── Navigation (stacked sections: Analytics / Operations / System) ──── */}
-      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen, wrongDateClosed24h, deliverySummary, deliveryBad)} />
+      <DashboardSections groups={resolveGroups(health, cardMetrics, wrongDateOpen, wrongDateClosed24h, deliverySummary, deliveryBad, optoutReview)} />
     </div>
   );
 }

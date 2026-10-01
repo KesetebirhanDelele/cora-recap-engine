@@ -625,6 +625,40 @@ class GHLClient:
         logger.info("GHL update_contact_fields | contact_id=%s", contact_id)
         return self._request("PUT", f"/contacts/{contact_id}", json=payload)
 
+    def set_dnd(
+        self,
+        contact_id: str,
+        channels: set[str] | frozenset[str],
+        *,
+        active: bool = True,
+        reason: str = "",
+        mode_flags: Any = None,
+    ) -> dict:
+        """
+        Turn GHL's real Do-Not-Disturb on (or off) for the given channels ("call" | "sms" | "email").
+
+        All three channels also set the contact-level `dnd` flag. GHL's own workflows and every send
+        action honour DND, which is why this - not just Cora's database - is what actually stops messages.
+        Shadow mode returns the payload without writing.
+        """
+        ghl_names = {"call": "Call", "sms": "SMS", "email": "Email"}
+        status = "active" if active else "inactive"
+        msg = (reason or "Opt-out recorded by Cora")[:120]
+        payload: dict[str, Any] = {"dndSettings": {
+            ghl_names[c]: {"status": status, "message": msg, "code": "cora_optout"}
+            for c in sorted(channels) if c in ghl_names}}
+        if set(channels) >= {"call", "sms", "email"}:
+            payload["dnd"] = bool(active)
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
+            return self._shadow_write("set_dnd", contact_id, payload)
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
+        logger.info("GHL set_dnd | contact_id=%s channels=%s active=%s", contact_id, sorted(channels), active)
+        return self._request("PUT", f"/contacts/{contact_id}", json=payload)
+
     def create_task(
         self,
         contact_id: str,

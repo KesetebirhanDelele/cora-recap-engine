@@ -1,0 +1,301 @@
+"""Opt-out handling (spec/36): wording classifier (pure) + DB-backed apply / review / undo / reconcile /
+Cora-side block (opt-in WRONG_DATE_TEST_DATABASE_URL)."""
+from __future__ import annotations
+
+import os
+import uuid
+from types import SimpleNamespace as NS
+from unittest.mock import patch
+
+import pytest
+from sqlalchemy import text
+
+from app.core import optout as oo
+
+# ───────────────────────── wording → scope (pure) ─────────────────────────
+
+CALL, SMS, EMAIL, ALL = oo.CALL, oo.SMS, oo.EMAIL, oo.ALL
+
+
+@pytest.mark.parametrize("said,channel,scope", [
+    ("STOP", "sms", {SMS}), ("stop.", "sms", {SMS}), ("Unsubscribe", "email", {EMAIL}), ("stopall", "sms", {SMS}),
+    ("Please stop calling me", "call", {CALL}),
+    ("don't call me again", "call", {CALL}),
+    ("I said do not call", "call", {CALL}),
+    ("Stop texting me!!", "sms", {SMS}),
+    ("no more texts please", "sms", {SMS}),
+    ("please stop emailing me", "email", {EMAIL}),
+    ("don't send me any more emails", "email", {EMAIL}),
+    ("don't call or text me", "call", {CALL, SMS}),
+    ("stop messaging me", "sms", {SMS, EMAIL}),
+    ("Remove me from your list", "email", ALL),
+    ("take my number off your list", "call", ALL),
+    ("leave me alone", "sms", ALL),
+    ("do not contact me", "email", ALL),
+    ("I want to opt out", "email", ALL),
+    ("stop calling me, and stop emailing me too", "call", {CALL, EMAIL}),
+])
+def test_opt_out_scope_follows_the_leads_wording(said, channel, scope):
+    r = oo.classify(said, channel)
+    assert r.kind == oo.DND and r.confidence == oo.HIGH and set(r.scope) == scope, r
+
+
+@pytest.mark.parametrize("said,channel", [
+    ("What time is the open house?", "sms"), ("Yes, send me the details", "email"),
+    ("please don't stop calling, I'm interested", "call"), ("I'll stop by the office tomorrow", "sms"),
+    ("Thanks, that works", "email"), ("", "sms"),
+])
+def test_ordinary_replies_are_not_opt_outs(said, channel):
+    assert oo.classify(said, channel).kind == oo.NONE
+
+
+def test_not_interested_and_wrong_number_are_closes_not_dnd():
+    assert oo.classify("no thanks", "sms").kind == oo.NOT_INTERESTED
+    assert oo.classify("Sorry, wrong number", "sms").kind == oo.WRONG_NUMBER
+    # but a stop request wins over "not interested"
+    r = oo.classify("not interested, stop texting me", "sms")
+    assert r.kind == oo.DND and set(r.scope) == {SMS}
+
+
+def test_vague_hostile_or_legal_wording_is_unclear_not_auto_applied():
+    for said in ("This is harassment, I will report you", "enough already", "I'm going to call my lawyer"):
+        assert oo.classify(said, "email").kind == oo.UNCLEAR, said
+
+
+def test_quoted_history_and_our_own_footer_are_not_opt_outs():
+    reply = ("Thanks, sounds good!\n\nOn Tue, Sep 30, 2026 at 10:00 AM Cora <hi@colaberry.test> wrote:\n"
+             "> Reply to unsubscribe. Stop receiving these emails here.\n> Text STOP to stop alerts")
+    assert oo.classify(reply, "email").kind == oo.NONE
+    bottom_post = "> Text STOP to stop alerts\nPlease remove me from this list"
+    assert set(oo.classify(bottom_post, "email").scope) == set(ALL)
+    assert oo.classify("Automatic reply: I am out of office. Click unsubscribe to leave this list", "email").kind == oo.NONE
+
+
+def test_only_the_leads_own_call_lines_count():
+    t = ("bot: Hi, this is Cora. If you want, I can remove you from our list or stop calling.\n"
+         "human: Yeah I'm interested, tell me more\nbot: Great")
+    assert oo.classify_call(t).kind == oo.NONE                   # the agent's words are not the lead's
+    t2 = "bot: Hello\nhuman: Please stop calling me.\nbot: Understood, I'll remove you"
+    r = oo.classify_call(t2)
+    assert r.kind == oo.DND and set(r.scope) == {CALL}
+    t3 = "human: take me off your list\nhuman: and don't call me"
+    assert set(oo.classify_call(t3).scope) == set(ALL)
+    assert oo.human_lines("bot: x\nhuman: y\nUser: z") == "y\nz"
+
+
+# ───────────────────────── DB-backed (opt-in) ─────────────────────────
+
+DB_URL = os.environ.get("WRONG_DATE_TEST_DATABASE_URL")
+db = pytest.mark.skipif(not DB_URL, reason="set WRONG_DATE_TEST_DATABASE_URL to run")
+
+
+class FakeGHL:
+    def __init__(self, records=None):
+        self.records = records or {}
+        self.dnd_calls = []
+
+    def get_contact(self, cid):
+        return {"contact": self.records.get(cid, {"id": cid, "dnd": False, "dndSettings": {}, "tags": []})}
+
+    def search_contact_by_phone(self, phone):
+        return None
+
+    def set_dnd(self, cid, channels, *, active=True, reason="", mode_flags=None):
+        self.dnd_calls.append((cid, set(channels), active))
+        return {}
+
+
+@pytest.fixture()
+def session():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    engine = create_engine(DB_URL)
+    with Session(engine) as s:
+        for t in ("optout_actions", "inbound_messages", "call_events", "scheduled_jobs"):
+            s.execute(text(f"DELETE FROM {t}"))
+        s.execute(text("DELETE FROM lead_state"))
+        s.execute(text("DELETE FROM app_config WHERE key LIKE 'optout_%'"))
+        s.commit()
+        with patch("app.core.mode_flags.get_mode_flags", return_value=NS(ghl_writes_enabled=True)), \
+                patch("app.core.intent_actions._write_ghl_campaign_off"):
+            yield s
+        s.rollback()
+    engine.dispose()
+
+
+SETTINGS = NS(openai_model_consent_detector="gpt-4o-mini")
+
+
+def _lead(session, cid, **cols):
+    from tests.unit.test_wrong_date_safeguards import _lead_state
+
+    _lead_state(session, cid, **cols)
+
+
+def _msg(body, mid=None):
+    return {"id": mid or str(uuid.uuid4()), "body": body}
+
+
+def _rows(session):
+    return session.execute(text("SELECT source, kind, scope, status, decided_by FROM optout_actions ORDER BY created_at")).fetchall()
+
+
+@db
+def test_sms_stop_sets_sms_dnd_only_and_is_idempotent(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    m = _msg("STOP", "m1")
+    assert optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=m, contact_id="c1") == "applied"
+    assert ghl.dnd_calls == [("c1", {"sms"}, True)]
+    assert _rows(session) == [("sms_reply", "dnd", "sms", "applied", "auto")]
+    assert optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=m, contact_id="c1") == "duplicate"
+    assert len(ghl.dnd_calls) == 1
+
+
+@db
+def test_email_reply_wording_decides_the_channels(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg("Please stop calling and texting me"), contact_id="c2")
+    assert ghl.dnd_calls[-1][1] == {"call", "sms"}
+    assert session.execute(text("SELECT do_not_call FROM lead_state WHERE contact_id='c2'")).fetchone() is None  # no lead row: skipped, no crash
+
+
+@db
+def test_call_scope_stops_cora_calling_but_sms_scope_does_not(session):
+    from app.services import optout
+
+    _lead(session, "calls-lead", status="active")
+    _lead(session, "sms-lead", status="active")
+    ghl = FakeGHL()
+    optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("don't call me"), contact_id="calls-lead")
+    optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("STOP"), contact_id="sms-lead")
+    q = "SELECT do_not_call, status FROM lead_state WHERE contact_id=:c"
+    assert tuple(session.execute(text(q), {"c": "calls-lead"}).fetchone()) == (True, "closed")
+    assert tuple(session.execute(text(q), {"c": "sms-lead"}).fetchone()) == (False, "active")
+
+
+@db
+def test_unclear_reply_llm_decides_when_sure_else_human_reviews(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    body = "This is harassment"
+    with patch.object(optout, "llm_judge", return_value=("opt_out_all", 0.95, "asks to be left alone")):
+        assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg(body, "a"), contact_id="u1") == "applied"
+    assert ghl.dnd_calls[-1][1] == set(ALL) and _rows(session)[-1][4] == "llm"
+    with patch.object(optout, "llm_judge", return_value=("opt_out_all", 0.6, "maybe")):
+        assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg(body, "b"), contact_id="u2") == "review"
+    with patch.object(optout, "llm_judge", return_value=None):
+        assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg(body, "c"), contact_id="u3") == "review"
+    with patch.object(optout, "llm_judge", return_value=("other", 0.95, "just angry")):
+        assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg(body, "d"), contact_id="u4") == "none"
+    assert len(ghl.dnd_calls) == 1
+
+
+@db
+def test_llm_budget_and_switch_are_respected(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    budget = [0]
+    with patch.object(optout, "llm_judge") as judge:
+        assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg("this is harassment"),
+                                   contact_id="b1", llm_budget=budget) == "review"
+        assert not judge.called
+
+
+@db
+def test_review_apply_with_chosen_scope_dismiss_and_undo(session):
+    from app.services import optout
+
+    ghl = FakeGHL({"r1": {"id": "r1", "dnd": False, "dndSettings": {"Email": {"status": "active"}}}})
+    with patch.object(optout, "llm_judge", return_value=None):
+        optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("enough already", "x1"), contact_id="r1")
+        optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("enough is enough", "x2"), contact_id="r2")
+    ids = [r[0] for r in session.execute(text("SELECT id FROM optout_actions WHERE status='review' ORDER BY contact_id")).fetchall()]
+    assert len(ids) == 2
+    assert optout.review_apply(session, SETTINGS, ids[0], "kes", {"sms", "email"}, ghl=ghl) == "applied"
+    assert ghl.dnd_calls[-1] == ("r1", {"sms", "email"}, True)
+    optout.review_dismiss(session, ids[1], "kes")
+    assert [r[3] for r in _rows(session)] == ["applied", "dismissed"]
+    with pytest.raises(ValueError):
+        optout.review_apply(session, SETTINGS, ids[1], "kes", ghl=ghl)           # already decided
+    optout.undo(session, SETTINGS, ids[0], "kes", ghl=ghl)
+    assert ghl.dnd_calls[-1] == ("r1", {"sms"}, False)             # Email DND pre-existed, so it is left alone
+    assert _rows(session)[0][3] == "undone"
+
+
+@db
+def test_call_opt_out_by_the_leads_words_or_review_when_only_the_bot_said_it(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    with patch.object(optout, "_ghl", return_value=ghl):
+        assert optout.handle_call(session, SETTINGS, contact_id="k1", call_event_id="ce1",
+                                  transcript="bot: hi\nhuman: please stop calling me") == "applied"
+        assert optout.handle_call(session, SETTINGS, contact_id="k2", call_event_id="ce2",
+                                  transcript="bot: I can stop calling you if you like\nhuman: no it is fine") == "review"
+        assert optout.handle_call(session, SETTINGS, contact_id="k1", call_event_id="ce1",
+                                  transcript="human: stop calling me") == "duplicate"
+    assert ghl.dnd_calls == [("k1", {"call"}, True)]
+
+
+@db
+def test_shadow_mode_records_but_writes_nothing(session):
+    from app.services import optout
+
+    ghl = FakeGHL()
+    with patch("app.core.mode_flags.get_mode_flags", return_value=NS(ghl_writes_enabled=False)):
+        assert optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("STOP"), contact_id="s1") == "shadow"
+    assert ghl.dnd_calls == [] and _rows(session)[0][3] == "shadow"
+
+
+@db
+def test_reconcile_finds_do_not_call_leads_missing_dnd_in_ghl_and_is_resumable(session):
+    from app.services import optout
+
+    for c in ("have", "miss", "miss-all"):
+        _lead(session, c, do_not_call=True)
+    session.execute(text("""INSERT INTO call_events (id, call_id, contact_id, direction, detected_intent, transcript, dedupe_key, created_at)
+        VALUES ('e1','e1','miss','outbound','do_not_call','bot: hi\nhuman: stop calling me', 'e1', now())"""))
+    session.commit()
+    ghl = FakeGHL({"have": {"id": "have", "dnd": True}})
+    r = optout.reconcile_step(session, SETTINGS, ghl, limit=2)
+    assert r["checked"] == 2
+    r2 = optout.reconcile_step(session, SETTINGS, ghl, limit=10)
+    assert r2["checked"] == 1
+    assert optout.reconcile_step(session, SETTINGS, ghl, limit=10)["checked"] == 0           # nothing left
+    got = {row[0]: (row[1], row[2]) for row in session.execute(text(
+        "SELECT external_id, status, scope FROM optout_actions WHERE source='reconcile'")).fetchall()}
+    assert got["have"][0] == "ok"
+    assert got["miss"] == ("review", "call")                                  # from the lead's own words
+    assert got["miss-all"] == ("review", "call,email,sms")                    # no wording on file -> all channels
+    with patch.object(optout, "_ghl", return_value=ghl):
+        out = optout.apply_batch(session, SETTINGS, "kes")
+    assert out == {"applied": 2, "failed": 0, "remaining": 0}
+    assert sorted((c[0], sorted(c[1])) for c in ghl.dnd_calls) == [
+        ("miss", ["call"]), ("miss-all", ["call", "email", "sms"])]
+
+
+@db
+def test_cora_block_reason_covers_flags_stop_replies_and_pending_review(session):
+    from app.services import optout
+
+    _lead(session, "dnc", do_not_call=True)
+    assert "do-not-contact" in optout.cora_block_reason(session, ["dnc"], "email")
+    session.execute(text("INSERT INTO inbound_messages (id, contact_id, channel, body) VALUES (:i,'stopper','sms','STOP')"), {"i": str(uuid.uuid4())})
+    session.commit()
+    assert optout.cora_block_reason(session, ["stopper"], "sms")
+    assert optout.cora_block_reason(session, ["stopper"], "email") is None            # STOP is an SMS opt-out
+    ghl = FakeGHL()
+    optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("stop texting me"), contact_id="textless")
+    assert "sms" in optout.cora_block_reason(session, ["textless"], "sms")
+    assert optout.cora_block_reason(session, ["textless"], "email") is None
+    with patch.object(optout, "llm_judge", return_value=None):
+        optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg("enough already"), contact_id="waiting")
+    assert "awaiting review" in optout.cora_block_reason(session, ["waiting"], "email")
+    assert optout.cora_block_reason(session, ["nobody"], "sms") is None

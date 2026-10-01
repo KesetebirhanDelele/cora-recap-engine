@@ -1,0 +1,146 @@
+"""
+Opt-out wording classifier - pure, no I/O (spec/36).
+
+Decides, from what a lead SAID (call transcript lines, SMS reply, email reply), whether they asked us to stop and
+on WHICH channels, so GHL's real DND can be applied by the lead's own wording:
+
+  "stop calling me"            -> {call}
+  "stop texting" / "no more texts" -> {sms}
+  "stop emailing me"           -> {email}
+  "stop messaging me"          -> {sms, email}
+  "remove me" / "unsubscribe" / "leave me alone" / "do not contact" -> {call, sms, email}
+  bare "STOP" on an SMS -> {sms}; bare "unsubscribe" on an email -> {email}
+
+Precision over recall: a clear phrase is HIGH confidence (auto-applied); anything that merely smells like an opt-out
+is UNCLEAR (goes to the LLM, then to the review list). Quoted text and our own footers are removed first, because
+our emails contain the word "unsubscribe" and a reply that quotes them is not an opt-out.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+CALL, SMS, EMAIL = "call", "sms", "email"
+ALL = frozenset({CALL, SMS, EMAIL})
+DND, NOT_INTERESTED, WRONG_NUMBER, UNCLEAR, NONE = "dnd", "not_interested", "wrong_number", "unclear", "none"
+HIGH, MEDIUM = "high", "medium"
+
+MAX_CHARS = 700            # an opt-out is near the top of a reply; signatures further down are noise
+
+_QUOTE_CUT = re.compile(
+    r"(?im)^(?:on .{5,120}wrote:|-{2,}\s*original message\s*-{2,}|_{5,}|from:\s.+|sent from my .+)$")
+_QUOTE_LINE = re.compile(r"(?m)^\s*>.*$")
+_AUTO = re.compile(r"(?i)out of office|automatic reply|auto[- ]?reply|autoreply|undeliverable|delivery status notification|"
+                   r"mailer-daemon|vacation (reply|responder)|away from (my )?(desk|email)")
+_NEG_STOP = re.compile(r"(?i)\b(?:don'?t|do not|not|never)\s+stop\b|\bstop\s+by\b|\bstop\s+(?:in|over)\b")
+_VERB = r"(?:stop|quit|cease|never|don'?t|do\s+not|dont|no\s+more|please\s+don'?t|not\s+to)"
+_WORDS = r"(?:\w+\s+){0,4}"
+
+_CALL_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:call|calling|calls|phone|phoning|ring|ringing|dial)\b")
+_SMS_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:text|texting|texts|sms)\b")
+_EMAIL_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:e-?mail|e-?mails|emailing|mail|mailing)\b")
+_MSG_RE = re.compile(rf"(?i)\b{_VERB}\s+{_WORDS}(?:messag\w+|contact\w*|communicat\w+|reach\w*\s+out)\b")
+_ALL_RE = [re.compile(p, re.I) for p in (
+    r"\bunsubscribe\b", r"\bopt[\s-]?out\b", r"\b(?:remove|take)\s+(?:me|my\s+(?:number|name|email|info|information|phone))\b",
+    r"\bleave\s+me\s+alone\b", r"\bdelete\s+my\s+(?:number|info|information|data|contact)\b", r"\bdo\s+not\s+contact\b",
+    r"\bdon'?t\s+contact\b", r"\bstop\s+(?:all\s+)?(?:communications?|contact)\b", r"\bblock\s+(?:me|this)\b",
+    r"\b(?:stop|quit)\s+(?:bothering|harassing|spamming)\b")]
+_KEYWORD = re.compile(r"(?i)^\W*(stop|stopall|stop all|unsubscribe|cancel|end|quit|opt[\s-]?out|remove|remove me|"
+                      r"unsub|do not contact)\W*$")
+_NOT_INT = re.compile(r"(?i)\bnot\s+interested\b|\bno\s+thanks?\b|\bno\s+thank\s+you\b|\bnot\s+looking\b|\bnot\s+for\s+me\b")
+_WRONG = re.compile(r"(?i)\bwrong\s+(?:number|person)\b|\bno\s+one\s+(?:here\s+)?by\s+that\s+name\b|\bnot\s+(?:\w+\s+)?my\s+number\b")
+_HINT = re.compile(r"(?i)\b(stop|remove|unsubscribe|leave|harass\w*|spam\w*|report(?:ed|ing)?|sue|lawyer|attorney|tcpa|"
+                   r"no\s+more|quit|enough|annoying|bother\w*|block|fcc|do\s+not|don'?t\s+(?:want|need|send|contact))\b")
+
+
+@dataclass(frozen=True)
+class OptOut:
+    kind: str = NONE                      # dnd | not_interested | wrong_number | unclear | none
+    scope: frozenset = frozenset()        # channels to DND (kind == dnd)
+    confidence: str = MEDIUM
+    phrase: str = ""                      # what matched (for the audit trail / review list)
+
+
+def clean_reply(text: str | None, channel: str) -> str:
+    """Only what the lead wrote this time: no quoted history, no signatures / footers, capped length."""
+    t = (text or "").replace("\r", "")
+    if channel == EMAIL:
+        t = _QUOTE_LINE.sub("", t)
+        m = _QUOTE_CUT.search(t)
+        if m:
+            t = t[: m.start()]
+    return re.sub(r"\s+", " ", t).strip()[:MAX_CHARS]
+
+
+def is_auto_reply(text: str | None) -> bool:
+    return bool(text and _AUTO.search(text[:1500]))
+
+
+def classify(text: str | None, channel: str) -> OptOut:
+    """`channel` is where the words were said: call | sms | email."""
+    t = clean_reply(text, channel)
+    if not t or (channel == EMAIL and is_auto_reply(text)):
+        return OptOut()
+    km = _KEYWORD.match(t)
+    if km:
+        # a bare STOP / UNSUBSCRIBE applies to the channel it came on; "do not contact"/"remove me" to all
+        word = km.group(1).lower()
+        scope = ALL if word in ("remove", "remove me", "do not contact") and channel == CALL else (
+            frozenset({channel}) if channel in ALL else ALL)
+        return OptOut(DND, scope, HIGH, km.group(0).strip())
+
+    probe = _NEG_STOP.sub(" ", t)
+    scope: set[str] = set()
+    phrase = ""
+    for rx, channels in ((_CALL_RE, {CALL}), (_SMS_RE, {SMS}), (_EMAIL_RE, {EMAIL}), (_MSG_RE, {SMS, EMAIL})):
+        m = rx.search(probe)
+        if m:
+            scope |= channels
+            phrase = phrase or m.group(0)
+    for rx in _ALL_RE:
+        m = rx.search(probe)
+        if m:
+            scope |= ALL
+            phrase = phrase or m.group(0)
+    if scope:
+        return OptOut(DND, frozenset(scope), HIGH, phrase.strip())
+    if _WRONG.search(t):
+        return OptOut(WRONG_NUMBER, frozenset(), HIGH, _WRONG.search(t).group(0))
+    if _NOT_INT.search(t):
+        # "not interested" is a campaign close (AI Campaign = No), not a legal DND - but a hint word makes it unclear
+        if _HINT.search(probe):
+            return OptOut(UNCLEAR, frozenset(), MEDIUM, _HINT.search(probe).group(0))
+        return OptOut(NOT_INTERESTED, frozenset(), HIGH, _NOT_INT.search(t).group(0))
+    h = _HINT.search(probe)
+    if h:
+        return OptOut(UNCLEAR, frozenset(), MEDIUM, h.group(0))
+    return OptOut()
+
+
+def human_lines(transcript: str | None) -> str:
+    """Only what the LEAD said in a Synthflow transcript ('human: ...' lines; 'bot: ...' is our agent)."""
+    out = []
+    for line in (transcript or "").splitlines():
+        head, _, rest = line.partition(":")
+        if head.strip().lower() in ("human", "user", "customer", "lead", "caller") and rest.strip():
+            out.append(rest.strip())
+    return "\n".join(out)
+
+
+def classify_call(transcript: str | None) -> OptOut:
+    """Opt-out wording in the lead's own lines of a call. Each line is judged on its own (so a quoted
+    sentence cannot join two); scopes are unioned."""
+    best = OptOut()
+    scope: set[str] = set()
+    phrase = ""
+    for line in human_lines(transcript).splitlines():
+        r = classify(line, CALL)
+        if r.kind == DND:
+            scope |= set(r.scope)
+            phrase = phrase or r.phrase
+        elif r.kind in (WRONG_NUMBER, NOT_INTERESTED, UNCLEAR) and best.kind in (NONE, UNCLEAR):
+            best = r
+    if scope:
+        # on a call, a bare "stop"/"remove me" means calls at least; explicit scopes (text/email) are kept as said
+        return OptOut(DND, frozenset(scope), HIGH, phrase)
+    return best

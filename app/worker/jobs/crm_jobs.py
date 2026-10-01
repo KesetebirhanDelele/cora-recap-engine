@@ -541,6 +541,25 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     plan.sms_skip_reason, contact_id, job_id,
                 )
 
+            # Cora's own opt-out knowledge (do-not-contact flags, STOP replies, opt-outs awaiting review) must stop
+            # the send even when GHL's DND is not (yet) set. Only the send-trigger fields are removed (spec/36).
+            if plan.route != "sms" or (settings.ghl_field_support_ticket_4 in label_updates):
+                from app.services import optout as _optout
+
+                _eff = "sms" if plan.route == "sms" else "email"
+                _why = _optout.cora_block_reason(session, [contact_id, payload.get("contact_id", "")], _eff)
+                if _why:
+                    _triggers = (
+                        {settings.ghl_field_support_ticket_4} if _eff == "sms"
+                        else {settings.ghl_field_support_ticket_2, settings.ghl_field_message}
+                    )
+                    for _f in _triggers:
+                        label_updates.pop(_f, None)
+                    logger.warning(
+                        "update_ghl_after_vm_message: %s withheld - %s | contact_id=%s job_id=%s",
+                        _eff, _why, contact_id, job_id)
+                    plan = plan.__class__(plan.updates, f"withheld: {_why}", plan.route)
+
             # ── Pre-send SMS gate (spec/34): writing Ticket #4 SENDS the text, so every SMS is
             # checked first - TCPA hours, content rules, Pacific-day budget (max 999 segments),
             # provider pacing. A text that does not fit today moves to the next legal send time.
