@@ -326,7 +326,7 @@ def test_silence_check_runs_at_most_hourly_and_muting_silences_a_channel(session
 def test_fresh_deliveries_are_recorded_even_while_the_history_load_is_unfinished(session, settings, monkeypatch):
     from app.services import delivery_sync
 
-    monkeypatch.setattr(delivery_sync, "MAX_CONVERSATIONS_PER_RUN", 0)          # backfill gets no budget this run
+    monkeypatch.setattr(delivery_sync, "RUN_BUDGET_SECONDS", 0.0)                 # no time left for the history load this run
     t = NOW - timedelta(minutes=5)
     ghl = FakeGHL([_conv("c1", "ct1", t)], {"c1": [_msg("fresh", "TYPE_SMS", "outbound", "delivered", t)]})
     r = _sync(session, settings, ghl)
@@ -350,3 +350,21 @@ def test_detail_adds_phone_and_email_for_ghl_lookups():
     items2 = [{"contact_id": "x"}]
     _enrich_contacts(items2, None)                                                 # no client: ids only, no crash
     assert items2[0]["email"] == ""
+
+
+@db
+def test_forward_pass_that_cannot_finish_resumes_next_run_and_only_then_moves_the_watermark(session, settings, monkeypatch):
+    from app.services import delivery_sync
+
+    t = NOW - timedelta(minutes=5)
+    ghl = FakeGHL([_conv("c1", "ct1", t)], {"c1": [_msg("m-resume", "TYPE_SMS", "outbound", "delivered", t)]})
+    monkeypatch.setattr(delivery_sync, "RUN_BUDGET_SECONDS", 0.0)                # out of time after the first page
+    _sync(session, settings, ghl)
+    st = delivery_sync._state(session)
+    assert st["fwd_resume"] and st["fwd_resume"]["cursor"]                       # resumable
+    assert _count(session, "SELECT count(*) FROM channel_events WHERE external_id='m-resume'") == 1   # page not abandoned
+    first_watermark = st.get("watermark")
+    monkeypatch.setattr(delivery_sync, "RUN_BUDGET_SECONDS", 24.0)
+    _sync(session, settings, ghl, NOW + timedelta(minutes=3))
+    st2 = delivery_sync._state(session)
+    assert st2["fwd_resume"] is None and st2["watermark"] != first_watermark     # finished: watermark advanced

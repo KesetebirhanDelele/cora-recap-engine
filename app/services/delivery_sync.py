@@ -30,7 +30,7 @@ TYPE_MAP = {"TYPE_SMS": "sms", "TYPE_EMAIL": "email", "TYPE_CALL": "call", "TYPE
 SYNC_KEY = "delivery_sync"
 RUN_BUDGET_SECONDS = 24.0
 MAX_CONVERSATIONS_PER_RUN = 80
-PAGE = 50
+PAGE = 30
 _monotonic = time.monotonic
 
 
@@ -208,7 +208,7 @@ def _walk(session: Session, ghl: Any, settings: Any, *, start_after: int | None,
     cursor_done: int | None = start_after
     newest: datetime | None = None
     cursor = start_after
-    while handled < max_convs and _monotonic() < deadline:
+    while handled == 0 or (handled < max_convs and _monotonic() < deadline):     # always at least one page: progress every run
         convs = ghl.search_conversations(sort_by="last_message_date", sort="desc", start_after_date=cursor, limit=PAGE)
         if not convs:
             return True, cursor_done, newest
@@ -229,8 +229,9 @@ def _walk(session: Session, ghl: Any, settings: Any, *, start_after: int | None,
             ts = conv.get("lastMessageDate")
             if isinstance(ts, (int, float)):
                 cursor_done = int(ts)
-            if handled >= max_convs or _monotonic() >= deadline:
-                return False, cursor_done, newest
+        # the whole prefetched page is handled (processing is local and fast); limits apply between pages
+        if handled >= max_convs or _monotonic() >= deadline:
+            return False, cursor_done, newest
         last_ts = convs[-1].get("lastMessageDate")
         if not isinstance(last_ts, (int, float)):
             return True, cursor_done, newest
@@ -249,7 +250,7 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
     """
     now = now or datetime.now(tz=timezone.utc)
     state = _state(session)
-    every = float(_cfg(session, settings, "delivery_sync_interval_seconds", "300"))
+    every = float(_cfg(session, settings, "delivery_sync_interval_seconds", "120"))
     last = _parse_ts(state.get("last_run_at"))
     if not force and last and (now - last).total_seconds() < every:
         return {"skipped": "throttled"}
@@ -270,13 +271,22 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
     llm_budget = [8]                   # at most 8 LLM opt-out judgements per run
     new_watermark = watermark
     try:
-        # 1. forward: always first, capped so a burst cannot eat the whole budget
-        done_fwd, _, newest = _walk(session, ghl, settings, start_after=None, cutoff=fwd_cutoff, now=now, stats=stats,
-                                    deadline=started + RUN_BUDGET_SECONDS * 0.6, max_convs=400, llm_budget=llm_budget)
+        # 1. forward: always first. A pass that cannot finish in one run resumes from its cursor next run
+        #    (a day's call logging makes hundreds of conversations active; GHL costs ~0.75 s per conversation).
+        resume = state.get("fwd_resume") or None
+        if resume:
+            f_start, f_cutoff, pass_started = int(resume["cursor"]), _parse_ts(resume["cutoff"]), _parse_ts(resume["started"])
+        else:
+            f_start, f_cutoff, pass_started = None, fwd_cutoff, now
+        done_fwd, f_cursor, _ = _walk(session, ghl, settings, start_after=f_start, cutoff=f_cutoff, now=now, stats=stats,
+                                      deadline=started + RUN_BUDGET_SECONDS * 0.6, max_convs=400, llm_budget=llm_budget)
         session.commit()
         stats["forward_complete"] = done_fwd
-        if done_fwd:                    # only advance when everything newer than the cutoff was handled
-            new_watermark = max(x for x in (newest, watermark, now - timedelta(minutes=1)) if x is not None)
+        if done_fwd:                    # everything newer than the cutoff was handled
+            new_watermark = pass_started - timedelta(minutes=1)
+            state["fwd_resume"] = None
+        else:
+            state["fwd_resume"] = {"cursor": f_cursor, "cutoff": f_cutoff.isoformat(), "started": pass_started.isoformat()}
         # 2. backfill with whatever budget is left
         if not state.get("backfill_done") and _monotonic() < deadline:
             start = int(state["backfill_cursor"]) if state.get("backfill_cursor") else None
