@@ -25,10 +25,10 @@ Generation: `generate_vm_followup(..., channel="sms"|"email")` - only the needed
 `offer_name` (AI Systems Architect Accelerator) · `offer_facts` (see above, `{free_url}` placeholder) · `offer_forbidden_terms` (data analytics, data analyst, data science, bootcamp, power bi, tableau, sql, excel, full stack, cybersecurity, business intelligence) · `sms_max_segments_per_message` (2).
 
 ## Not done / open
-* **Upcoming-call reminder SMS does not exist yet** (callbacks are scheduled but nothing reminds the lead). Proposed: deterministic template, no LLM, ~1 h before a lead-requested callback with a specific time.
+* **Upcoming-call reminder SMS: not built, by decision (Kes 2026-10-02) - no reminder logic existed and none is to be added.**
 * Student stories are off until Accelerator stories exist (`video_transcripts.csv` is entirely the retired program).
-* The knowledge base says enrollment is rolling / no fixed start; Settings still carries Nov 12 - the email follows the Settings schedule block.
-* Texts Synthflow or GHL-native automations send (end-of-call summary, native workflows) do not pass this generator or gate - review them separately.
+* Enrollment model (Kes 2026-10-02): enrollment is ongoing for the SELF-PACED option (start any time, free start at myfreeaiclass.com); the Open House is for people who want LIVE classes. `offer_facts` and the email prompt say so; the email follows the Settings schedule block for Open House / class-start dates.
+* Texts Synthflow or GHL-native automations send do not pass this generator or gate - out of scope by decision (Kes 2026-10-02).
 * Dead code: `vm_content_generator` / `services/ai.generate_voicemail_content` have no callers.
 
 ## Tests

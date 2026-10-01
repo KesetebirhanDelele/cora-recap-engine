@@ -42,6 +42,9 @@ cybersecurity).
 - Do not use student success stories, testimonials, alumni outcomes, salary or job-placement claims.
 - Never invent dates, prices, guarantees or program details that are not given here. Use the dates exactly as \
 the schedule block gives them, or the override it states.
+- Match the next step to the learner: people who want to go at their own pace can start the self-paced option any \
+time (the free start link); people who want live classes should come to the Open House (only when the schedule \
+block lists one). Never imply the Open House is the only way in.
 - Plain, warm, human tone - encouraging, never pushy or salesy. Fallback for the first name: "there".
 
 Output ONLY a valid JSON object with exactly these keys - no text outside JSON:

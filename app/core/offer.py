@@ -17,10 +17,11 @@ DEFAULT_OFFER_NAME = "AI Systems Architect Accelerator"
 
 DEFAULT_OFFER_FACTS = (
     "A 12-week online program for working professionals who want to design, build and govern AI-powered systems. "
-    "About 4 hours of live, recorded sessions per week (Mondays and Thursdays), so it fits around a full-time job. "
     "Hands-on work with Claude Code, the Claude API, Model Context Protocol (MCP), Docker and GitHub, ending in a "
     "capstone presented at a live Expo. Preparation for the Anthropic Architect Certification (CCA-F) is built in. "
-    "Anyone can start free at {free_url}."
+    "Two ways to take it: SELF-PACED, with enrollment open all the time so you can start whenever you like "
+    "(anyone can start free at {free_url}); or LIVE CLASSES, about 4 hours a week of instructor-led sessions on "
+    "Mondays and Thursdays (all recorded) - the free Open House is the way to learn about and join the next live class."
 )
 
 # Course / subject names of the retired offer. A text or email containing one is rejected.
