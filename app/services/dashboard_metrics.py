@@ -32,6 +32,32 @@ _VOICEMAIL_STATUSES = (
 )
 
 
+# Long-running batch jobs that run on their own isolated queue/worker (app/worker/main.py). They are SUPPOSED to take
+# minutes, so a waiting scan is not "queue lag" or a "stuck job"; their health is checked separately
+# (alerting._evaluate_quality_scan_stale: no scan completed in N minutes).
+BATCH_JOB_TYPES = ("staff_call_quality_scan",)
+_NOT_BATCH = "job_type NOT IN ('staff_call_quality_scan')"
+
+
+def queue_lag_seconds(session: Session) -> float:
+    """Age of the oldest past-due pending job, ignoring the isolated batch queue."""
+    row = session.execute(text(f"""
+        SELECT EXTRACT(EPOCH FROM (NOW() - MIN(run_at)))::float AS lag_seconds
+        FROM scheduled_jobs
+        WHERE status = 'pending' AND run_at <= NOW() AND {_NOT_BATCH}
+    """)).fetchone()
+    return float(row[0]) if row and row[0] is not None else 0.0
+
+
+def stuck_pending_count(session: Session) -> int:
+    """Pending jobs overdue by more than 10 minutes, ignoring the isolated batch queue."""
+    row = session.execute(text(f"""
+        SELECT COUNT(*) FROM scheduled_jobs
+        WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes' AND {_NOT_BATCH}
+    """)).fetchone()
+    return int(row[0]) if row else 0
+
+
 def get_health(session: Session) -> dict[str, Any]:
     """
     Compute the current system health snapshot directly from source tables.
@@ -44,13 +70,8 @@ def get_health(session: Session) -> dict[str, Any]:
     now = datetime.now(tz=timezone.utc)
     window_5m = now - timedelta(minutes=5)
 
-    # Queue lag: age of the oldest past-due pending job
-    lag_row = session.execute(text("""
-        SELECT EXTRACT(EPOCH FROM (NOW() - MIN(run_at)))::float AS lag_seconds
-        FROM scheduled_jobs
-        WHERE status = 'pending' AND run_at <= NOW()
-    """)).fetchone()
-    queue_lag = float(lag_row[0]) if lag_row and lag_row[0] is not None else 0.0
+    # Queue lag: age of the oldest past-due pending job (isolated batch queue excluded)
+    queue_lag = queue_lag_seconds(session)
 
     # Active workers: distinct claimed_by with valid lease
     workers_row = session.execute(text("""
@@ -82,12 +103,7 @@ def get_health(session: Session) -> dict[str, Any]:
     resolved_last_24h = int(resolved_row[0]) if resolved_row else 0
 
     # Stuck jobs
-    stuck_row = session.execute(text("""
-        SELECT COUNT(*) FROM scheduled_jobs
-        WHERE status = 'pending'
-          AND run_at < NOW() - INTERVAL '10 minutes'
-    """)).fetchone()
-    stuck_job_count = int(stuck_row[0]) if stuck_row else 0
+    stuck_job_count = stuck_pending_count(session)
 
     # Expired leases
     expired_row = session.execute(text("""
@@ -435,7 +451,7 @@ def get_metrics(
                run_at,
                EXTRACT(EPOCH FROM (NOW() - run_at))::int AS lag_seconds
         FROM scheduled_jobs
-        WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes'
+        WHERE status = 'pending' AND run_at < NOW() - INTERVAL '10 minutes' AND job_type NOT IN ('staff_call_quality_scan')
         ORDER BY run_at ASC
         LIMIT 50
     """)).fetchall()

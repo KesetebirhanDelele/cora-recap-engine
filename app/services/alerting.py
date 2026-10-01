@@ -176,6 +176,11 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         logger.error("alerting: outbound_stall eval failed: %s", exc)
 
     try:
+        _evaluate_quality_scan_stale(session, settings, now, dedup_window)
+    except Exception as exc:
+        logger.error("alerting: quality_scan_stale eval failed: %s", exc)
+
+    try:
         _evaluate_new_exceptions(session, settings, now)
     except Exception as exc:
         logger.error("alerting: new_exceptions eval failed: %s", exc)
@@ -589,6 +594,43 @@ def _evaluate_intake_auth_failure(
 
 
 # ── Outbound-call stall alert ────────────────────────────────────────────────
+
+def _evaluate_quality_scan_stale(
+    session: Session,
+    settings: Any,
+    now: datetime,
+    dedup_window: timedelta,
+) -> None:
+    """
+    The staff call quality scan runs on its own isolated queue and is excluded from queue lag / stuck-job counts
+    (a waiting scan is normal). This is its own health check: when the scan is enabled and NO scan has completed in
+    `alert_quality_scan_stale_minutes` (default 60; the scan reschedules itself 15 min after each run and a run takes
+    4-12 min), something is wrong with that queue - fire. A scan that is running right now with a live lease is given
+    its time (the lease is 15 min).
+    """
+    alert_type = "staff_quality_scan_stale"
+    severity = "warning"
+    if not getattr(settings, "staff_call_quality_scan_enabled", False):
+        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+        return
+    minutes = int(getattr(settings, "alert_quality_scan_stale_minutes", 60) or 60)
+    last = session.execute(text(
+        "SELECT MAX(updated_at) FROM scheduled_jobs WHERE job_type = 'staff_call_quality_scan' AND status = 'completed'")).scalar()
+    if last is not None and last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    running = session.execute(text(
+        "SELECT COUNT(*) FROM scheduled_jobs WHERE job_type = 'staff_call_quality_scan' AND status = 'running' "
+        "AND lease_expires_at > NOW()")).scalar() or 0
+    stale = last is None or (now - last) > timedelta(minutes=minutes)
+    if stale and not running:
+        age = "never" if last is None else f"{int((now - last).total_seconds() // 60)} min ago"
+        _upsert_active_alert(
+            session, settings, now, alert_type=alert_type, severity=severity,
+            message=f"No staff call quality scan has completed in the last {minutes} min (last completed: {age})",
+            current_value=float(minutes), threshold=float(minutes))
+    else:
+        _resolve_active_alert(session, settings, now, alert_type=alert_type, severity=severity)
+
 
 def _evaluate_outbound_stall(
     session: Session,

@@ -419,6 +419,15 @@ def _parse_ghl_datetime(raw: Any) -> Optional[datetime]:
 def _reschedule(session: Session) -> None:
     from app.worker.scheduler import schedule_job
 
+    # One chain only: if another scan is already waiting, that one carries on - do not add a second.
+    waiting = session.execute(text("""
+        SELECT id FROM scheduled_jobs
+        WHERE job_type = 'staff_call_quality_scan' AND status = 'pending' LIMIT 1
+    """)).fetchone()
+    if waiting:
+        logger.info("staff_call_quality_scan: another scan already pending (id=%s) - not rescheduling", waiting[0])
+        return
+
     run_at = datetime.now(tz=timezone.utc) + timedelta(seconds=_SCHEDULE_INTERVAL_SECONDS)
     schedule_job(
         session=session,
@@ -437,9 +446,11 @@ def start_staff_call_quality_scanner() -> None:
     from app.worker.scheduler import schedule_job
 
     with get_sync_session() as session:
+        # pending OR claimed/running: a scan that is running right now will reschedule itself, so a second
+        # chain started by every worker restart (each deploy) only piles up (found 2026-10-01: 3 chains).
         existing = session.execute(text("""
             SELECT id FROM scheduled_jobs
-            WHERE job_type = 'staff_call_quality_scan' AND status = 'pending'
+            WHERE job_type = 'staff_call_quality_scan' AND status IN ('pending', 'claimed', 'running')
             LIMIT 1
         """)).fetchone()
 
