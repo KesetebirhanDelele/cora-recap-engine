@@ -26,6 +26,7 @@ DND, NOT_INTERESTED, WRONG_NUMBER, UNCLEAR, NONE = "dnd", "not_interested", "wro
 HIGH, MEDIUM = "high", "medium"
 
 MAX_CHARS = 700            # an opt-out is near the top of a reply; signatures further down are noise
+EMAIL_HEAD_CHARS = 350     # ... and in an email only the first lines count: "unsubscribe" far down is a footer
 
 _QUOTE_CUT = re.compile(
     r"(?im)^(?:on .{5,120}wrote:|-{2,}\s*original message\s*-{2,}|_{5,}|from:\s.+|sent from my .+)$")
@@ -98,9 +99,12 @@ def _conjunctions(text: str, end: int) -> set[str]:
 # real reply may quote us without ">" markers. Both contain the word "unsubscribe" ("...If you no longer wish to
 # receive these emails you may unsubscribe [link]") - that is NOT the lead asking to stop (spec/36, found live:
 # 5 DNDs were wrongly applied to leads who had said nothing).
-_OWN = re.compile(r"(?i)this is cora from|it'?s cora from|text stop to stop alerts|"
+_OWN = re.compile(r"(?i)this is cora from|it'?s cora from|cora from colaberry|text stop to stop alerts|"
                   r"if you no longer wish to receive these emails|unsubscribe\s*[\[<(]?\s*https?://|"
-                  r"services\.msgsndr\.com/emails")
+                  r"services\.msgsndr\.com/emails|"
+                  # other senders' boilerplate that tells the reader HOW to stop (payment notices, reminders, newsletters)
+                  r"reply\s+stop\s+to\b|msg\s*(?:&|and)?\s*data\s+rates|to\s+unsubscribe\b|click\s+(?:here\s+)?to\s+unsubscribe|"
+                  r"manage\s+(?:your\s+)?(?:email\s+)?(?:preferences|subscriptions?)")
 _PERSONAL = re.compile(r"(?i)\b(i|i'm|i've|i'll|me|my|we|please|thanks?|thank|call|stop|remove|yes|no|okay|ok|sure|"
                        r"interested|sorry)\b")
 
@@ -127,7 +131,7 @@ def clean_reply(text: str | None, channel: str) -> str:
         if m:
             t = t[: m.start()]
     t, _ = split_own(t)
-    return re.sub(r"\s+", " ", t).strip()[:MAX_CHARS]
+    return re.sub(r"\s+", " ", t).strip()[: EMAIL_HEAD_CHARS if channel == EMAIL else MAX_CHARS]
 
 
 def is_auto_reply(text: str | None) -> bool:

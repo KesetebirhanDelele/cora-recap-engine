@@ -419,3 +419,25 @@ def test_echo_is_not_recorded_as_a_reply_and_never_reaches_dnd(session):
     ghl = FakeGHL()
     assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg(OWN_EMAIL, "echo1"), contact_id="e1") == "none"
     assert ghl.dnd_calls == [] and _rows(session) == []
+
+
+# ── boilerplate from other senders / templates that tells the reader how to stop is never an opt-out ──
+STRIPE = "Stripe: Reply STOP to cancel. Msg&Data rates may apply. Msg frequency varies. Contact support at https://support.stripe.com"
+REMINDER = ("Hi Sam, Just a friendly reminder that your appointment is in one hour. Please use this Zoom Meeting Link: "
+            "https://zoom.us/j/123 " + "See you soon. " * 30 + "To unsubscribe from these reminders click here.")
+OTHER_COLABERRY = "Hi there! Cora from Colaberry here. Our class starts soon and we're hosting a FREE Open House. Unsubscribe"
+
+
+def test_third_party_stop_instructions_and_footers_are_not_opt_outs():
+    assert oo.classify(STRIPE, "sms").kind == oo.NONE and oo.is_own_echo(STRIPE)
+    assert oo.classify(REMINDER, "email").kind == oo.NONE
+    assert oo.classify(OTHER_COLABERRY, "email").kind == oo.NONE and oo.is_own_echo(OTHER_COLABERRY)
+
+
+def test_real_short_replies_still_work_after_the_boilerplate_rules():
+    assert oo.classify("STOP", "sms").kind == oo.DND
+    assert oo.classify("Stop calling", "sms").kind == oo.DND
+    r = oo.classify("Please unsubscribe me. Thanks\n\n" + "Regards, Sam. " * 50, "email")
+    assert r.kind == oo.DND and set(r.scope) == set(ALL)                       # request is in the first lines
+    late = "Thanks for the info, very helpful.\n" + ("Best regards. " * 40) + "unsubscribe"
+    assert oo.classify(late, "email").kind == oo.NONE                          # "unsubscribe" far down = footer
