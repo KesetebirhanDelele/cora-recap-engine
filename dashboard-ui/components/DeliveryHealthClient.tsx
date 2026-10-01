@@ -115,11 +115,11 @@ export default function DeliveryHealthClient() {
           {detail && detail.items.length === 0 && <div style={{ color: "#16a34a" }}>Nothing failed or unconfirmed.</div>}
           {detail && detail.items.length > 0 && (
             <table style={{ width: "100%", fontSize: "0.82rem", marginTop: 6, borderCollapse: "collapse" }}>
-              <thead><tr style={{ textAlign: "left", color: "#64748b" }}><th>Time</th><th>Contact</th><th>State</th><th>Reason</th></tr></thead>
+              <thead><tr style={{ textAlign: "left", color: "#64748b" }}><th>Time</th><th>Phone</th><th>Email</th><th>GHL contact id</th><th>State</th><th>Reason</th></tr></thead>
               <tbody>
                 {detail.items.map((i, k) => (
                   <tr key={k} style={{ borderTop: "1px solid #e2e8f0" }}>
-                    <td>{new Date(i.at).toLocaleString()}</td><td>{i.contact_id.slice(0, 8)}…</td>
+                    <td>{new Date(i.at).toLocaleString()}</td><td style={{ userSelect: "all" }}>{i.phone || "—"}</td><td style={{ userSelect: "all" }}>{i.email || "—"}</td><td style={{ userSelect: "all", fontSize: "0.75rem", color: "#64748b" }}>{i.contact_id}</td>
                     <td style={{ color: i.state === "failed" ? "#dc2626" : "#d97706", fontWeight: 600 }}>{i.state}</td>
                     <td>{i.error ?? ""}</td>
                   </tr>

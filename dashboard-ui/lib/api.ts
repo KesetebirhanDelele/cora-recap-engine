@@ -542,7 +542,7 @@ export interface DeliveryHealthResponse {
 }
 
 export interface DeliveryDetailResponse {
-  channel: string; items: { at: string; contact_id: string; state: string; error: string | null }[];
+  channel: string; items: { at: string; contact_id: string; phone: string; email: string; state: string; error: string | null }[];
 }
 
 export async function fetchDeliveryHealth(): Promise<DeliveryHealthResponse> {

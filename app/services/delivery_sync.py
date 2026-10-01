@@ -168,14 +168,51 @@ def _process_conversation(session: Session, ghl: Any, conv: dict, since: datetim
             stats["deliveries"] += 1
 
 
+def _walk(session: Session, ghl: Any, settings: Any, *, start_after: int | None, cutoff: datetime, now: datetime,
+          stats: dict, deadline: float, max_convs: int, llm_budget: list[int]) -> tuple[bool, int | None, datetime | None]:
+    """Walk conversations newest -> oldest until one is older than `cutoff`, `max_convs` were handled or the deadline
+    passed. Returns (reached_end, resume_cursor, newest_activity_seen). resume_cursor = lastMessageDate (ms) of the
+    last conversation fully handled."""
+    handled = 0
+    cursor_done: int | None = start_after
+    newest: datetime | None = None
+    cursor = start_after
+    while handled < max_convs and _monotonic() < deadline:
+        convs = ghl.search_conversations(sort_by="last_message_date", sort="desc", start_after_date=cursor, limit=PAGE)
+        if not convs:
+            return True, cursor_done, newest
+        for conv in convs:
+            lm = _parse_ts(conv.get("lastMessageDate"))
+            if lm is not None and lm < cutoff:
+                return True, cursor_done, newest
+            if lm is not None and (newest is None or lm > newest):
+                newest = lm
+            try:
+                _process_conversation(session, ghl, conv, cutoff, now, stats, deadline, settings, llm_budget)
+            except Exception as exc:
+                stats["errors"] += 1
+                logger.warning("delivery_sync: conversation failed: %s", exc)
+            handled += 1
+            ts = conv.get("lastMessageDate")
+            if isinstance(ts, (int, float)):
+                cursor_done = int(ts)
+            if handled >= max_convs or _monotonic() >= deadline:
+                return False, cursor_done, newest
+        last_ts = convs[-1].get("lastMessageDate")
+        if not isinstance(last_ts, (int, float)):
+            return True, cursor_done, newest
+        cursor = int(last_ts)
+    return False, cursor_done, newest
+
+
 def sync(session: Session, settings: Any, now: datetime | None = None, force: bool = False,
          ghl: Any = None) -> dict[str, Any]:
     """One throttled, time-boxed pass. Safe to call every cycle.
 
-    State (channel_sync_state 'delivery_sync'): backfill_done, backfill_cursor (lastMessageDate ms to
-    resume from), watermark (newest conversation activity seen), first_sync_at, last_run_at.
-    backfill phase: walk conversations newest -> oldest down to `now - backfill_hours`, resuming each run.
-    forward phase:  walk newest -> (watermark - 30 min); the overlap re-reads statuses that change after sending.
+    Every run does TWO jobs, in this order, so fresh messages are never starved by the history load:
+      1. forward  - conversations active since (watermark - 30 min): new deliveries / replies show up within one run
+      2. backfill - resumes the one-time walk back to `now - backfill_hours` from a stored cursor, until finished
+    State (channel_sync_state 'delivery_sync'): watermark, backfill_done, backfill_cursor, first_sync_at, last_run_at.
     """
     now = now or datetime.now(tz=timezone.utc)
     state = _state(session)
@@ -192,50 +229,29 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
 
     backfill_h = float(_cfg(session, settings, "delivery_sync_backfill_hours", "72"))
     horizon = now - timedelta(hours=backfill_h)
-    backfill = not state.get("backfill_done")
     watermark = _parse_ts(state.get("watermark"))
-    cutoff = horizon if backfill else max((watermark or horizon) - timedelta(minutes=30), horizon)
-    start_after: int | None = int(state["backfill_cursor"]) if backfill and state.get("backfill_cursor") else None
-    deadline = _monotonic() + RUN_BUDGET_SECONDS
+    fwd_cutoff = max((watermark or (now - timedelta(minutes=30))) - timedelta(minutes=30), horizon)
+    started = _monotonic()
+    deadline = started + RUN_BUDGET_SECONDS
     stats = {"conversations": 0, "deliveries": 0, "replies": 0, "out_of_time": False, "errors": 0}
-    newest = watermark or horizon
     llm_budget = [8]                   # at most 8 LLM opt-out judgements per run
-    reached_end = False
+    new_watermark = watermark
     try:
-        while not reached_end and stats["conversations"] < MAX_CONVERSATIONS_PER_RUN and _monotonic() < deadline:
-            convs = ghl.search_conversations(sort_by="last_message_date", sort="desc",
-                                             start_after_date=start_after, limit=PAGE)
-            if not convs:
-                reached_end = True
-                break
-            interrupted = False
-            for conv in convs:
-                lm = _parse_ts(conv.get("lastMessageDate"))
-                if lm is not None and lm < cutoff:
-                    reached_end = True
-                    break
-                if lm is not None and lm > newest:
-                    newest = lm
-                try:
-                    _process_conversation(session, ghl, conv, cutoff, now, stats, deadline, settings, llm_budget)
-                except Exception as exc:
-                    stats["errors"] += 1
-                    logger.warning("delivery_sync: conversation failed: %s", exc)
-                if stats["conversations"] >= MAX_CONVERSATIONS_PER_RUN or _monotonic() >= deadline:
-                    interrupted = True
-                    break
-                if backfill:
-                    ts = conv.get("lastMessageDate")
-                    if isinstance(ts, (int, float)):
-                        state["backfill_cursor"] = int(ts)       # resume AFTER this conversation next run
-            if interrupted or reached_end:
-                break
-            last_ts = convs[-1].get("lastMessageDate")
-            if not isinstance(last_ts, (int, float)):
-                reached_end = True
-                break
-            start_after = int(last_ts)
+        # 1. forward: always first, capped so a burst cannot eat the whole budget
+        done_fwd, _, newest = _walk(session, ghl, settings, start_after=None, cutoff=fwd_cutoff, now=now, stats=stats,
+                                    deadline=started + RUN_BUDGET_SECONDS * 0.6, max_convs=60, llm_budget=llm_budget)
         session.commit()
+        if done_fwd:                    # only advance when everything newer than the cutoff was handled
+            new_watermark = max(x for x in (newest, watermark, now - timedelta(minutes=1)) if x is not None)
+        # 2. backfill with whatever budget is left
+        if not state.get("backfill_done") and _monotonic() < deadline:
+            start = int(state["backfill_cursor"]) if state.get("backfill_cursor") else None
+            done_bf, cursor, _ = _walk(session, ghl, settings, start_after=start, cutoff=horizon, now=now, stats=stats,
+                                       deadline=deadline, max_convs=MAX_CONVERSATIONS_PER_RUN, llm_budget=llm_budget)
+            session.commit()
+            state["backfill_cursor"] = None if done_bf else cursor
+            if done_bf:
+                state["backfill_done"] = True
     except Exception as exc:
         session.rollback()
         logger.error("delivery_sync failed: %s", exc)
@@ -244,10 +260,8 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
         session.commit()
         return {"error": str(exc)}
 
-    if backfill and reached_end:
-        state.update(backfill_done=True, backfill_cursor=None)
-    state.update(last_run_at=now.isoformat(), last_error=None, stats=stats, watermark=newest.isoformat(),
-                 backfill_hours=backfill_h)
+    state.update(last_run_at=now.isoformat(), last_error=None, stats=stats, backfill_hours=backfill_h,
+                 watermark=(new_watermark or now).isoformat())
     state.setdefault("first_sync_at", now.isoformat())
     _save_state(session, state, now)
     session.commit()

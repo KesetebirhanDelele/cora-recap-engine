@@ -210,8 +210,44 @@ def snapshot(session: Session, settings: Any, now: datetime | None = None) -> di
                      "backfill_done": bool(st.get("backfill_done"))}}
 
 
-def detail(session: Session, channel: str, now: datetime | None = None, limit: int = 50) -> dict[str, Any]:
-    """Failed + unconfirmed hand-offs of the last 24 h (contact ids only, no names)."""
+def _enrich_contacts(items: list[dict[str, Any]], ghl: Any, budget_seconds: float = 12.0) -> None:
+    """Add the lead's full phone and email (and GHL id) so an operator can look the lead up in GHL.
+    Contact ids that are already phone numbers need no lookup. Parallel, time-boxed; failures leave the fields blank."""
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def looks_phone(v: str) -> bool:
+        d = v.replace("+", "").replace("-", "").replace(" ", "")
+        return d.isdigit() and len(d) >= 10
+
+    started = time.monotonic()
+    ids = sorted({i["contact_id"] for i in items if i["contact_id"] and not looks_phone(i["contact_id"])})
+    found: dict[str, dict[str, str]] = {}
+
+    def fetch(cid: str) -> tuple[str, dict[str, str]]:
+        rec = ghl.get_contact(cid)
+        c = rec.get("contact", rec) if isinstance(rec, dict) else {}
+        return cid, {"phone": c.get("phone") or "", "email": c.get("email") or ""}
+
+    if ghl is not None and ids:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(fetch, c) for c in ids[:40]]
+            for f in as_completed(futures, timeout=budget_seconds + 5):
+                try:
+                    cid, info = f.result(timeout=max(budget_seconds - (time.monotonic() - started), 0.1))
+                    found[cid] = info
+                except Exception:
+                    continue
+    for it in items:
+        cid = it["contact_id"]
+        info = found.get(cid, {})
+        it["phone"] = cid if looks_phone(cid) else info.get("phone", "")
+        it["email"] = info.get("email", "")
+
+
+def detail(session: Session, channel: str, now: datetime | None = None, limit: int = 50,
+           ghl: Any = None) -> dict[str, Any]:
+    """Failed + unconfirmed hand-offs of the last 24 h, with the lead's phone / email for GHL look-ups."""
     now = now or datetime.now(tz=timezone.utc)
     rows = sorted(_rows(session, channel, now - timedelta(hours=24)), key=lambda r: r[0], reverse=True)
     confirm = 25 if channel == "call" else 15
@@ -231,6 +267,10 @@ def detail(session: Session, channel: str, now: datetime | None = None, limit: i
                       "state": "failed" if outcome == ch.FAILED else "not confirmed", "error": err})
         if len(items) >= limit:
             break
+    try:
+        _enrich_contacts(items, ghl)
+    except Exception as exc:                       # the list is still useful with ids only
+        logger.warning("delivery detail: contact lookup failed: %s", exc)
     return {"channel": channel, "items": items}
 
 

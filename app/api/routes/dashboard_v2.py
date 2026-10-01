@@ -958,9 +958,15 @@ def get_delivery_health_detail(
     channel: str = Path(..., pattern="^(email|sms|call)$"), session: Session = Depends(get_db),
 ) -> dict[str, Any]:
     """Failed and not-confirmed hand-offs of the last 24 h for one channel."""
+    from app.adapters.ghl import GHLClient
+    from app.config import get_settings
     from app.services import channel_health
 
-    return channel_health.detail(session, channel)
+    try:
+        ghl = GHLClient(settings=get_settings())
+    except Exception:
+        ghl = None
+    return channel_health.detail(session, channel, ghl=ghl)
 
 
 # ── SMS Monitor (spec/34) ────────────────────────────────────────────────────

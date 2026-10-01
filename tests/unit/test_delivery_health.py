@@ -173,8 +173,12 @@ def test_sync_records_sms_email_deliveries_and_replies_once(session, settings):
             _msg("m6", "TYPE_CALL", "outbound", "completed", t),         # outbound calls come from call_events, not GHL
         ]},
         email_status={"e3": "opened"})
-    r = _sync(session, settings, ghl)
-    assert r["deliveries"] == 3 and r["replies"] == 2
+    from app.services import optout
+
+    with patch.object(optout, "_ghl", return_value=NS(set_dnd=lambda *a, **k: {}, get_contact=lambda c: {"contact": {"id": c}},
+                                                       search_contact_by_phone=lambda p: None)):
+        r = _sync(session, settings, ghl)
+    assert r["deliveries"] >= 3 and r["replies"] >= 2          # forward and history passes may both see the same conversation
     rows = dict(session.execute(__import__("sqlalchemy").text(
         "SELECT external_id, outcome FROM channel_events WHERE kind='delivery'")).fetchall())
     assert rows == {"m1": "delivered", "m2": "failed", "m3": "delivered"}
@@ -260,8 +264,10 @@ def test_calls_are_judged_from_call_events_logged_after_the_call(session, settin
                                 VALUES (:i,:i,:c,'outbound',:r,:d,:i,:a)"""),
                         {"i": str(uuid.uuid4()), "c": contact, "r": reason, "d": dur, "a": at})
 
-    launch("a", 120); log("a", 105, "voicemail", 30)             # delivered
-    launch("b", 120); log("b", 105, "recovery_unresolved", 0)    # failed
+    launch("a", 120)
+    log("a", 105, "voicemail", 30)                               # delivered
+    launch("b", 120)
+    log("b", 105, "recovery_unresolved", 0)                      # failed
     launch("c", 120)                                             # old, no log -> unconfirmed
     launch("d", 10)                                              # log not due yet -> neither
     session.commit()
@@ -314,3 +320,33 @@ def test_silence_check_runs_at_most_hourly_and_muting_silences_a_channel(session
         assert svc.run_silence_check(session, settings, NOW + timedelta(minutes=10)) == {}      # hourly throttle
     session.execute(text("DELETE FROM app_config WHERE key='channel_silence_muted'"))
     session.commit()
+
+
+@db
+def test_fresh_deliveries_are_recorded_even_while_the_history_load_is_unfinished(session, settings, monkeypatch):
+    from app.services import delivery_sync
+
+    monkeypatch.setattr(delivery_sync, "MAX_CONVERSATIONS_PER_RUN", 0)          # backfill gets no budget this run
+    t = NOW - timedelta(minutes=5)
+    ghl = FakeGHL([_conv("c1", "ct1", t)], {"c1": [_msg("fresh", "TYPE_SMS", "outbound", "delivered", t)]})
+    r = _sync(session, settings, ghl)
+    assert r["deliveries"] == 1
+    assert _count(session, "SELECT outcome FROM channel_events WHERE external_id='fresh'") == "delivered"
+    assert not delivery_sync._state(session).get("backfill_done")                # history load still pending
+
+
+def test_detail_adds_phone_and_email_for_ghl_lookups():
+    from app.services.channel_health import _enrich_contacts
+
+    class G:
+        def get_contact(self, cid):
+            return {"contact": {"phone": "+15551230000", "email": "lead@example.test"}} if cid == "ghl-id-1" else {}
+
+    items = [{"contact_id": "ghl-id-1"}, {"contact_id": "+15559990000"}, {"contact_id": "unknown"}]
+    _enrich_contacts(items, G())
+    assert (items[0]["phone"], items[0]["email"]) == ("+15551230000", "lead@example.test")
+    assert (items[1]["phone"], items[1]["email"]) == ("+15559990000", "")          # already a phone number
+    assert (items[2]["phone"], items[2]["email"]) == ("", "")
+    items2 = [{"contact_id": "x"}]
+    _enrich_contacts(items2, None)                                                 # no client: ids only, no crash
+    assert items2[0]["email"] == ""
