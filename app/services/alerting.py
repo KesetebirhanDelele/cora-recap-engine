@@ -201,7 +201,8 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     try:
         from app.core.app_config import get_str as _gs
         if _gs("optout_reconcile_enabled", session, settings, "true").lower() in ("true", "1", "yes"):
-            from app.services.optout import reconcile_step
+            from app.services.optout import reconcile_step, retry_failed
+            retry_failed(session, settings)
             reconcile_step(session, settings, limit=15, budget_seconds=12.0)
     except Exception as exc:
         session.rollback()

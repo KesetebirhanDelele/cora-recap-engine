@@ -158,17 +158,29 @@ def apply_dnd(session: Session, settings: Any, ghl: Any, *, contact_id: str, sco
                     confidence=confidence, decided_by=decided_by, status="shadow", phrase=phrase, excerpt=excerpt,
                     reason="GHL writes are off (shadow mode)")
         return "shadow"
+    attempts, prior_state = 0, None
+    if action_id:
+        row = session.execute(text("SELECT previous_state FROM optout_actions WHERE id = :i"), {"i": action_id}).fetchone()
+        prior_state = (json.loads(row[0]) if isinstance(row[0], str) else row[0]) if row and row[0] else None
+        attempts = int((prior_state or {}).get("attempts", 0))
+    operator_click = decided_by not in ("auto", "llm")
     try:
         real_id, rec = (contact_id, record) if record is not None else _resolve(ghl, contact_id)
         before = dnd_channels(rec)
+        todo = set(scope) - before          # GHL refuses to overwrite a PERMANENT DND (e.g. an earlier STOP): only add what is missing
         previous = {"ghl_dnd": sorted(before), "ghl_contact_id": real_id}
-        ghl.set_dnd(real_id, scope, active=True, reason=f"Lead opt-out ({source}): {phrase}", mode_flags=flags)
+        if todo:
+            ghl.set_dnd(real_id, todo, active=True, reason=f"Lead opt-out ({source}): {phrase}", mode_flags=flags)
         previous["lead_state"] = _stop_cora_outreach(session, settings, real_id, set(scope), oo.DND)
-        status, reason = "applied", ""
+        status, reason = "applied", ("" if todo else "already DND in GHL for every requested channel")
     except Exception as exc:
         logger.error("optout: apply failed | contact=%s: %s", contact_id, exc)
-        status, reason, previous = "failed", str(exc)[:280], None
         real_id = contact_id
+        reason = ("apply failed: " + str(exc))[:280]
+        if operator_click:
+            status, previous = "review", prior_state            # stays on the tile with the reason; not lost
+        else:
+            status, previous = "failed", {"attempts": attempts + 1}   # retried by retry_failed (max 5)
     if action_id:
         session.execute(text("""UPDATE optout_actions SET status=:st, scope=:sc, decided_by=:by, reason=:rs, resolved_at=:n,
                                 previous_state=CAST(:pv AS jsonb), contact_id=:c WHERE id=:id"""),
@@ -244,6 +256,7 @@ def _handle_reply(session: Session, settings: Any, ghl: Any, channel: str, messa
     ex = _excerpt(cleaned)
     if cl.kind == oo.NONE:
         return "none"
+    ghl = ghl or _ghl(settings)        # the contacts-scoped client: the conversations token cannot edit contacts
     if cl.kind == oo.DND and cl.confidence == oo.HIGH:
         return apply_dnd(session, settings, ghl, contact_id=contact_id, scope=cl.scope, source=channel + "_reply",
                          external_id=ext, phrase=cl.phrase, excerpt=ex)
@@ -307,6 +320,23 @@ def _handle_call(session: Session, settings: Any, contact_id: str, call_event_id
              phrase="not found in the lead's own words", excerpt=_excerpt(oo.human_lines(transcript)[-300:]),
              reason="do-not-call detected on the call but not in the lead's lines")
     return "review"
+
+
+def retry_failed(session: Session, settings: Any, ghl: Any | None = None, limit: int = 5) -> int:
+    """Re-apply automatic opt-outs whose GHL write failed (max 5 attempts each). Returns how many succeeded."""
+    rows = session.execute(text("""
+        SELECT id, contact_id, scope, source, phrase, excerpt, decided_by FROM optout_actions
+        WHERE status = 'failed' AND kind = 'dnd' AND source <> 'reconcile'
+          AND coalesce((previous_state->>'attempts')::int, 0) < 5
+        ORDER BY created_at LIMIT :n"""), {"n": limit}).fetchall()
+    ghl = ghl or _ghl(settings)
+    fixed = 0
+    for rid, cid, scope, source, phrase, excerpt, by in rows:
+        st = apply_dnd(session, settings, ghl, contact_id=cid, scope=_scope_set(scope), source=source, external_id=None,
+                       phrase=phrase or "", excerpt=excerpt or "", decided_by=by or "auto", action_id=rid)
+        fixed += 1 if st == "applied" else 0
+    session.commit()
+    return fixed
 
 
 def reconcile_step(session: Session, settings: Any, ghl: Any | None = None, limit: int = 20,
@@ -413,7 +443,8 @@ def apply_batch(session: Session, settings: Any, operator: str, source: str = "r
                 budget_seconds: float = 18.0, max_items: int = 15) -> dict[str, int]:
     """Apply the proposed DND for waiting review rows of one source (the tile loops until remaining == 0)."""
     ids = [r[0] for r in session.execute(text(
-        "SELECT id FROM optout_actions WHERE status='review' AND source=:s AND kind='dnd' ORDER BY created_at LIMIT :n"),
+        "SELECT id FROM optout_actions WHERE status='review' AND source=:s AND kind='dnd' "
+        "AND coalesce(reason,'') NOT LIKE 'apply failed:%' ORDER BY created_at LIMIT :n"),
         {"s": source, "n": max_items}).fetchall()]
     ghl = _ghl(settings)
     started, done, failed = _monotonic(), 0, 0
@@ -424,12 +455,13 @@ def apply_batch(session: Session, settings: Any, operator: str, source: str = "r
             st = review_apply(session, settings, i, operator, ghl=ghl)
             session.commit()
             done += 1 if st in ("applied", "shadow") else 0
-            failed += 1 if st == "failed" else 0
+            failed += 1 if st in ("failed", "review") else 0
         except Exception as exc:
             session.rollback()
             failed += 1
             logger.error("optout batch item failed: %s", exc)
-    remaining = session.execute(text("SELECT count(*) FROM optout_actions WHERE status='review' AND source=:s AND kind='dnd'"),
+    remaining = session.execute(text("SELECT count(*) FROM optout_actions WHERE status='review' AND source=:s AND kind='dnd' "
+                                     "AND coalesce(reason,'') NOT LIKE 'apply failed:%'"),
                                 {"s": source}).scalar() or 0
     return {"applied": done, "failed": failed, "remaining": int(remaining)}
 

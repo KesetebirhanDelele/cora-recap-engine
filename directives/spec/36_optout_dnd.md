@@ -32,6 +32,11 @@ Counters (waiting / applied / already DND / still checking); **Needs your decisi
 ## app_config
 `optout_llm_enabled` (true) · `optout_reconcile_enabled` (true). Shadow mode (GHL writes off) records `shadow` rows and writes nothing.
 
+## Fixes found live (2026-10-02)
+* GHL refuses to overwrite a **permanent** DND (what an earlier STOP leaves): `Not authorized to update permanent dnd setting for SMS`. Cora now writes only the channels that are not already DND (nothing at all when everything is covered).
+* The reply sync passed the conversations-scoped token to the DND write (`The token is not authorized for this scope`). The write now always uses the contacts token.
+* Automatic writes that fail are retried every metrics cycle (max 5 attempts, `retry_failed`); an operator click that fails stays on the tile as `apply failed: ...` and is excluded from "Apply to all".
+
 ## Limits
 * Voicemail messages are not transcribed for opt-outs (calls only when answered, as before).
 * Cora's call regex still runs on the whole transcript; DND is applied only when the wording is in the lead's own lines, else it goes to review.

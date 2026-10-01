@@ -219,7 +219,7 @@ def test_review_apply_with_chosen_scope_dismiss_and_undo(session):
     ids = [r[0] for r in session.execute(text("SELECT id FROM optout_actions WHERE status='review' ORDER BY contact_id")).fetchall()]
     assert len(ids) == 2
     assert optout.review_apply(session, SETTINGS, ids[0], "kes", {"sms", "email"}, ghl=ghl) == "applied"
-    assert ghl.dnd_calls[-1] == ("r1", {"sms", "email"}, True)
+    assert ghl.dnd_calls[-1] == ("r1", {"sms"}, True)               # Email DND already on: only the missing channel is written
     optout.review_dismiss(session, ids[1], "kes")
     assert [r[3] for r in _rows(session)] == ["applied", "dismissed"]
     with pytest.raises(ValueError):
@@ -299,3 +299,65 @@ def test_cora_block_reason_covers_flags_stop_replies_and_pending_review(session)
         optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg("enough already"), contact_id="waiting")
     assert "awaiting review" in optout.cora_block_reason(session, ["waiting"], "email")
     assert optout.cora_block_reason(session, ["nobody"], "sms") is None
+
+
+# ── regressions found live 2026-10-02 ──
+@db
+def test_permanent_dnd_is_never_overwritten_only_missing_channels_are_added(session):
+    from app.services import optout
+
+    ghl = FakeGHL({"p1": {"id": "p1", "dnd": False, "dndSettings": {"SMS": {"status": "permanent"}}}})
+    assert optout.handle_reply(session, SETTINGS, ghl, channel="email", message=_msg("please unsubscribe me"),
+                               contact_id="p1") == "applied"
+    assert ghl.dnd_calls == [("p1", {"call", "email"}, True)]          # SMS (permanent) untouched
+    ghl2 = FakeGHL({"p2": {"id": "p2", "dnd": True}})
+    assert optout.handle_reply(session, SETTINGS, ghl2, channel="email", message=_msg("remove me"), contact_id="p2") == "applied"
+    assert ghl2.dnd_calls == []                                        # already DND everywhere: nothing written
+    assert [r[3] for r in _rows(session)] == ["applied", "applied"]
+
+
+class FailingGHL(FakeGHL):
+    fail = True
+
+    def set_dnd(self, *a, **k):
+        if self.fail:
+            raise RuntimeError("GHL HTTP error: 401 token is not authorized for this scope")
+        return super().set_dnd(*a, **k)
+
+
+@db
+def test_a_failed_automatic_write_is_retried_and_capped(session):
+    from app.services import optout
+
+    ghl = FailingGHL()
+    assert optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("STOP", "f1"), contact_id="f1") == "failed"
+    assert _rows(session)[0][3] == "failed"
+    assert optout.retry_failed(session, SETTINGS, ghl) == 0                    # still failing: attempt 2
+    ghl.fail = False
+    assert optout.retry_failed(session, SETTINGS, ghl) == 1
+    assert _rows(session)[0][3] == "applied" and ghl.dnd_calls == [("f1", {"sms"}, True)]
+    ghl.fail = True
+    optout.handle_reply(session, SETTINGS, ghl, channel="sms", message=_msg("STOP", "f2"), contact_id="f2")
+    for _ in range(8):
+        optout.retry_failed(session, SETTINGS, ghl)
+    attempts = session.execute(text("SELECT previous_state->>'attempts' FROM optout_actions WHERE external_id='f2'")).scalar()
+    assert attempts == "5"                                                     # gives up after 5
+
+
+@db
+def test_operator_apply_that_fails_stays_visible_on_the_tile_and_out_of_the_batch(session):
+    from app.services import optout
+
+    _lead(session, "o1", do_not_call=True)
+    ghl = FakeGHL()
+    optout.reconcile_step(session, SETTINGS, ghl, limit=5)
+    [rid] = [r[0] for r in session.execute(text("SELECT id FROM optout_actions WHERE status='review'")).fetchall()]
+    bad = FailingGHL()
+    assert optout.review_apply(session, SETTINGS, rid, "kes", ghl=bad) == "review"
+    row = session.execute(text("SELECT status, reason FROM optout_actions WHERE id=:i"), {"i": rid}).fetchone()
+    assert row[0] == "review" and row[1].startswith("apply failed:")
+    with patch.object(optout, "_ghl", return_value=bad):
+        out = optout.apply_batch(session, SETTINGS, "kes")
+    assert out["remaining"] == 0                                               # failed item is not re-tried forever
+    bad.fail = False
+    assert optout.review_apply(session, SETTINGS, rid, "kes", ghl=bad) == "applied"

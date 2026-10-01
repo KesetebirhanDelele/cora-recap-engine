@@ -116,10 +116,12 @@ def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: 
             {"id": str(uuid.uuid4()), "c": contact_id, "ch": channel, "b": (m.get("body") or "")[:2000],
              "at": at, "x": m["id"]})
         # Opt-out wording in the reply -> GHL DND by the lead's own words (spec/36). Never breaks the sync.
-        if settings is not None and ghl is not None:
+        if settings is not None:
             from app.services import optout
 
-            optout.handle_reply(session, settings, ghl, channel=channel, message=m, contact_id=contact_id,
+            # ghl=None on purpose: `ghl` here is the conversations-scoped token (read-only for contacts); the DND
+            # write must use the contacts token, which optout builds itself.
+            optout.handle_reply(session, settings, None, channel=channel, message=m, contact_id=contact_id,
                                 llm_budget=llm_budget)
 
 
