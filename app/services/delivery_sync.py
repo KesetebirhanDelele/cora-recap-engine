@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 TYPE_MAP = {"TYPE_SMS": "sms", "TYPE_EMAIL": "email", "TYPE_CALL": "call", "TYPE_IVR_CALL": "call"}
 SYNC_KEY = "delivery_sync"
-RUN_BUDGET_SECONDS = 20.0
+RUN_BUDGET_SECONDS = 24.0
 MAX_CONVERSATIONS_PER_RUN = 80
 PAGE = 50
 _monotonic = time.monotonic
@@ -96,13 +96,6 @@ def _upsert_event(session: Session, *, kind: str, channel: str, contact_id: str,
     return (res.rowcount or 0) > 0
 
 
-def _is_final(session: Session, channel: str, external_id: str) -> bool:
-    row = session.execute(
-        text("SELECT outcome FROM channel_events WHERE kind='delivery' AND channel=:c AND external_id=:x"),
-        {"c": channel, "x": external_id}).fetchone()
-    return bool(row and row[0] in (ch.DELIVERED, ch.FAILED))
-
-
 def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: datetime, now: datetime,
                   ghl: Any = None, settings: Any = None, llm_budget: list[int] | None = None) -> None:
     inserted = _upsert_event(
@@ -125,10 +118,57 @@ def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: 
                                 llm_budget=llm_budget)
 
 
-def _process_conversation(session: Session, ghl: Any, conv: dict, since: datetime, now: datetime,
-                          stats: dict, deadline: float, settings: Any = None,
+def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) -> tuple[dict, dict, set]:
+    """Fetch the message lists of a page of conversations - and the provider status of every email that is not yet
+    final - in parallel (the GHL calls are the slow part; a day's call logging makes hundreds of conversations
+    active). Returns ({conv_id: messages}, {message_id: email_status}, {final email message ids})."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def msgs_of(conv: dict) -> list[dict]:
+        try:
+            return ghl.get_conversation_messages(conv["id"], limit=30)
+        except Exception as exc:
+            logger.warning("delivery_sync: messages fetch failed: %s", exc)
+            return []
+
+    wanted = [c for c in convs if (_parse_ts(c.get("lastMessageDate")) or since) >= since]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        lists = list(pool.map(msgs_of, wanted))
+    by_conv = {c["id"]: m for c, m in zip(wanted, lists)}
+
+    emails: dict[str, str] = {}
+    for msgs in by_conv.values():
+        for m in msgs:
+            at = _parse_ts(m.get("dateAdded"))
+            if m.get("messageType") == "TYPE_EMAIL" and (m.get("direction") or "").lower() == "outbound" \
+                    and m.get("id") and at is not None and at >= since:
+                ids = (((m.get("meta") or {}).get("email") or {}).get("messageIds")) or []
+                if ids:
+                    emails[m["id"]] = ids[0]
+    final: set[str] = set()
+    if emails:
+        final = {r[0] for r in session.execute(
+            text("SELECT external_id FROM channel_events WHERE kind='delivery' AND channel='email' "
+                 "AND outcome IN ('delivered','failed') AND external_id = ANY(:ids)"), {"ids": list(emails)}).fetchall()}
+    todo = {mid: pid for mid, pid in emails.items() if mid not in final}
+
+    def status_of(item: tuple[str, str]) -> tuple[str, str | None]:
+        try:
+            return item[0], ghl.get_email_status(item[1])
+        except Exception as exc:
+            logger.warning("delivery_sync: email status lookup failed: %s", exc)
+            return item[0], None
+
+    statuses: dict[str, str | None] = {}
+    if todo:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            statuses = dict(pool.map(status_of, todo.items()))
+    return by_conv, statuses, final
+
+
+def _process_conversation(session: Session, conv: dict, msgs: list[dict], email_status: dict, final_emails: set,
+                          since: datetime, now: datetime, stats: dict, settings: Any = None,
                           llm_budget: list[int] | None = None) -> None:
-    msgs = ghl.get_conversation_messages(conv["id"], limit=30)
     stats["conversations"] += 1
     contact_id = conv.get("contactId") or ""
     for m in msgs:
@@ -139,7 +179,7 @@ def _process_conversation(session: Session, ghl: Any, conv: dict, since: datetim
         cid = m.get("contactId") or contact_id
         direction = (m.get("direction") or "").lower()
         if direction == "inbound":
-            _record_reply(session, channel, m, cid, at, now, ghl, settings, llm_budget)
+            _record_reply(session, channel, m, cid, at, now, None, settings, llm_budget)
             stats["replies"] += 1
             continue
         if channel == "call" or direction != "outbound":
@@ -151,18 +191,9 @@ def _process_conversation(session: Session, ghl: Any, conv: dict, since: datetim
                           status_raw=status, outcome=ch.sms_outcome(status), error=err, event_at=at, now=now)
             stats["deliveries"] += 1
         else:                                          # email: status is behind the provider message id
-            if _is_final(session, "email", m["id"]):
+            if m["id"] in final_emails:
                 continue
-            if _monotonic() > deadline:
-                stats["out_of_time"] = True
-                continue
-            ids = (((m.get("meta") or {}).get("email") or {}).get("messageIds")) or []
-            status = None
-            if ids:
-                try:
-                    status = ghl.get_email_status(ids[0])
-                except Exception as exc:
-                    logger.warning("delivery_sync: email status lookup failed: %s", exc)
+            status = email_status.get(m["id"])
             _upsert_event(session, kind="delivery", channel="email", contact_id=cid, external_id=m["id"],
                           status_raw=status, outcome=ch.email_outcome(status), error=None, event_at=at, now=now)
             stats["deliveries"] += 1
@@ -181,6 +212,7 @@ def _walk(session: Session, ghl: Any, settings: Any, *, start_after: int | None,
         convs = ghl.search_conversations(sort_by="last_message_date", sort="desc", start_after_date=cursor, limit=PAGE)
         if not convs:
             return True, cursor_done, newest
+        by_conv, email_status, final_emails = _prefetch(session, ghl, convs, cutoff)
         for conv in convs:
             lm = _parse_ts(conv.get("lastMessageDate"))
             if lm is not None and lm < cutoff:
@@ -188,7 +220,8 @@ def _walk(session: Session, ghl: Any, settings: Any, *, start_after: int | None,
             if lm is not None and (newest is None or lm > newest):
                 newest = lm
             try:
-                _process_conversation(session, ghl, conv, cutoff, now, stats, deadline, settings, llm_budget)
+                _process_conversation(session, conv, by_conv.get(conv["id"], []), email_status, final_emails, cutoff,
+                                      now, stats, settings, llm_budget)
             except Exception as exc:
                 stats["errors"] += 1
                 logger.warning("delivery_sync: conversation failed: %s", exc)
@@ -239,8 +272,9 @@ def sync(session: Session, settings: Any, now: datetime | None = None, force: bo
     try:
         # 1. forward: always first, capped so a burst cannot eat the whole budget
         done_fwd, _, newest = _walk(session, ghl, settings, start_after=None, cutoff=fwd_cutoff, now=now, stats=stats,
-                                    deadline=started + RUN_BUDGET_SECONDS * 0.6, max_convs=60, llm_budget=llm_budget)
+                                    deadline=started + RUN_BUDGET_SECONDS * 0.6, max_convs=400, llm_budget=llm_budget)
         session.commit()
+        stats["forward_complete"] = done_fwd
         if done_fwd:                    # only advance when everything newer than the cutoff was handled
             new_watermark = max(x for x in (newest, watermark, now - timedelta(minutes=1)) if x is not None)
         # 2. backfill with whatever budget is left
