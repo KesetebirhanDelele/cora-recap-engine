@@ -450,8 +450,10 @@ pytest tests/unit/
 # Run with coverage
 pytest tests/unit/ --cov=app --cov-report=term-missing
 
-# Wrong Date Monitor DB tests (opt-in; needs a THROWAWAY Postgres with migrations applied — never production)
-WRONG_DATE_TEST_DATABASE_URL=postgresql://postgres@localhost:55432/cora_test pytest tests/unit/test_wrong_date_monitor.py
+# Wrong Date Monitor DB-backed tests (opt-in; needs a THROWAWAY Postgres with `alembic upgrade head` applied — never production).
+# Without the variable they are skipped; the pure-logic tests (guard, schedule_context, sms_eligibility) always run.
+WRONG_DATE_TEST_DATABASE_URL=postgresql://postgres@localhost:55432/cora_test \n  pytest tests/unit/test_wrong_date_monitor.py tests/unit/test_wrong_date_bulk.py tests/unit/test_wrong_date_safeguards.py \n         tests/unit/test_wrong_date_channels.py tests/unit/test_date_expiry.py
+# Runbook, config keys and delivery details for this feature: directives/spec/32_wrong_date_monitor.md
 
 # Lint
 ruff check .

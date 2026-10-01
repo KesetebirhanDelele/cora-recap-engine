@@ -306,4 +306,6 @@ These are read-only in the dashboard. Values are configured in `.env` and loaded
 
 ### 12. Wrong Date Monitor (`/wrong-dates`)
 
-**Purpose**: Lists messages that told a lead a next-class-start or next-open-house date that doesn't match Settings; send a correction SMS or dismiss. The home-page tile badge is the open count. Full behavior: `directives/spec/32_wrong_date_monitor.md`.
+**Purpose**: Lists messages that told a lead a next-class-start or next-open-house date that doesn't match Settings. Operator actions: **Send correction email** (per lead / to all), **Dismiss**, **Dismiss all older incidents**, and **Send test email / SMS to me** (own contact only). Corrections go by email; SMS corrections exist but are switched off. The page shows Open now, Closed (24h) split corrected/dismissed, New (24h) and Emails sent today (cap 100). The home-page tile shows "Open N · Closed M in the last 24h" and a badge with the open count.
+
+**Dates**: when the class-start or open-house date passes, Settings clears it automatically (the day after) and messages invite leads to start free at www.myfreeaiclass.com. Full behavior, safeguards, config keys and runbook: `directives/spec/32_wrong_date_monitor.md`.

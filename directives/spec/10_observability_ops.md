@@ -33,6 +33,8 @@
 | `exception_spike` | `open_exception_count` | 10 open exceptions | warning |
 | `worker_offline` | `active_workers` — RQ workers connected | 0 | critical |
 | `ghl_auth_failure` | `ghl_auth_failure` metric via health check | any failure | critical |
+| `wrong_date_message` | a sent SMS/email told a lead a class-start / open-house date that differs from Settings (one email per message; one aggregate active row while any incident is open; see spec/32) | any | warning |
+| `date_setting_expired` | `next_class_start` / `next_open_house_date` passed and was cleared automatically (one email per clear; see spec/32) | any | warning |
 
 **Important:** `queue_lag_seconds` is the age of the *oldest* past-due pending job
 (`MIN(run_at)` for `status='pending' AND run_at <= NOW()`). It is **not** the backlog count
