@@ -2369,3 +2369,6 @@ Merged bulk-actions branch (`a143779`), redeployed Hetzner, no migration. Health
 - GHL conversations: Cora's "SMS" follow-ups are delivered as emails (Ticket #2 workflow). So corrections go by EMAIL; SMS corrections gated off (`sms_corrections_enabled`), SMS test-to-self kept to confirm the channel when restored.
 - Added: channel-aware send/bulk/test, per-channel ledgers + caps (email 100/day, 3 s), email-specific DND/no-address/window rules, tile email buttons + test buttons. Migration 0025 reopens the 219 never-delivered "corrected" incidents.
 - Before first use after deploy: INSERT app_config `correction_test_contacts` (Kes's email) via SQL - deliberately NOT in the repo.
+
+### Deployed (2026-10-01)
+Merged `feat/date-expiry-and-metrics` (`f2f9670`) -> `feat/ghl-call-conversation-sync`, redeployed Hetzner (migration 0025 applied; all services up, API + Dashboard health ok). 219 incidents / 137 leads reopened, 0 corrections sent. `correction_test_contacts` set via SQL (not in repo). SMS corrections remain off. SMS workflow verified end-to-end by a live API test to the operator contact (trigger had been watching the wrong field).
