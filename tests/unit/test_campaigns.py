@@ -612,3 +612,34 @@ def test_enter_campaign_two_leads_same_moment_land_in_different_buckets(session)
     ).one()
 
     assert job_a.run_at != job_b.run_at
+
+
+def test_enter_campaign_prefers_phone_shaped_contact_id_over_a_corrupted_normalized_phone(session):
+    """
+    Regression (2026-10-02): a lead whose normalized_phone held Cora's own agent line
+    (+19729921028) was scheduled to dial that number (the blocked-number guard cancelled it and raised a
+    critical alert). A phone-shaped contact_id is the guaranteed-dialable value and must win.
+    """
+    now = datetime.now(tz=timezone.utc)
+    lead = LeadState(
+        id=str(uuid.uuid4()),
+        contact_id="+15550007777",
+        normalized_phone="+19729921028",
+        status="nurture",
+        campaign_name=None,
+        ai_campaign_value="2",
+        version=0,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(lead)
+    session.flush()
+
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+
+    jobs = session.scalars(
+        select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id,
+                                   ScheduledJob.job_type == "launch_outbound_call")
+    ).all()
+    assert len(jobs) == 1
+    assert jobs[0].payload_json["phone_number"] == "+15550007777"

@@ -215,14 +215,21 @@ def enter_campaign(
     session.refresh(lead)
 
     # 4. Schedule first outbound call (idempotent)
-    # Prefer normalized_phone, but fall back to contact_id when it's
-    # phone-shaped — contact_id is the one field in this data model with a
+    # A phone-shaped contact_id is the one field in this data model with a
     # guaranteed dialable-number invariant (see call_intake.py's
-    # phone-derived-contact_id convention). normalized_phone can be missing
-    # or, historically, corrupted by an inbound-call fallback bug (spec/24).
-    phone = lead.normalized_phone or (
-        lead.contact_id if lead.contact_id and lead.contact_id.startswith("+") else ""
-    )
+    # phone-derived-contact_id convention), so it wins. normalized_phone can be
+    # missing or, historically, corrupted by an inbound-call fallback bug
+    # (spec/24) that wrote Cora's own agent line into it - that made a lead
+    # dial the agent number (caught by the blocked-number guard, 2026-10-02).
+    # It is only used when contact_id is not a phone number (e.g. a GHL id).
+    cid_phone = lead.contact_id if lead.contact_id and lead.contact_id.startswith("+") else ""
+    phone = cid_phone or lead.normalized_phone or ""
+    if cid_phone and lead.normalized_phone and lead.normalized_phone != cid_phone:
+        logger.warning(
+            "enter_campaign: normalized_phone differs from phone-shaped contact_id - dialing contact_id | "
+            "contact_id=%s normalized_phone=%s",
+            lead.contact_id, lead.normalized_phone,
+        )
     if not phone:
         logger.warning(
             "enter_campaign: no phone number — outbound call not scheduled | "
