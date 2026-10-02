@@ -2550,3 +2550,10 @@ there was no GHL skill. `.env.example` was also missing 14 GHL settings (Ticket 
 `.claude/skills/ghl-integration/{SKILL.md,KIT.md}` (copy the folder to the other repo's `.claude/skills/`), the missing vars in `.env.example`, and pointer notes at the top of the two older docs.
 GHL Voice AI section of the kit is explicitly UNVERIFIED (call start, result delivery, outcome mapping, DND) - needs live-account/docs research and its own spec before coding.
 - 2026-10-02 (later): the GHL skill/kit was made project-neutral at Kes's request - no cadences, timings, caps, wording, offer, campaign names, field names or file paths from this project; only API behaviour, env variables, safety standards and the unverified Voice AI research list. Project-specific rules stay in this repo's specs (33-38) and runtime config.
+
+### 2026-10-02 - "blocked dial number" critical alert: bad normalized_phone (fixed, deployed `a9982d8`)
+Alert for contact +12563486405 (natasha bryant, 11:40 CT): campaign entry scheduled a call to +19729921028 (Cora's own Synthflow line) because the lead's `normalized_phone`
+held the agent line (legacy inbound-call bug, spec/24); `BLOCKED_DIAL_NUMBERS` guard cancelled the job - no call placed. 5 phone-keyed leads had the same corruption (+12145641367,
++12563486405, +13345408915, +14432783125, +16153199706): `normalized_phone` reset to `contact_id` (audit_log `normalized_phone_repair`), alert resolved. Code: `enter_campaign` now dials
+a phone-shaped `contact_id` first and only uses `normalized_phone` when contact_id is not a phone (regression test added). Left alone: +12183102142 (normalized +15134963210, closed lead) and the
+2 rows where the agent line is itself the contact_id (blocked by design). Also noted: this lead is tagged do-not-contact in GHL yet was enrolled - the GHL-tag call gate is still unbuilt.
