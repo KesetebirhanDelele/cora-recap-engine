@@ -2549,3 +2549,4 @@ predate DND (`set_dnd`), delivery and email-status reads, the field-write-trigge
 there was no GHL skill. `.env.example` was also missing 14 GHL settings (Ticket 2/3/4, Message, history, OAuth app, independent write gates). Added:
 `.claude/skills/ghl-integration/{SKILL.md,KIT.md}` (copy the folder to the other repo's `.claude/skills/`), the missing vars in `.env.example`, and pointer notes at the top of the two older docs.
 GHL Voice AI section of the kit is explicitly UNVERIFIED (call start, result delivery, outcome mapping, DND) - needs live-account/docs research and its own spec before coding.
+- 2026-10-02 (later): the GHL skill/kit was made project-neutral at Kes's request - no cadences, timings, caps, wording, offer, campaign names, field names or file paths from this project; only API behaviour, env variables, safety standards and the unverified Voice AI research list. Project-specific rules stay in this repo's specs (33-38) and runtime config.
