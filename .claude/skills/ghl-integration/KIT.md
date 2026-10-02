@@ -108,3 +108,25 @@ Output of that research should be a short spec in `directives/spec/` before code
 4. Build/copy the adapter: auth headers, retry (incl. disguised 401), shared 5/s limiter, `api_key_override`, shadow gate, label->UUID cache, `search_contact_by_phone`, `set_dnd`, `get_email_status`.
 5. Before the first live send: SMS gate + ledger, opt-out checks (flags, DND, tags), delivery-health, silence alert with headers, offer record.
 6. Write acceptance criteria and evals (happy / edge / failure / replay) per the repo's spec standard.
+
+## 10. Email and SMS components (file map and rules to port)
+Paths are in cora-recap-engine; port the logic, not the product wording.
+
+| Concern | Files | What it does / rule |
+|---|---|---|
+| When a text/email is scheduled | `app/worker/jobs/voicemail_jobs.py` (`_schedule_messaging_after_voicemail`), `app/worker/jobs/channel_jobs.py` (`send_sms_job`, `send_email_job`) | One text after every missed call (delay setting `sms_followup_delay_minutes`, read through the DB-first config helper; currently 2 min after voicemail processing). Email only on the 2nd missed call, same time as the text. Max 2 calls per lead per local day. |
+| Writing the send | `app/worker/jobs/crm_jobs.py` (`update_ghl_after_vm_message`) | Resolves field labels to UUIDs, applies the opt-out block, then the SMS gate, then writes the trigger fields (SMS = Support Ticket #4; email = Ticket #2 + Message), records the hand-off, and marks the generated message `sent` / `skipped`. |
+| Generating wording | `app/core/ai_message_generator.py`, `app/prompts/families/vm_sms_notice.py` (SMS), `app/prompts/families/vm_followup_generator.py` (email only), `app/core/offer.py` | SMS = a short missed-call notice, not marketing. Email = the program description. Facts come from the offer record; forbidden retired-course terms rejected, retry once then a fixed fallback. |
+| Text gate and budget | `app/core/sms_gate.py` (pure), `app/services/sms_ledger.py`, migration `0026_sms_send_ledger.py`, spec `34` | GSM-7 / UCS-2 segment counting; `normalize_sms` turns curly quotes into plain ones (curly apostrophes made 28% of texts 3 segments). Rules: <=1 segment preferred, 2 max; Pacific-day budget hard max 999 segments; 5 s gap; 12 per minute; TCPA 8-21 in the lead's timezone; overflow deferred to the next legal time. Every text gets a ledger row. |
+| Text vs email routing | `app/core/followup_routing.py`, `app/core/sms_links.py`, `app/core/sms_eligibility.py` | A follow-up written as a text that carries a link is delivered as an **email** instead. Default allow-list of link domains in texts is **empty** (`sms_allowed_link_domains` in config) because of carrier registration. Eligibility blocks on GHL DND / opt-out tags / your own flags, holds outside hours or after a reply. |
+| Required text footer | `ai_message_generator.py` | End every text with "Text STOP to stop alerts". |
+| Email specifics | `vm_followup_generator.py`, HTML body + subject fields | HTML body; GHL adds the unsubscribe footer. GHL logs your own outbound emails as inbound, so filter echoes and the unsubscribe boilerplate before reading replies for opt-outs. Contacts with no email address are "no email on file", not failures. |
+| Delivery tracking | `app/core/channel_health.py` (pure), `app/services/channel_health.py`, `app/services/delivery_sync.py`, migration `0027_channel_events.py`, spec `35` | `channel_events` (hand-off / delivery / reply). Forward-first resumable sync, throttled to 5 GHL calls/s. Silence alert, per channel, hourly. |
+| Opt-outs | `app/core/optout.py`, `app/services/optout.py`, migration `0028_optout_actions.py`, spec `36` | Wording -> scope (call / sms / email / all), LLM judge for unclear, review queue, reconcile against GHL, read-back verification. |
+| Corrections to leads | `app/services/wrong_date_monitor.py` | Example of a gated, idempotent outbound path using email and text with eligibility checks. |
+
+Carrier limits (**verify in the Twilio console and campaign registration; not confirmed here**): a sole-proprietor campaign is reported to allow about 15 texts a minute on AT&T and about
+1,000 segments a day to T-Mobile; the 999 hard cap above is the conservative setting. You cannot see a recipient's carrier at send time without a paid lookup.
+
+Content standards for any outbound text or email: only the current offer is named; no retired-course terms; no marketing in a notification text; no links in texts unless allow-listed;
+no word TEST in anything real; every message traceable to a ledger or hand-off row.
