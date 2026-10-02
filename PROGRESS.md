@@ -2492,3 +2492,14 @@ Three review rows (bare numbers 33569149532 / 31960551778 / 36544831645: +33, +3
 
 ### 2026-10-01 (evening) — "queue lag 1001 s / 1 stuck job" investigated: duplicate quality-scan chains
 Not a stuck job: the only overdue jobs were `staff_call_quality_scan` (isolated queue/worker, 4-12 min per run, avg 258 s over 206 runs). Cause: each scan reschedules itself and every worker start enqueued ANOTHER scan if none was `pending` (a running one was ignored), so each of today's ~12 deploys could add a permanent extra chain (3 existed); with one worker, extra chains sit past-due and the lag metric (oldest overdue pending job, all types) tripped the 300 s alert (9 times in 24 h, each self-healing in 2-5 min). Fixed + deployed: (1) startup check and `_reschedule` both refuse to create a second chain; (2) the surplus pending scan was cancelled (audit_log `collapse_duplicate_scan_chain`); (3) `queue_lag_seconds`, `stuck_pending_count` and the Queue Health stuck list exclude the isolated batch queue; (4) new alert `staff_quality_scan_stale` (warning): scan enabled and no scan completed in 60 min (setting `alert_quality_scan_stale_minutes`) and none running with a live lease. Tests: tests/unit/test_batch_queue_health.py (5).
+
+### 2026-10-02 - missed-call text delay was 2 min, not 30 (fixed, deployed)
+Hourly audit found missed-call texts going out ~2 min after voicemail processing (17-19 min after the call), not +30 min (spec/33).
+Cause: server `.env` has `SMS_FOLLOWUP_DELAY_MINUTES=2` (overrides the code default 30) and `voicemail_jobs.py` read the Settings
+object directly, so the Settings-page value (`app_config.sms_followup_delay_minutes=30`) was ignored. Fix (`634357c`): both reads
+(`send_sms`, `send_email` scheduling) now use `get_int` (app_config -> env -> 30). Regression test
+`test_sms_delay_comes_from_the_settings_page_not_a_stale_env_value`. Deployed ~15:20 UTC; verified in a worker: env 2, effective 30.
+Texts already scheduled before the deploy keep their original 2-min run time. The `.env` line was NOT edited (now harmless; remove when convenient).
+Other code that reads a Settings field directly for a key that is also on the Settings page may have the same flaw - not audited.
+Suite: 7 unit tests fail with or without this change (admin routes, ghl adapter, enrolled intent, inbound call processing) - pre-existing.
+Also drafted `directives/spec/38_offer_single_source_roadmap.md` (uncommitted, proposed; decisions D1-D5 pending Kes).
