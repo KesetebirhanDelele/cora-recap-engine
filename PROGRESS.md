@@ -2542,3 +2542,10 @@ note: the earlier outbound_messages status fix (`f7eddd0`) had already been depl
   15 messages (11 from the GHL app, 4 workflow). Staff calls from GHL after: 4 leads, 14 calls. Caveat: ~150 of the 187 reconciled leads share bulk-update timestamps
   (Apr 30: 23, Jun 1: 57, Jun 9: 70), so the "opt-out date" is when Cora recorded do-not-call. The Oct 1 statement that Cora showed no sends after the flag was WRONG (Cora's own table
   does not record them); corrected in the draft reply to Ali. Draft reply with samples + report created in Gmail (not sent).
+
+### 2026-10-02 - portable GHL integration kit (for the next app, GHL Voice AI instead of Synthflow)
+Assessed the existing docs: `docs/ghl-integration-pattern-reference.md` (Jul 31) and `directives/spec/16_ghl_integration.md` (Aug 26) are accurate for auth/lookup/create/retries but
+predate DND (`set_dnd`), delivery and email-status reads, the field-write-triggers-workflow send pattern, the 5 calls/s limit, message `source`, the SMS gate and the opt-out/tag rules;
+there was no GHL skill. `.env.example` was also missing 14 GHL settings (Ticket 2/3/4, Message, history, OAuth app, independent write gates). Added:
+`.claude/skills/ghl-integration/{SKILL.md,KIT.md}` (copy the folder to the other repo's `.claude/skills/`), the missing vars in `.env.example`, and pointer notes at the top of the two older docs.
+GHL Voice AI section of the kit is explicitly UNVERIFIED (call start, result delivery, outcome mapping, DND) - needs live-account/docs research and its own spec before coding.

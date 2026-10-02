@@ -1,5 +1,7 @@
 # spec/16_ghl_integration.md
 
+> **Update 2026-10-02:** this spec does not cover `set_dnd`, delivery/email-status reads, the field-write-triggers-workflow send pattern, the 5 calls/s limit, or the two-token split in full. See `.claude/skills/ghl-integration/KIT.md`, `35_delivery_health.md`, `36_optout_dnd.md`.
+
 ## Implementation status
 
 | Area | Status |

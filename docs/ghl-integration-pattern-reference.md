@@ -1,5 +1,7 @@
 # GHL (GoHighLevel) Integration Pattern — Reference for Porting
 
+> **Update 2026-10-02:** this reference predates DND, delivery tracking, rate limits, message `source`, the SMS gate and GHL Voice AI planning. See `.claude/skills/ghl-integration/KIT.md` (the portable, current kit); where they differ, the kit wins.
+
 **Purpose of this doc:** a read-only extraction of how `cora-recap-engine` talks to GoHighLevel,
 for reuse in a different codebase's campaign-email pipeline. No code in this repo was changed to
 produce this document.
