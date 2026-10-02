@@ -288,7 +288,7 @@ def test_silence_check_alerts_once_copies_ali_and_resolves(session, settings):
                     {"v": '{"first_sync_at": "2026-09-20T00:00:00+00:00", "backfill_done": true, "backfill_hours": 72}'})
     session.commit()
     sent = []
-    with patch("app.services.alerting._smtp_send", lambda s, to, subj, body, log_label, cc_addrs=None: sent.append((to, subj, cc_addrs))):
+    with patch("app.services.alerting._smtp_send", lambda s, to, subj, body, log_label, cc_addrs=None, extra_headers=None: sent.append((to, subj, cc_addrs))):
         levels = svc.run_silence_check(session, settings, NOW, force=True)
         session.commit()
         assert levels["email"] == ch.GREEN and levels["sms"] == ch.RED
@@ -438,3 +438,42 @@ def test_no_address_hand_offs_alone_never_raise_a_delivery_alert(session, settin
     session.commit()
     s = svc.channel_stats(session, settings, "email", NOW)
     assert s.sent == 0 and s.no_address == 30 and s.level != ch.RED
+
+
+def test_health_alert_carries_hidden_headers_and_a_fixed_subject_without_the_word_test():
+    from email import message_from_string
+    from types import SimpleNamespace
+
+    from app.services import alerting
+    from app.services.channel_health import alert_headers
+
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): pass
+        def login(self, *a): pass
+        def sendmail(self, frm, to, raw): sent.update(frm=frm, to=to, raw=raw)
+
+    st = SimpleNamespace(smtp_enabled=True, alert_email_from="kes@example.test", smtp_host="h", smtp_port=25,
+                         smtp_use_tls=False, smtp_username="", smtp_password="")
+    with patch("app.services.alerting.smtplib.SMTP", FakeSMTP):
+        alerting._smtp_send(st, ["to@example.test"], "[CRITICAL] Cora: SMS has gone quiet", "body", "x",
+                            cc_addrs=["cc@example.test"], extra_headers=alert_headers("sms", "active"))
+    m = message_from_string(sent["raw"])
+    assert m["X-Cora-Alert"] == "health" and m["X-Cora-Alert-Channel"] == "sms" and m["X-Cora-Alert-State"] == "active"
+    assert m["X-Priority"] == "1" and "cc@example.test" in sent["to"]
+    assert "test" not in m["Subject"].lower()
+    assert alert_headers("email", "resolved")["X-Cora-Alert-State"] == "resolved"
+
+
+def test_alert_subjects_have_fixed_shapes():
+    from app.services.channel_health import alert_subject
+
+    assert alert_subject("sms", "active") == "[CRITICAL] Cora: SMS has gone quiet"
+    assert alert_subject("email", "active") == "[CRITICAL] Cora: Email has gone quiet"
+    assert alert_subject("call", "active") == "[CRITICAL] Cora: Calls have gone quiet"
+    assert alert_subject("call", "resolved") == "[RESOLVED] Cora: Calls are delivering again"
+    assert alert_subject("sms", "resolved") == "[RESOLVED] Cora: SMS is delivering again"

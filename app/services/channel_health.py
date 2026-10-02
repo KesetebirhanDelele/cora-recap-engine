@@ -320,17 +320,35 @@ def run_silence_check(session: Session, settings: Any, now: datetime | None = No
             msg = f"{ch.LABEL[c]}: " + "; ".join(s.reasons)
             session.add(AlertEvent(id=str(uuid.uuid4()), alert_type=a_type, severity="critical", status="active",
                                    message=msg, email_sent_at=now, last_seen_at=now, created_at=now))
-            _smtp_send(settings, to, f"[CRITICAL] Cora: {ch.LABEL[c]} has gone quiet",
-                       _body(c, s, now, "ACTIVE"), log_label=a_type, cc_addrs=cc)
+            _smtp_send(settings, to, alert_subject(c, "active"),
+                       _body(c, s, now, "ACTIVE"), log_label=a_type, cc_addrs=cc,
+                       extra_headers=alert_headers(c, "active"))
         elif firing and active:
             session.execute(text("UPDATE alert_events SET last_seen_at = :n WHERE id = :i"), {"n": now, "i": active[0]})
         elif active:
             session.execute(text("UPDATE alert_events SET status='resolved', resolved_at=:n WHERE id=:i"),
                             {"n": now, "i": active[0]})
             if active[1]:
-                _smtp_send(settings, to, f"[RESOLVED] Cora: {ch.LABEL[c]} is delivering again",
-                           _body(c, s, now, "RESOLVED"), log_label=a_type, cc_addrs=cc)
+                _smtp_send(settings, to, alert_subject(c, "resolved"),
+                           _body(c, s, now, "RESOLVED"), log_label=a_type, cc_addrs=cc,
+                           extra_headers=alert_headers(c, "resolved"))
     return result
+
+
+def alert_subject(channel: str, state: str) -> str:
+    """Fixed subject shapes (rules are pinned to them): "[CRITICAL] Cora: SMS has gone quiet" /
+    "[RESOLVED] Cora: SMS is delivering again"; "Calls" is plural (have / are)."""
+    plural = channel == "call"
+    if state == "active":
+        return f"[CRITICAL] Cora: {ch.LABEL[channel]} {'have' if plural else 'has'} gone quiet"
+    return f"[RESOLVED] Cora: {ch.LABEL[channel]} {'are' if plural else 'is'} delivering again"
+
+
+def alert_headers(channel: str, state: str) -> dict[str, str]:
+    """Hidden labels on every delivery-health alert so a mail rule (e.g. Ali's inbox classifier) can recognise it
+    exactly, whatever the subject says. Keep these names stable - rules are pinned to them."""
+    return {"X-Cora-Alert": "health", "X-Cora-Alert-Channel": channel, "X-Cora-Alert-State": state,
+            "X-Priority": "1" if state == "active" else "3", "Importance": "high" if state == "active" else "normal"}
 
 
 def _body(channel: str, s: ch.ChannelStats, now: datetime, state: str) -> str:

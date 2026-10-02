@@ -1292,6 +1292,7 @@ def _smtp_send(
     body: str,
     log_label: str,
     cc_addrs: list[str] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> None:
     """
     Low-level SMTP send, shared by every alert email (generic system alerts
@@ -1319,6 +1320,8 @@ def _smtp_send(
     msg["To"] = ", ".join(to_addrs)
     if cc_addrs:
         msg["Cc"] = ", ".join(cc_addrs)
+    for _k, _v in (extra_headers or {}).items():     # hidden machine-readable labels (mail rules match these, not the subject)
+        msg[_k] = _v
     msg.attach(MIMEText(body, "plain"))
 
     # RFC 5321 envelope recipients must include Cc addresses explicitly —
