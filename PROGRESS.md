@@ -2503,3 +2503,12 @@ Texts already scheduled before the deploy keep their original 2-min run time. Th
 Other code that reads a Settings field directly for a key that is also on the Settings page may have the same flaw - not audited.
 Suite: 7 unit tests fail with or without this change (admin routes, ghl adapter, enrolled intent, inbound call processing) - pre-existing.
 Also drafted `directives/spec/38_offer_single_source_roadmap.md` (uncommitted, proposed; decisions D1-D5 pending Kes).
+
+### 2026-10-02 - SMS delay reverted to 2 minutes (Kes decision; deployed)
+Kes confirmed the intended missed-call text delay is **2 minutes** (original design, spec/00 and spec/16). The 30-minute figure in
+spec/33, campaign-steps-reference and expected_outcomes was wrong and has been corrected. Production Settings value
+`sms_followup_delay_minutes` set to 2 (via `set_config_value`, updated_by `kes-request`); code default, dashboard default and docs now 2
+(`4599a62`). The SMS prompt no longer says "about 30 minutes ago" (now "a few minutes ago"). The earlier fix (`634357c`: the Settings
+value, not a stale env value, drives the delay) stays, so the Settings page is now the one place to change it. Migration 0009 still seeds
+"30" for a fresh install; the live row is 2. Hourly audit rule "text 25-40 min after the call" is obsolete: expect ~15-20 min after the call start
+(2 min after voicemail processing, which lags the call by 10-15 min).
