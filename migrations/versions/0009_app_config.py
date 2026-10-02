@@ -117,7 +117,7 @@ _SEED: list[dict] = [
     # ── Messaging delays ───────────────────────────────────────────────────
     {
         "key": "sms_followup_delay_minutes",
-        "value": "30",
+        "value": "2",
         "description": "SMS follow-up: delay (minutes) after missed call / voicemail",
         "group": "messaging",
     },
