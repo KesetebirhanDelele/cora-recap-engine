@@ -518,3 +518,45 @@ def test_record_summary_audit_creates_row(session):
     assert row.context_json["call_event_id"] == call_event_id
     assert row.context_json["contact_id"] == contact_id
     assert row.operator_id == "system"
+
+
+# --- outbound_messages status after a real send / a deliberate non-send --------------------------------
+
+def _outbound(session, contact, channel="sms", status="pending", age_days=0):
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.outbound_message import OutboundMessage
+
+    OutboundMessage.__table__.create(bind=session.get_bind(), checkfirst=True)
+    row = OutboundMessage(id=str(uuid.uuid4()), contact_id=contact, channel=channel, body="hi", status=status,
+                          created_at=datetime.now(tz=timezone.utc) - timedelta(days=age_days))
+    session.add(row)
+    session.commit()
+    return row.id
+
+
+def test_mark_outbound_status_updates_only_the_newest_recent_pending_row(session):
+    from app.models.outbound_message import OutboundMessage
+    from app.worker.jobs.crm_jobs import _mark_outbound_status
+
+    old = _outbound(session, "+13145550100", age_days=60)          # months-old pending row must stay untouched
+    new = _outbound(session, "+13145550100")
+    other_channel = _outbound(session, "+13145550100", channel="email")
+    other_lead = _outbound(session, "+13145550199")
+    _mark_outbound_status(session, ["+13145550100", "GHLID"], "sms", "sent")
+    session.commit()
+    st = {i: session.get(OutboundMessage, i).status for i in (old, new, other_channel, other_lead)}
+    assert st == {old: "pending", new: "sent", other_channel: "pending", other_lead: "pending"}
+
+
+def test_mark_outbound_status_records_a_deliberate_non_send_and_never_raises(session):
+    from app.models.outbound_message import OutboundMessage
+    from app.worker.jobs.crm_jobs import _mark_outbound_status
+
+    rid = _outbound(session, "+13145550101")
+    _mark_outbound_status(session, ["+13145550101"], "sms", "skipped")
+    session.commit()
+    assert session.get(OutboundMessage, rid).status == "skipped"
+    _mark_outbound_status(session, [], "sms", "sent")               # nothing to match: no error
+    _mark_outbound_status(session, ["", None], "sms", "sent")

@@ -380,6 +380,30 @@ def create_crm_task(job_id: str) -> None:
 
 # ── Path 2: GHL update after VM-tier SMS/Email generation ────────────────────
 
+def _mark_outbound_status(session, contact_ids, channel: str, status: str) -> None:
+    """Record what really happened to the message Cora generated: 'sent' (handed to GHL) or 'skipped' (not sent -
+    opt-out, DND, no-send plan). Only the newest still-'pending' row for this lead and channel from the last day is
+    touched, so months-old pending rows are never rewritten. Never raises."""
+    from datetime import timedelta
+
+    from sqlalchemy import bindparam, text
+
+    ids = [c for c in dict.fromkeys(contact_ids) if c]
+    if not ids:
+        return
+    try:
+        cutoff = datetime.now(tz=timezone.utc) - timedelta(days=1)
+        row = session.execute(
+            text("""SELECT id FROM outbound_messages
+                    WHERE contact_id IN :ids AND channel = :ch AND status = 'pending' AND created_at > :cut
+                    ORDER BY created_at DESC LIMIT 1""").bindparams(bindparam("ids", expanding=True)),
+            {"ids": ids, "ch": channel, "cut": cutoff}).fetchone()
+        if row:
+            session.execute(text("UPDATE outbound_messages SET status = :s WHERE id = :i"), {"s": status, "i": row[0]})
+    except Exception as exc:                       # bookkeeping must never fail the send
+        logger.warning("update_ghl_after_vm_message: could not mark outbound message %s: %s", status, exc)
+
+
 def update_ghl_after_vm_message(job_id: str) -> None:
     """
     Write GHL contact fields after a VM-tier SMS or Email is generated.
@@ -563,6 +587,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
             # ── Pre-send SMS gate (spec/34): writing Ticket #4 SENDS the text, so every SMS is
             # checked first - TCPA hours, content rules, Pacific-day budget (max 999 segments),
             # provider pacing. A text that does not fit today moves to the next legal send time.
+            _handed_off = False
             sms_ledger_id: str | None = None
             sms_field = settings.ghl_field_support_ticket_4
             if plan.route == "sms" and not plan.sms_skip_reason and sms_field and sms_field in label_updates:
@@ -626,6 +651,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     )
                     if sent_channel:
                         record_handoff(session, sent_channel, contact_id, "crm_job")
+                        _handed_off = True
                 # Shadow mode: log what would have been written to GHL so
                 # operators can inspect the exact fields via Lead Journey.
                 if write_result.get("shadow"):
@@ -653,6 +679,13 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                         },
                     )
 
+            if flags.ghl_writes_enabled:
+                _mark_outbound_status(session, [payload.get("contact_id", ""), contact_id], channel,
+                                      "sent" if _handed_off else "skipped")
+                if not _handed_off:
+                    logger.warning(
+                        "update_ghl_after_vm_message: %s NOT sent (withheld, opted out or no-send plan) | contact_id=%s job_id=%s",
+                        channel, contact_id, job_id)
             logger.info(
                 "update_ghl_after_vm_message: done | contact_id=%s fields=%s",
                 contact_id, list(field_updates.keys()),

@@ -31,8 +31,9 @@ class OutboundMessage(Base):
     # subject: populated for email; None for SMS
     subject: Mapped[str | None] = mapped_column(String(500))
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    # status: 'pending' (generated, live mode), 'sent' (delivered), 'failed',
-    #         'shadow' (generated in shadow mode — not sent)
+    # status: 'pending' (generated, live mode, not yet written to GHL), 'sent' (handed to GHL to send),
+    #         'skipped' (generated but deliberately not sent: opt-out / DND / no-send plan),
+    #         'failed', 'shadow' (generated in shadow mode — not sent)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
