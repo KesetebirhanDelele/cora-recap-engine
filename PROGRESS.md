@@ -2532,3 +2532,13 @@ they are excluded from Sent / Not confirmed / Failed and shown as "+N no email o
 production: 8 checked, 7 no address; email last 24h = 58 sent, 55 delivered, 3 unconfirmed, 7 no email on file, green. spec/35 updated; DB tests pass.
 NOT done: Cora still generates and hands off an email for a lead with no email address (the follow-up job does not look the address up). Sequencing
 note: the earlier outbound_messages status fix (`f7eddd0`) had already been deployed when Kes asked for this to be considered "before commit and deploy".
+
+### 2026-10-02 - alert headers + lead-by-lead exposure report (Ali's follow-up), deployed `41e4024`
+- Delivery-health alerts now carry hidden headers (`X-Cora-Alert: health`, `-Channel`, `-State`, X-Priority/Importance on active) and fixed subjects
+  (`[CRITICAL] Cora: Email|SMS has gone quiet`, `Calls have`, `[RESOLVED] ... is/are delivering again`) so Ali can pin an inbox rule to the header. No "TEST" in any real alert.
+  Other system alerts (`Cora Alert: <type>`) do not carry the header yet. Sample renders: scratchpad `sample_alerts.txt`.
+- Exposure report (read-only, scratchpad `exposure.py`): 223 applied DNDs, 191 measurable (32 undated), 68 contacted after the recorded stop. Cora called again: 15 leads
+  (May 28-Jun 3; pending retries not cancelled; gate added Aug 25). Cora-style follow-up email 3-25 min after the flag: 46 leads (all Jun 9, workflow). Text/email >24 h later: 5 leads,
+  15 messages (11 from the GHL app, 4 workflow). Staff calls from GHL after: 4 leads, 14 calls. Caveat: ~150 of the 187 reconciled leads share bulk-update timestamps
+  (Apr 30: 23, Jun 1: 57, Jun 9: 70), so the "opt-out date" is when Cora recorded do-not-call. The Oct 1 statement that Cora showed no sends after the flag was WRONG (Cora's own table
+  does not record them); corrected in the draft reply to Ali. Draft reply with samples + report created in Gmail (not sent).
