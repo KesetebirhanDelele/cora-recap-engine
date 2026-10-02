@@ -2512,3 +2512,15 @@ spec/33, campaign-steps-reference and expected_outcomes was wrong and has been c
 value, not a stale env value, drives the delay) stays, so the Settings page is now the one place to change it. Migration 0009 still seeds
 "30" for a fresh install; the live row is 2. Hourly audit rule "text 25-40 min after the call" is obsolete: expect ~15-20 min after the call start
 (2 min after voicemail processing, which lags the call by 10-15 min).
+
+### 2026-10-02 - audit follow-ups: SMS outcome recording, unsent texts, extra texts (deployed `f7eddd0`)
+- **outbound_messages.status now means something.** It used to stay `pending` after every real send, so a silent non-send looked like a send.
+  `update_ghl_after_vm_message` now marks the lead's newest pending row `sent` (handed to GHL) or `skipped` (opt-out / DND / no-send plan) and logs
+  a warning for skips. Today's rows were backfilled from the send ledger (11 sent, 2 skipped). Tests in `tests/unit/test_crm_jobs.py`.
+- **Two texts generated but not sent (10:14, 10:20 CT).** Both numbers DO exist in GHL (Kes's guess that they were missing was checked). +15853097197
+  (Janice B Griffin) has SMS DND active in GHL (not set by Cora), so withholding the text was correct. +13463705071 (Marthe Sandra Ngono Ottou) has no DND
+  and no explanation yet - to be watched; a third pending row (10:50) was in flight at deploy time.
+- **Extra delivered texts in GHL with no Cora handoff.** Ngugi Ngugi (+19728017769, joyngugi@yahoo.com): she replied at 10:00 and 10:26 and an outbound
+  text was delivered 9-18 s after each reply, plus two more at 10:15 and 10:42 - an automatic responder in GHL (not Cora's gate, not counted in the daily cap),
+  content not visible to us. Wilbert Young (+16013837412): one delivered text at 09:15 with no Cora handoff. To be identified in GHL (workflow / Conversation AI).
+- **The 102 cancelled Cold Lead calls (Sep 30 23:36 CT)** were cancelled on purpose because they carried the wrong message (Kes).
