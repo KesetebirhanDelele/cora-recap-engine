@@ -502,6 +502,7 @@ def _schedule_messaging_after_voicemail(
 
         from sqlalchemy import select
 
+        from app.core.app_config import get_int
         from app.models.scheduled_job import ScheduledJob
 
         now = datetime.now(tz=timezone.utc)
@@ -516,7 +517,7 @@ def _schedule_messaging_after_voicemail(
         ).first() is not None
 
         if not has_pending_sms:
-            sms_delay = getattr(settings, "sms_followup_delay_minutes", 30)
+            sms_delay = get_int("sms_followup_delay_minutes", session, settings, 30)
             schedule_job(
                 session=session,
                 job_type="send_sms",
@@ -545,7 +546,7 @@ def _schedule_messaging_after_voicemail(
             ).first() is not None
 
             if not has_pending_email:
-                sms_delay = getattr(settings, "sms_followup_delay_minutes", 30)
+                sms_delay = get_int("sms_followup_delay_minutes", session, settings, 30)
                 schedule_job(
                     session=session,
                     job_type="send_email",

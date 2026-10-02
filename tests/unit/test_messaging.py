@@ -243,6 +243,31 @@ class TestConversationContext:
 # ---------------------------------------------------------------------------
 
 class TestScheduleMessagingAfterVoicemail:
+    def test_sms_delay_comes_from_the_settings_page_not_a_stale_env_value(self, session):
+        """Production .env said 2 while the Settings page said 30; the Settings value (app_config) must win."""
+        from datetime import datetime, timezone
+
+        from app.core.app_config import set_config_value
+        from app.models.app_config import AppConfig
+        from app.worker.jobs.voicemail_jobs import _schedule_messaging_after_voicemail
+        AppConfig.__table__.create(bind=session.get_bind(), checkfirst=True)
+        lead = _make_lead(session)
+        set_config_value(session, "sms_followup_delay_minutes", "30", "test")
+        settings = MagicMock()
+        settings.rq_default_queue = "default"
+        settings.sms_followup_delay_minutes = 2          # what the server environment said
+        settings.email_followup_delay_days = 1
+        before = datetime.now(tz=timezone.utc)
+        _schedule_messaging_after_voicemail(session, lead.contact_id, 1, "New Lead", settings)
+        job = session.scalars(
+            select(ScheduledJob).where(
+                ScheduledJob.payload_json["contact_id"].as_string() == lead.contact_id,
+                ScheduledJob.job_type == "send_sms",
+            )
+        ).first()
+        run_at = job.run_at if job.run_at.tzinfo else job.run_at.replace(tzinfo=timezone.utc)
+        assert 29 <= (run_at - before).total_seconds() / 60 <= 31
+
     def test_sms_scheduled_after_attempt_1(self, session):
         from app.worker.jobs.voicemail_jobs import _schedule_messaging_after_voicemail
         lead = _make_lead(session)
