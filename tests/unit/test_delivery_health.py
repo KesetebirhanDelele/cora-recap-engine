@@ -381,3 +381,60 @@ def test_rate_limiter_spaces_calls_across_threads():
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _: lim.wait(), range(10)))
     assert time.monotonic() - started >= 0.40   # 10 calls need >= 9 gaps of 50 ms
+
+
+# ───────────── leads with no email address in GHL are not delivery failures ─────────────
+
+def test_tally_keeps_no_address_out_of_sent_and_unconfirmed():
+    from app.services.channel_health import _tally
+
+    old = NOW - timedelta(hours=2)
+    rows = [(old, ch.DELIVERED, "a"), (old, None, "b"), (old, ch.NO_ADDRESS, "c"), (old, ch.NO_ADDRESS, "d")]
+    t = _tally(rows, NOW, 15)
+    assert (t["sent"], t["delivered"], t["unconfirmed"], t["no_address"]) == (2, 1, 1, 2)
+
+
+class _ContactsGHL:
+    def __init__(self, emails):
+        self.emails = emails
+
+    def search_contact_by_phone(self, phone):
+        return None
+
+    def get_contact(self, cid):
+        return {"contact": {"id": cid, "email": self.emails.get(cid, "")}}
+
+
+@db
+def test_unconfirmed_email_to_a_lead_with_no_address_is_counted_separately(session, settings):
+    from app.services import channel_health as svc
+
+    base = NOW - timedelta(hours=3)
+    for i, c in enumerate(["noemail1", "noemail2", "hasemail", "okmail"]):
+        _handoff(session, "email", c, base + timedelta(minutes=i))
+    _delivery(session, "email", "okmail", base + timedelta(minutes=3, seconds=30))     # delivered normally
+    before = svc.channel_stats(session, settings, "email", NOW)
+    assert (before.sent, before.delivered, before.unconfirmed, before.no_address) == (4, 1, 3, 0)
+
+    out = svc.mark_no_address(session, _ContactsGHL({"hasemail": "x@example.test", "okmail": "y@example.test"}), NOW)
+    session.commit()
+    assert out["no_address"] == 2 and out["checked"] == 3                    # okmail already delivered: not looked up
+    after = svc.channel_stats(session, settings, "email", NOW)
+    assert (after.sent, after.delivered, after.unconfirmed, after.no_address) == (2, 1, 1, 2)
+    assert svc.mark_no_address(session, _ContactsGHL({}), NOW)["checked"] == 0      # each contact is looked up once
+    states = {i["contact_id"]: i["state"] for i in svc.detail(session, "email", NOW)["items"]}
+    assert states["noemail1"] == "no email on file" and states["hasemail"] == "not confirmed"
+
+
+@db
+def test_no_address_hand_offs_alone_never_raise_a_delivery_alert(session, settings):
+    from app.services import channel_health as svc
+
+    base = NOW - timedelta(hours=3)
+    for i in range(30):
+        _handoff(session, "email", f"n{i}", base + timedelta(minutes=i))
+    _delivery(session, "email", "other", base, "delivered")
+    svc.mark_no_address(session, _ContactsGHL({}), NOW, max_lookups=50)
+    session.commit()
+    s = svc.channel_stats(session, settings, "email", NOW)
+    assert s.sent == 0 and s.no_address == 30 and s.level != ch.RED

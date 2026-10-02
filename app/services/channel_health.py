@@ -71,8 +71,8 @@ _MSG_ROWS = """
            (SELECT d.outcome FROM channel_events d
              WHERE d.kind = 'delivery' AND d.channel = h.channel AND d.contact_id = h.contact_id
                AND d.event_at BETWEEN h.event_at - interval '2 minutes' AND h.event_at + interval '60 minutes'
-             ORDER BY (d.outcome = 'delivered') DESC, (d.outcome = 'failed') DESC, d.event_at LIMIT 1) AS outcome,
-           h.contact_id
+             ORDER BY (d.outcome = 'delivered') DESC, (d.outcome = 'failed') DESC, d.event_at LIMIT 1) AS outcome_seen,
+           h.contact_id, (h.detail->>'no_address') AS no_address
     FROM channel_events h
     WHERE h.kind = 'handoff' AND h.channel = :ch AND h.event_at >= :since
 """
@@ -95,7 +95,13 @@ def _rows(session: Session, channel: str, since: datetime) -> list[tuple[datetim
     params: dict[str, Any] = {"since": since}
     if channel != "call":
         params["ch"] = channel
-    return [(_aware(r[0]), r[1], r[2]) for r in session.execute(text(sql), params).fetchall()]
+    out = []
+    for r in session.execute(text(sql), params).fetchall():
+        outcome = r[1]
+        if channel != "call" and outcome is None and len(r) > 3 and r[3] == "true":
+            outcome = ch.NO_ADDRESS                       # no email address in GHL (see mark_no_address)
+        out.append((_aware(r[0]), outcome, r[2]))
+    return out
 
 
 def _aware(v: Any) -> datetime:
@@ -103,9 +109,12 @@ def _aware(v: Any) -> datetime:
 
 
 def _tally(rows: list[tuple[datetime, str | None, str]], now: datetime, confirm_min: int) -> dict[str, int]:
-    out = {"sent": len(rows), "delivered": 0, "failed": 0, "unconfirmed": 0, "pending": 0}
+    out = {"sent": len(rows), "delivered": 0, "failed": 0, "unconfirmed": 0, "pending": 0, "no_address": 0}
     for at, outcome, _ in rows:
-        if outcome == ch.DELIVERED:
+        if outcome == ch.NO_ADDRESS:                      # could never be sent: not a delivery problem
+            out["no_address"] += 1
+            out["sent"] -= 1
+        elif outcome == ch.DELIVERED:
             out["delivered"] += 1
         elif outcome == ch.FAILED:
             out["failed"] += 1
@@ -152,8 +161,8 @@ def channel_stats(session: Session, settings: Any, channel: str, now: datetime) 
     t = _tally(rows, now, confirm)
     stats = ch.ChannelStats(
         channel=channel, sent=t["sent"], delivered=t["delivered"], failed=t["failed"], unconfirmed=t["unconfirmed"],
-        last_delivered_at=_last_delivered(session, channel),
-        last_handoff_at=max((r[0] for r in rows), default=None),
+        no_address=t["no_address"], last_delivered_at=_last_delivered(session, channel),
+        last_handoff_at=max((r[0] for r in rows if r[1] != ch.NO_ADDRESS), default=None),
         muted_reason=_muted(session, settings, channel))
     if channel != "call":
         stats.ghl_delivered_24h = int(session.execute(
@@ -169,6 +178,8 @@ def trend(session: Session, channel: str, now: datetime, days: int = 7) -> list[
         d = (now - timedelta(days=days - 1 - i)).date().isoformat()
         buckets[d] = {"sent": 0, "delivered": 0}
     for at, outcome, _ in rows:
+        if outcome == ch.NO_ADDRESS:
+            continue
         d = at.date().isoformat()
         if d in buckets:
             buckets[d]["sent"] += 1
@@ -195,7 +206,7 @@ def snapshot(session: Session, settings: Any, now: datetime | None = None) -> di
         out.append({
             "channel": c, "label": ch.LABEL[c], "level": s.level, "reasons": s.reasons,
             "sent": s.sent, "delivered": s.delivered, "failed": s.failed, "unconfirmed": s.unconfirmed,
-            "rate": s.rate, "ghl_delivered_24h": s.ghl_delivered_24h,
+            "no_address": s.no_address, "rate": s.rate, "ghl_delivered_24h": s.ghl_delivered_24h,
             "last_delivered_at": s.last_delivered_at.isoformat() if s.last_delivered_at else None,
             "last_handoff_at": s.last_handoff_at.isoformat() if s.last_handoff_at else None,
             "muted": s.muted_reason, "trend": trend(session, c, now),
@@ -264,7 +275,9 @@ def detail(session: Session, channel: str, now: datetime | None = None, limit: i
                 "AND outcome='failed' AND event_at >= :a ORDER BY event_at LIMIT 1"),
                 {"c": channel, "x": contact, "a": at - timedelta(minutes=2)}).scalar()
         items.append({"at": at.isoformat(), "contact_id": contact,
-                      "state": "failed" if outcome == ch.FAILED else "not confirmed", "error": err})
+                      "state": ("failed" if outcome == ch.FAILED
+                                else "no email on file" if outcome == ch.NO_ADDRESS else "not confirmed"),
+                      "error": err})
         if len(items) >= limit:
             break
     try:
@@ -331,3 +344,47 @@ def _body(channel: str, s: ch.ChannelStats, now: datetime, state: str) -> str:
         "",
         "Measured on DELIVERED (GHL/provider status, call logs), per channel. Open the Delivery Health tile for detail.",
     ])
+
+
+# ── leads with no email address in GHL ───────────────────────────────────────
+
+def mark_no_address(session: Session, ghl: Any, now: datetime | None = None, confirm_minutes: int = 15,
+                    max_lookups: int = 15) -> dict[str, int]:
+    """An email hand-off that GHL never confirms is often not a delivery failure at all: the lead has no email on the
+    GHL contact, so there was nothing to send to. Look each such contact up ONCE and remember the answer on the
+    hand-off row (detail.address_checked / detail.no_address) so the tile and the alert can tell the two apart.
+    Best-effort and bounded; a failed lookup is simply retried on the next run."""
+    import json
+
+    from app.services.wrong_date_monitor import _lookup_contact
+
+    now = now or datetime.now(tz=timezone.utc)
+    rows = session.execute(text("""
+        SELECT h.id, h.contact_id FROM channel_events h
+        WHERE h.kind = 'handoff' AND h.channel = 'email'
+          AND h.event_at BETWEEN :since AND :cut
+          AND coalesce(h.detail->>'address_checked', '') = ''
+          AND NOT EXISTS (SELECT 1 FROM channel_events d
+                          WHERE d.kind = 'delivery' AND d.channel = 'email' AND d.contact_id = h.contact_id
+                            AND d.event_at BETWEEN h.event_at - interval '2 minutes' AND h.event_at + interval '60 minutes')
+        ORDER BY h.event_at DESC LIMIT :n"""),
+        {"since": now - timedelta(days=7), "cut": now - timedelta(minutes=confirm_minutes), "n": max_lookups}).fetchall()
+    out = {"checked": 0, "no_address": 0, "errors": 0}
+    seen: dict[str, bool] = {}
+    for hid, cid in rows:
+        try:
+            if cid not in seen:
+                _, rec = _lookup_contact(ghl, cid)
+                c = rec.get("contact", rec) if isinstance(rec, dict) else {}
+                seen[cid] = not (c.get("email") or "").strip()
+            missing = seen[cid]
+        except Exception as exc:
+            out["errors"] += 1
+            logger.warning("mark_no_address: lookup failed for %s: %s", cid, exc)
+            continue
+        session.execute(
+            text("""UPDATE channel_events SET detail = coalesce(detail, CAST('{}' AS jsonb)) || CAST(:d AS jsonb) WHERE id = :i"""),
+            {"i": hid, "d": json.dumps({"address_checked": True, "no_address": "true" if missing else "false"})})
+        out["checked"] += 1
+        out["no_address"] += 1 if missing else 0
+    return out

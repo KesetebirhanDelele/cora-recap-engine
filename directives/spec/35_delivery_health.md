@@ -44,3 +44,12 @@ SELECT value FROM channel_sync_state WHERE key='delivery_sync';
 SELECT alert_type, status, message FROM alert_events WHERE alert_type LIKE 'channel_silence_%' ORDER BY created_at DESC LIMIT 5;
 ```
 Tests: `tests/unit/test_delivery_health.py` (pure + opt-in Postgres: sync, matching, calls, replies, silence alert + cc).
+
+## Leads with no email address (added 2026-10-02)
+An email hand-off that GHL never confirms is often not a delivery failure: the GHL contact has no email, so there was nothing to send to.
+Measured on Sep 30 - Oct 2: 10 unconfirmed email hand-offs, 7 of them to contacts with no email in GHL (3 had one, one with a typo domain "uahoo.com").
+- `mark_no_address` (hourly, after the sync, <= 15 lookups per run) looks each unconfirmed email hand-off's contact up ONCE and stores
+  `detail.address_checked` / `detail.no_address` on the hand-off row.
+- Outcome `no_address`: excluded from Sent, Not confirmed and Failed, so it can neither lower the delivered rate nor raise the alert; the tile shows
+  "+N no email on file (not counted)" under Sent, and the drill-down lists them as "no email on file" so they can be fixed in GHL.
+- Not done: stopping Cora from generating an email for a lead with no email address in the first place (the follow-up job does not look the address up).

@@ -77,7 +77,7 @@ export default function DeliveryHealthClient() {
                           style={{ display: "inline-block", width: 12, height: 12, borderRadius: 6, background: DOT[c.level] }} />
                   </td>
                   <td style={{ fontWeight: 700 }}>{c.label}</td>
-                  <td>{c.sent}</td>
+                  <td>{c.sent}{c.no_address ? <div style={{ color: "#64748b", fontSize: "0.72rem", fontWeight: 400 }}>+{c.no_address} no email on file (not counted)</div> : null}</td>
                   <td>{c.delivered}{c.rate !== null ? ` (${Math.round(c.rate * 100)}%)` : ""}</td>
                   <td style={{ color: c.unconfirmed ? "#d97706" : undefined, fontWeight: c.unconfirmed ? 700 : 400 }}>{c.unconfirmed}</td>
                   <td style={{ color: c.failed ? "#dc2626" : undefined }}>{c.failed}</td>

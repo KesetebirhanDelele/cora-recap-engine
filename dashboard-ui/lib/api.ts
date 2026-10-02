@@ -529,7 +529,7 @@ export async function applyOptoutBatch(source = "reconcile"): Promise<{ applied:
 
 export interface DeliveryChannel {
   channel: "email" | "sms" | "call"; label: string; level: "green" | "amber" | "red" | "grey"; reasons: string[];
-  sent: number; delivered: number; failed: number; unconfirmed: number; rate: number | null;
+  sent: number; delivered: number; failed: number; unconfirmed: number; no_address?: number; rate: number | null;
   ghl_delivered_24h: number | null; last_delivered_at: string | null; last_handoff_at: string | null;
   muted: string | null; trend: { day: string; sent: number; delivered: number }[];
 }

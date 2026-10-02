@@ -223,6 +223,14 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         session.rollback()
         logger.error("alerting: delivery sync failed: %s", exc)
     try:
+        from app.services import optout as _optout_svc
+        from app.services.channel_health import mark_no_address
+        mark_no_address(session, _optout_svc._ghl(settings), now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: no-email-address check failed: %s", exc)
+    try:
         from app.services.channel_health import run_silence_check
         run_silence_check(session, settings, now)
         session.commit()

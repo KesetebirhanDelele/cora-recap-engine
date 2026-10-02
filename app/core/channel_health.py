@@ -17,6 +17,9 @@ CHANNELS = ("email", "sms", "call")
 LABEL = {"email": "Email", "sms": "SMS", "call": "Calls"}
 
 DELIVERED, FAILED, PENDING = "delivered", "failed", "pending"
+# The lead has no email address in GHL: nothing could be delivered, and that is a data gap, not a delivery failure.
+# Such hand-offs are shown separately and are NOT counted as sent / unconfirmed / failed.
+NO_ADDRESS = "no_address"
 GREEN, AMBER, RED, GREY = "green", "amber", "red", "grey"
 
 # GHL message statuses (observed live 2026-10-01: SMS delivered/undelivered/sent; email delivered/opened).
@@ -83,6 +86,7 @@ class ChannelStats:
     delivered: int = 0
     failed: int = 0
     unconfirmed: int = 0
+    no_address: int = 0
     last_delivered_at: datetime | None = None
     last_handoff_at: datetime | None = None
     ghl_delivered_24h: int | None = None
