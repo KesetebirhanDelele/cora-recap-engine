@@ -2524,3 +2524,11 @@ value, not a stale env value, drives the delay) stays, so the Settings page is n
   text was delivered 9-18 s after each reply, plus two more at 10:15 and 10:42 - an automatic responder in GHL (not Cora's gate, not counted in the daily cap),
   content not visible to us. Wilbert Young (+16013837412): one delivered text at 09:15 with no Cora handoff. To be identified in GHL (workflow / Conversation AI).
 - **The 102 cancelled Cold Lead calls (Sep 30 23:36 CT)** were cancelled on purpose because they carried the wrong message (Kes).
+
+### 2026-10-02 - Delivery Health: leads with no email in GHL (deployed `a061e02`)
+Kes: some "unconfirmed" email leads have no email address in GHL. Checked: of 10 unconfirmed email hand-offs since Sep 30, 7 had no email on the
+GHL contact (3 had one; one is a typo domain "uahoo.com"). New `mark_no_address` (runs after the sync, once per contact) tags those hand-offs;
+they are excluded from Sent / Not confirmed / Failed and shown as "+N no email on file (not counted)" (drill-down: "no email on file"). On
+production: 8 checked, 7 no address; email last 24h = 58 sent, 55 delivered, 3 unconfirmed, 7 no email on file, green. spec/35 updated; DB tests pass.
+NOT done: Cora still generates and hands off an email for a lead with no email address (the follow-up job does not look the address up). Sequencing
+note: the earlier outbound_messages status fix (`f7eddd0`) had already been deployed when Kes asked for this to be considered "before commit and deploy".
