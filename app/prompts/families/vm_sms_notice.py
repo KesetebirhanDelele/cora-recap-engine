@@ -55,7 +55,7 @@ Situation: {situation}
 Write the SMS now."""
 
 for _version, _situation in (
-    ("tier_1", "We just called and reached voicemail (about 30 minutes ago). First text: a friendly 'sorry I missed "
+    ("tier_1", "We just called and reached voicemail (a few minutes ago). First text: a friendly 'sorry I missed "
                "you', say who you are, ask for a good time to talk."),
     ("tier_2", "We have now called twice and reached voicemail both times. Second text: acknowledge we have tried a "
                "couple of times, no pressure, ask what time works."),

@@ -276,7 +276,7 @@ class Settings(BaseSettings):
     # nurture_delay_days: days before a re-attempt call for "interested_not_now" leads
     nurture_delay_days: int = 7
     # Messaging follow-up delays after missed calls / voicemails
-    sms_followup_delay_minutes: int = 30    # SMS sent N minutes after missed call
+    sms_followup_delay_minutes: int = 2     # SMS sent N minutes after missed call (Kes, 2026-10-02: 2 min)
     email_followup_delay_days: int = 1      # Email sent N days after 2nd missed call
 
     # Campaign active windows — outbound calls are deferred outside these windows.

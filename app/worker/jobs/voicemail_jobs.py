@@ -507,7 +507,7 @@ def _schedule_messaging_after_voicemail(
 
         now = datetime.now(tz=timezone.utc)
 
-        # ── SMS: 30 minutes after every missed call ───────────────────────────
+        # ── SMS: 2 minutes after every missed call (Settings page: sms_followup_delay_minutes) ───────────────────────────
         has_pending_sms = session.scalars(
             select(ScheduledJob).where(
                 ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
@@ -517,7 +517,7 @@ def _schedule_messaging_after_voicemail(
         ).first() is not None
 
         if not has_pending_sms:
-            sms_delay = get_int("sms_followup_delay_minutes", session, settings, 30)
+            sms_delay = get_int("sms_followup_delay_minutes", session, settings, 2)
             schedule_job(
                 session=session,
                 job_type="send_sms",
@@ -546,7 +546,7 @@ def _schedule_messaging_after_voicemail(
             ).first() is not None
 
             if not has_pending_email:
-                sms_delay = get_int("sms_followup_delay_minutes", session, settings, 30)
+                sms_delay = get_int("sms_followup_delay_minutes", session, settings, 2)
                 schedule_job(
                     session=session,
                     job_type="send_email",

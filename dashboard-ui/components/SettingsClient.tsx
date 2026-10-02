@@ -185,7 +185,7 @@ export default function SettingsClient() {
     setNewT0(getInt(c, "new_vm_tier_0_delay_minutes", 1440));
     setNewT1(getInt(c, "new_vm_tier_1_delay_minutes", 2880));
     setNewFinalize(getBool(c, "new_vm_tier_2_finalize", true));
-    setSmsDelay(getInt(c, "sms_followup_delay_minutes", 30));
+    setSmsDelay(getInt(c, "sms_followup_delay_minutes", 2));
     setEmailDelay(getInt(c, "email_followup_delay_days", 2));
     setBrandName(getString(c, "brand_name", "Colaberry"));
     setSenderName(getString(c, "sender_name", "Cora from Colaberry"));

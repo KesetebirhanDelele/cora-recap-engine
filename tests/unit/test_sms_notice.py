@@ -173,7 +173,7 @@ def test_long_draft_is_trimmed_to_240_keeping_the_opt_out_line(llm):
 
 
 def test_the_sms_prompt_changes_with_the_attempt(llm):
-    for attempt, needle in ((1, "reached voicemail (about 30 minutes ago)"), (2, "called twice"), (4, "last automated text")):
+    for attempt, needle in ((1, "reached voicemail (a few minutes ago)"), (2, "called twice"), (4, "last automated text")):
         llm.scripts = [{"sms_text": "Hi Sam, it's Cora from Colaberry. I tried to call - when is a good time?"}]
         generate_vm_sms(_ctx(attempt), NS())
         assert needle in llm.seen[-1][1]["content"]

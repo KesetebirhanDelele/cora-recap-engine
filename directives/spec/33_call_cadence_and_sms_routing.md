@@ -12,9 +12,9 @@
 ## Required cadence (Settings page, verified saved in `app_config` 2026-10-01)
 | Missed call | Cold Lead delay to next call | New Lead delay to next call | Text | Email |
 |---|---|---|---|---|
-| 1st (none→0) | 120 min | 120 min | yes (+30 min) | no |
-| 2nd (0→1) | 2,880 min | 1,440 min | yes (+30 min) | **yes, same time** |
-| 3rd (1→2) | 2,880 min | 2,880 min | yes (+30 min) | no |
+| 1st (none→0) | 120 min | 120 min | yes (+2 min) | no |
+| 2nd (0→1) | 2,880 min | 1,440 min | yes (+2 min) | **yes, same time** |
+| 3rd (1→2) | 2,880 min | 2,880 min | yes (+2 min) | no |
 | 4th (2→3) | final | final | no | no (AI Campaign = No) |
 
 Plus: **max 2 calls per lead per local day** (lead's timezone) unless the lead asked for a call back.

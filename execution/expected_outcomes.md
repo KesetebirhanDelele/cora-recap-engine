@@ -173,7 +173,7 @@ Step 5 (enrollment): terminal — no further jobs.
 
 **Runner validates:** Job existence and `run_at` window only. Does NOT execute `send_sms_job` or `send_email_job` (those require OpenAI for content generation).
 
-**Required env vars:** `SMS_FOLLOWUP_DELAY_MINUTES` (default 30), `EMAIL_FOLLOWUP_DELAY_DAYS` (default 1)
+**Required env vars:** `SMS_FOLLOWUP_DELAY_MINUTES` (default 2), `EMAIL_FOLLOWUP_DELAY_DAYS` (default 1)
 
 > **Note:** `send_sms_job` and `send_email_job` call `generate_sms()` / `generate_email()` which require `OPENAI_API_KEY`. If not set, these jobs will **fail** when the worker eventually executes them. This does not affect SC9 validation (scheduling only) or SC10 (reply check runs before AI generation).
 
@@ -193,7 +193,7 @@ Step 5 (enrollment): terminal — no further jobs.
 
 **Key assertion:** `send_sms_job` completes cleanly (status=`completed`) but creates NO `OutboundMessage` row — the reply check runs before AI generation and short-circuits.
 
-**Required env vars:** `SMS_FOLLOWUP_DELAY_MINUTES` (default 30)
+**Required env vars:** `SMS_FOLLOWUP_DELAY_MINUTES` (default 2)
 
 ---
 
@@ -207,7 +207,7 @@ Step 5 (enrollment): terminal — no further jobs.
 | `NEW_VM_TIER_2_FINALIZE` | **None** | SC1, SC8 (BLOCKER if missing) |
 | `COLD_VM_TIER_NONE_DELAY_MINUTES` | 120 | SC5 |
 | `NURTURE_DELAY_DAYS` | 7 | SC2, SC3, SC8 |
-| `SMS_FOLLOWUP_DELAY_MINUTES` | 30 | SC9, SC10 |
+| `SMS_FOLLOWUP_DELAY_MINUTES` | 2 | SC9, SC10 |
 | `EMAIL_FOLLOWUP_DELAY_DAYS` | 1 | SC9 |
 
 > `CALLBACK_FALLBACK_MINUTES` is hardcoded at 120 in `app/core/intent_actions.py`. Not in settings.

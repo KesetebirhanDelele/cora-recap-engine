@@ -30,25 +30,25 @@ Applies to both campaigns. Tier advances each time the call is unanswered (voice
 
 | Tier Transition | Delay Before Next Call | Next Call Scheduled? | SMS Scheduled? | Email Scheduled? | GHL Write? |
 |---|---|---|---|---|---|
-| None → 0 (1st missed call) | Configurable (`new_vm_tier_none_delay_minutes`) | Yes — Synthflow callback | Yes — +30 min | No | GHL Path 2 after SMS |
-| 0 → 1 (2nd missed call) | Configurable (`new_vm_tier_0_delay_minutes`) | Yes — Synthflow callback | Yes — +30 min | **Yes — same time as SMS** | GHL Path 2 after SMS/email |
-| 1 → 2 (3rd missed call) | Configurable (`new_vm_tier_1_delay_minutes`) | Yes — Synthflow callback | Yes — +30 min | No | GHL Path 2 after SMS |
+| None → 0 (1st missed call) | Configurable (`new_vm_tier_none_delay_minutes`) | Yes — Synthflow callback | Yes — +2 min | No | GHL Path 2 after SMS |
+| 0 → 1 (2nd missed call) | Configurable (`new_vm_tier_0_delay_minutes`) | Yes — Synthflow callback | Yes — +2 min | **Yes — same time as SMS** | GHL Path 2 after SMS/email |
+| 1 → 2 (3rd missed call) | Configurable (`new_vm_tier_1_delay_minutes`) | Yes — Synthflow callback | Yes — +2 min | No | GHL Path 2 after SMS |
 | 2 → 3 (4th missed call) | None — terminal | **No** | **No** | **No** | **GHL Path 3** — AI Campaign = No |
 
 ### Cold Lead
 
 | Tier Transition | Delay Before Next Call | Next Call Scheduled? | SMS Scheduled? | Email Scheduled? | GHL Write? |
 |---|---|---|---|---|---|
-| None → 0 (1st missed call) | 2 hours (`cold_vm_tier_none_delay_minutes = 120`) | Yes — Synthflow callback | Yes — +30 min | No | GHL Path 2 after SMS |
-| 0 → 1 (2nd missed call) | 48 hours (`cold_vm_tier_0_delay_minutes = 2880`) | Yes — Synthflow callback | Yes — +30 min | **Yes — same time as SMS** | GHL Path 2 after SMS/email |
-| 1 → 2 (3rd missed call) | 48 hours (`cold_vm_tier_1_delay_minutes = 2880`) | Yes — Synthflow callback | Yes — +30 min | No | GHL Path 2 after SMS |
+| None → 0 (1st missed call) | 2 hours (`cold_vm_tier_none_delay_minutes = 120`) | Yes — Synthflow callback | Yes — +2 min | No | GHL Path 2 after SMS |
+| 0 → 1 (2nd missed call) | 48 hours (`cold_vm_tier_0_delay_minutes = 2880`) | Yes — Synthflow callback | Yes — +2 min | **Yes — same time as SMS** | GHL Path 2 after SMS/email |
+| 1 → 2 (3rd missed call) | 48 hours (`cold_vm_tier_1_delay_minutes = 2880`) | Yes — Synthflow callback | Yes — +2 min | No | GHL Path 2 after SMS |
 | 2 → 3 (4th missed call) | None — terminal | **No** | **No** | **No** | **GHL Path 3** — AI Campaign = No |
 
 > **New Lead delays as configured (Settings page, 2026-10-01):** none→0 = 120 min, 0→1 = 1,440 min, 1→2 = 2,880 min, finalize at tier 2. These are not defaults — they are saved values.
 > **Daily cap (spec/33):** a lead is dialed at most **2 times per local day** unless the lead asked for a call back; over-cap calls move to the next day's window.
 > **Delivery (spec/33):** a text is delivered as a real **SMS** (GHL "AI Agent - Send SMS", Support issue Ticket #4); the email is delivered by "AI Agent - Send Email" (Ticket #2 = subject, Message = body). Calls are never pulled earlier than their configured delay.
 
-**SMS rule:** Always sent +30 min after every missed call (`sms_followup_delay_minutes = 30`).  
+**SMS rule:** Always sent +2 min after every missed call (`sms_followup_delay_minutes = 2`).  
 **Email rule:** Sent only on the 2nd missed call (tier 0 → 1), at the same scheduled time as the SMS.  
 **GHL Path 2** (`update_ghl_after_vm_message`): writes Mark as Lead, Support Ticket #2 (identifier), Message body, AI Campaign = Yes, latest lead classification.  
 **GHL Path 3** (`_finalize_campaign`): writes Mark as Lead = Yes, AI Campaign = No — ends automated outreach in GHL.
@@ -105,8 +105,8 @@ Runs after `run_call_analysis` when call status is `completed`. Intent is classi
 | `process_voicemail_tier` | default | `voicemail_jobs.py` | On voicemail/hangup outcome |
 | `launch_outbound_call` | callbacks | `outbound_jobs.py` | By tier engine or intent handler; deferred to next calling window if outside hours |
 | `synthflow_callback` | callbacks | `voicemail_jobs.py` | By tier engine for tiers 0–2 |
-| `send_sms` | default | `channel_jobs.py` | +30 min after every missed call |
-| `send_email` | default | `channel_jobs.py` | +30 min after 2nd missed call only |
+| `send_sms` | default | `channel_jobs.py` | +2 min after every missed call |
+| `send_email` | default | `channel_jobs.py` | +2 min after 2nd missed call only |
 | `update_ghl_after_vm_message` | default | `channel_jobs.py` | After `send_sms` / `send_email` |
 | `collect_metrics` | default | `metrics_jobs.py` | Self-rescheduling every 60 s |
 
