@@ -477,3 +477,22 @@ def test_alert_subjects_have_fixed_shapes():
     assert alert_subject("call", "active") == "[CRITICAL] Cora: Calls have gone quiet"
     assert alert_subject("call", "resolved") == "[RESOLVED] Cora: Calls are delivering again"
     assert alert_subject("sms", "resolved") == "[RESOLVED] Cora: SMS is delivering again"
+
+
+def test_system_alert_headers_and_drill_shapes():
+    from app.services.alert_drill import DRILL_LINE, build_drill
+    from app.services.alerting import system_alert_headers
+
+    h = system_alert_headers("queue_lag", "critical", "active")
+    assert h["X-Cora-Alert"] == "system" and h["X-Cora-Alert-Type"] == "queue_lag" and h["X-Priority"] == "1"
+    assert system_alert_headers("queue_lag", "warning", "resolved")["X-Priority"] == "3"
+
+    subj, body, hdr = build_drill("health", "call")
+    assert subj == "[CRITICAL] Cora: Calls have gone quiet"
+    assert hdr["X-Cora-Alert"] == "health" and hdr["X-Cora-Alert-Drill"] == "true" and body.startswith(DRILL_LINE)
+    subj, body, hdr = build_drill("system")
+    assert subj.startswith("[CRITICAL] Cora Alert: ") and hdr["X-Cora-Alert"] == "system" and hdr["X-Cora-Alert-Drill"] == "true"
+    assert "test" not in subj.lower() and "test" not in body.lower()
+    import pytest as _pt
+    with _pt.raises(ValueError):
+        build_drill("bogus")

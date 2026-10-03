@@ -1391,7 +1391,16 @@ def _send_alert_email(
     ]
     body = "\n".join(body_lines)
 
-    _smtp_send(settings, to_addrs, subject, body, log_label=alert_type)
+    _smtp_send(settings, to_addrs, subject, body, log_label=alert_type,
+               extra_headers=system_alert_headers(alert_type, severity, "resolved" if is_resolution else "active"))
+
+
+def system_alert_headers(alert_type: str, severity: str, state: str) -> dict[str, str]:
+    """Hidden labels on every generic system alert (value `system`; delivery-health alerts use `health`), so a mail rule
+    that matches the X-Cora-Alert header keeps both. Keep these names stable - rules are pinned to them."""
+    critical = state == "active" and severity.lower() == "critical"
+    return {"X-Cora-Alert": "system", "X-Cora-Alert-Type": alert_type, "X-Cora-Alert-Severity": severity.lower(),
+            "X-Cora-Alert-State": state, "X-Priority": "1" if critical else "3", "Importance": "high" if critical else "normal"}
 
 
 def _send_sales_queue_urgent_email(
