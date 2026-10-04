@@ -476,6 +476,36 @@ def launch_outbound_call_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Opt-out call gate (spec/39) ─────────────────────────────────────────
+        # Reads the lead's live GHL record: do-not-disturb, Call DND, or an opt-out tag ("do not contact", "do not
+        # call again", "not interested"...) stops the call. Fails CLOSED when GHL cannot be read. Kill switch:
+        # app_config call_gate_enabled=false.
+        from app.services import call_gate
+
+        if call_gate.enabled(session, settings):
+            gate = call_gate.check(session, settings, contact_id, job_id=job_id)
+            if gate.action == "block":
+                call_gate.apply_block(session, job, contact_id, gate)
+                session.commit()
+                return
+            if gate.action in ("defer", "give_up"):
+                if gate.action == "give_up":
+                    from app.worker.claim import cancel_job
+
+                    cancel_job(session, job.id)
+                    create_exception(
+                        session,
+                        type="call_gate_lookup_failed",
+                        severity="warning",
+                        context={"contact_id": contact_id, "job_id": job_id, "error": gate.reason},
+                        entity_type="lead",
+                        entity_id=contact_id,
+                    )
+                else:
+                    release_job_to_pending(session, job, defer_seconds=call_gate.RETRY_SECONDS)
+                session.commit()
+                return
+
         # ── Urgent-escalation guard (belt-and-suspenders with enter_campaign) ──
         # Catches jobs that were already scheduled before an escalation
         # happened, or jobs from paths other than enter_campaign() (nurture

@@ -28,3 +28,18 @@ def clear_settings_cache():
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _call_gate_allows_by_default(request):
+    """The opt-out call gate (spec/39) reads GHL live. Existing call-job tests mock settings, so let the gate allow unless a
+    test module opts in with `pytestmark = pytest.mark.real_call_gate` (tests/unit/test_call_gate.py)."""
+    if request.node.get_closest_marker("real_call_gate"):
+        yield
+        return
+    from unittest.mock import patch
+
+    from app.services import call_gate
+
+    with patch.object(call_gate, "check", return_value=call_gate.GateResult("allow")):
+        yield

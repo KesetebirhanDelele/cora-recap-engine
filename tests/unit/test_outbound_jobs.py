@@ -852,3 +852,64 @@ def test_non_student_contact_passes_guard(
 
     mock_create_exc.assert_not_called()
     mock_mark_running.assert_called_once()
+
+
+# ── opt-out call gate hook (spec/39) ─────────────────────────────────────────
+
+def _gate_job_run(gate_result):
+    """Run launch_outbound_call_job past the earlier guards with the call gate returning `gate_result`."""
+    from app.services import call_gate
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    job = _make_mock_job(phone="+15550004444")
+    with patch("app.worker.jobs.outbound_jobs.get_sync_session") as cm, \
+            patch("app.worker.jobs.outbound_jobs.claim_job", return_value=job), \
+            patch("app.worker.jobs.outbound_jobs.mark_running") as mark_running, \
+            patch("app.worker.jobs.outbound_jobs.get_settings", return_value=_make_settings()), \
+            patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test"), \
+            patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False), \
+            patch("app.worker.jobs.outbound_jobs._has_spam_likely_tag", return_value=False), \
+            patch("app.worker.jobs.outbound_jobs.create_exception") as create_exc, \
+            patch("app.worker.jobs.outbound_jobs.release_job_to_pending") as release, \
+            patch("app.worker.claim.cancel_job"), \
+            patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()), \
+            patch.object(call_gate, "enabled", return_value=True), \
+            patch.object(call_gate, "check", return_value=gate_result), \
+            patch.object(call_gate, "apply_block") as apply_block:
+        cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+        cm.return_value.__exit__ = MagicMock(return_value=False)
+        launch_outbound_call_job(job.id)
+    return mark_running, apply_block, release, create_exc, mock_session
+
+
+def test_call_gate_block_cancels_the_call_before_dialing():
+    from app.services import call_gate
+
+    mark_running, apply_block, release, create_exc, session = _gate_job_run(
+        call_gate.GateResult("block", "GHL tag 'do not contact'", True))
+    apply_block.assert_called_once()
+    mark_running.assert_not_called()
+    release.assert_not_called()
+    session.commit.assert_called_once()
+
+
+def test_call_gate_defers_when_ghl_cannot_be_read():
+    from app.services import call_gate
+
+    mark_running, apply_block, release, create_exc, session = _gate_job_run(call_gate.GateResult("defer", "GHL HTTP error: 502"))
+    release.assert_called_once()
+    assert release.call_args.kwargs["defer_seconds"] == call_gate.RETRY_SECONDS
+    mark_running.assert_not_called()
+    apply_block.assert_not_called()
+    create_exc.assert_not_called()
+
+
+def test_call_gate_gives_up_with_a_warning_exception_after_repeated_failures():
+    from app.services import call_gate
+
+    mark_running, apply_block, release, create_exc, session = _gate_job_run(call_gate.GateResult("give_up", "GHL down"))
+    create_exc.assert_called_once()
+    assert create_exc.call_args.kwargs["type"] == "call_gate_lookup_failed"
+    release.assert_not_called()
+    mark_running.assert_not_called()
