@@ -66,6 +66,13 @@ def _ctx(session):
     return mock
 
 
+@pytest.fixture(autouse=True)
+def _inside_the_sending_window():
+    """These tests are about job completion, not scheduling windows: pin the window check open so they pass at any hour."""
+    with patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # send_sms_job
 # ---------------------------------------------------------------------------

@@ -406,3 +406,36 @@ def mark_no_address(session: Session, ghl: Any, now: datetime | None = None, con
         out["checked"] += 1
         out["no_address"] += 1 if missing else 0
     return out
+
+
+# ── content flags: what GHL sent that names a retired course, makes an employment claim, or answers an opt-out ──────
+
+CONTENT_ALERT = "ghl_content_flag"
+
+
+def run_content_flag_check(session: Session, settings: Any, now: datetime | None = None) -> int:
+    """One alert (email to alert_email_to, system-alert headers) while any content flag exists in the last 24 hours;
+    resolved when there are none. Returns the number of flags in the window."""
+    from app.models.alert_event import AlertEvent
+    from app.services.alerting import _send_alert_email
+
+    now = now or datetime.now(tz=timezone.utc)
+    rows = session.execute(text("""
+        SELECT error, source, count(*) FROM channel_events WHERE kind = 'content_flag' AND event_at >= :s
+        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 6"""), {"s": now - timedelta(hours=24)}).fetchall()
+    total = sum(int(r[2]) for r in rows)
+    active = session.execute(
+        text("SELECT id FROM alert_events WHERE alert_type = :t AND status = 'active' LIMIT 1"), {"t": CONTENT_ALERT}).fetchone()
+    if total and not active:
+        detail = "; ".join(f"{r[0]} x{r[2]} (sent by {r[1]})" for r in rows)
+        msg = (f"{total} outbound message(s) in the last 24 h named a retired course, made an employment claim, or answered an "
+               f"opt-out: {detail}. See channel_events kind=content_flag.")
+        aid = str(uuid.uuid4())
+        session.add(AlertEvent(id=aid, alert_type=CONTENT_ALERT, severity="warning", status="active", message=msg,
+                               email_sent_at=now, last_seen_at=now, created_at=now))
+        _send_alert_email(settings=settings, alert_id=aid, alert_type=CONTENT_ALERT, severity="warning", message=msg, now=now)
+    elif total and active:
+        session.execute(text("UPDATE alert_events SET last_seen_at = :n WHERE id = :i"), {"n": now, "i": active[0]})
+    elif active:
+        session.execute(text("UPDATE alert_events SET status='resolved', resolved_at=:n WHERE id=:i"), {"n": now, "i": active[0]})
+    return total

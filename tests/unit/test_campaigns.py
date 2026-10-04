@@ -643,3 +643,38 @@ def test_enter_campaign_prefers_phone_shaped_contact_id_over_a_corrupted_normali
     ).all()
     assert len(jobs) == 1
     assert jobs[0].payload_json["phone_number"] == "+15550007777"
+
+
+# ── every skip leaves a durable audit row with its reason (2026-10-04) ───────────────────────────────
+
+def _skips(session, lead):
+    from app.models.audit import AuditLog
+
+    return [r.context_json for r in session.scalars(
+        select(AuditLog).where(AuditLog.entity_id == lead.contact_id, AuditLog.action == "campaign_entry_skipped"))]
+
+
+def test_do_not_call_skip_is_recorded_with_its_reason(session):
+    lead = _make_lead(session, campaign_name=None)
+    lead.do_not_call = True
+    session.flush()
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    assert [c["reason"] for c in _skips(session, lead)] == ["do_not_call"]
+    assert _skips(session, lead)[0]["campaign"] == "Cold Lead"
+
+
+def test_student_skip_is_recorded_with_the_matched_tags(session):
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    student = {"ghl_contact_id": "g", "classification_source": "ghl_tags", "matched_tags": ["enrolled student", "data analytics student"]}
+    with patch("app.core.student_guard.check_is_student", return_value=student):
+        enter_campaign(session, lead, "new_lead", settings=_mock_settings())
+    skips = _skips(session, lead)
+    assert [c["reason"] for c in skips] == ["enrolled_student"] and "enrolled student" in skips[0]["detail"]
+
+
+def test_a_normal_entry_records_no_skip(session):
+    lead = _make_lead(session, campaign_name=None)
+    enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    assert _skips(session, lead) == []

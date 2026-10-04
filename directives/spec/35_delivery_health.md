@@ -53,3 +53,11 @@ Measured on Sep 30 - Oct 2: 10 unconfirmed email hand-offs, 7 of them to contact
 - Outcome `no_address`: excluded from Sent, Not confirmed and Failed, so it can neither lower the delivered rate nor raise the alert; the tile shows
   "+N no email on file (not counted)" under Sent, and the drill-down lists them as "no email on file" so they can be fixed in GHL.
 - Not done: stopping Cora from generating an email for a lead with no email address in the first place (the follow-up job does not look the address up).
+
+## Content audit of what GHL sent (added 2026-10-04, Ali 2026-10-03)
+The delivery sync already reads every outbound text/email GHL reports (Cora's workflows, the Conversation AI assistant, staff in the app). It now also records `channel_events` rows of
+`kind = 'content_flag'` (error = the matched terms, source = GHL's `source`, detail = snippet) for any outbound message that
+(1) names a retired course or makes an employment / placement / job-guarantee claim (the `offer_forbidden_terms` list, `app/core/offer.py`), or
+(2) answers an opt-out reply (an inbound text our classifier reads as an opt-out) within 3 minutes with anything other than an acknowledgement (`app/core/content_audit.py`).
+`run_content_flag_check` (hourly, after the silence check) raises one `ghl_content_flag` alert (email to `alert_email_to`, system-alert headers) while any flag exists in the last 24 h and resolves it when none remain.
+Limits: texts and emails GHL reports in conversations the sync reads (recent, newest first); Instagram / Facebook / WhatsApp chat replies are only seen if GHL lists them as TYPE_SMS/TYPE_EMAIL.

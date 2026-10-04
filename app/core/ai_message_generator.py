@@ -232,8 +232,8 @@ def _sms_problems(text: str, terms: tuple[str, ...]) -> list[str]:
 def _sms_notice_fallback(context: ConversationContext, brand: dict[str, str]) -> str:
     first = (context.lead_first_name or "there").strip() or "there"
     return _finish_vm_sms(
-        f"Hi {first}, it's Cora from {brand['brand_name']}. I just tried to call you about the "
-        f"{brand['offer_name']}. What time works for you to talk?", brand)
+        f"Hi {first}, it's Cora from {brand['brand_name']}. I tried calling about the "
+        f"{brand['offer_name']}. What time works to talk?", brand)       # ~150 chars with the opt-out line: one segment
 
 
 def generate_vm_sms(
@@ -259,13 +259,13 @@ def generate_vm_sms(
         messages[0]["content"] = messages[0]["content"].format(
             brand_name=brand["brand_name"], offer_name=brand["offer_name"])
         client = OpenAIClient(settings=settings, _client=_client)
-        for attempt in range(2):
+        for attempt in range(3):
             result = client.chat_completion(
                 messages=messages, model=_get_model(settings),
                 response_format={"type": "json_object"}, _retry_delay=0.0)
             text = _finish_vm_sms(str(result.get("sms_text", "")), brand)
             problems = _sms_problems(text, terms)
-            if text and not problems and (attempt == 1 or len(text) <= SMS_ONE_SEGMENT_TARGET):
+            if text and not problems and len(text) <= SMS_ONE_SEGMENT_TARGET:      # one segment, always (spec/37)
                 return text
             if text and not problems:
                 problems = [f"{len(text)} characters - shorten it to {SMS_ONE_SEGMENT_TARGET} or fewer "

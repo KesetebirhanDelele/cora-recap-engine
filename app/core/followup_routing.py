@@ -73,6 +73,16 @@ def build_followup_updates(
         updates[settings.ghl_field_message] = body_g          # record of the last message sent
 
     if channel == "email":
+        # Same eligibility the text path applies (spec/39 follow-up, Ali 2026-10-03): the lead's live GHL record must not say
+        # stop (do-not-disturb on all channels or email, or an opt-out tag) and must have an email address. An unreadable
+        # record fails closed. A skip removes the send-trigger fields so no GHL workflow sends anything.
+        erecord = ghl_contact or {}
+        if isinstance(erecord.get("contact"), dict):
+            erecord = erecord["contact"]
+        eskip = "GHL contact could not be read" if not erecord else contact_block_reason(erecord, "email")
+        if eskip:
+            updates.pop(settings.ghl_field_message, None)
+            return FollowupPlan(updates, eskip, "email")
         if settings.ghl_field_support_ticket_2 and subject:
             updates[settings.ghl_field_support_ticket_2] = subject
         return FollowupPlan(updates, None, "email")

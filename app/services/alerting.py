@@ -237,6 +237,13 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     except Exception as exc:
         session.rollback()
         logger.error("alerting: channel silence check failed: %s", exc)
+    try:
+        from app.services.channel_health import run_content_flag_check
+        run_content_flag_check(session, settings, now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: content flag check failed: %s", exc)
 
     for defn in _ALERT_DEFINITIONS:
         try:

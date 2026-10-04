@@ -188,6 +188,12 @@ class TestOutboundCallShadowOn:
 # ---------------------------------------------------------------------------
 
 class TestOutboundCallShadowOff:
+    @pytest.fixture(autouse=True)
+    def _inside_the_calling_window(self):
+        """Pin the campaign window open so this test passes at any hour."""
+        with patch("app.core.campaign_schedule.is_campaign_active", return_value=True):
+            yield
+
     def test_synthflow_called_when_shadow_off(self, session):
         contact_id = f"c-{uuid.uuid4().hex[:6]}"
         job = _make_job(session, "launch_outbound_call", contact_id)

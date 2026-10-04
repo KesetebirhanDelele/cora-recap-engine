@@ -33,3 +33,9 @@ Generation: `generate_vm_followup(..., channel="sms"|"email")` - only the needed
 
 ## Tests
 `tests/unit/test_sms_notice.py` (31): forbidden terms (whole words), marketing detection, gate rules, 2-segment default, GSM normalisation, every prompt tier free of retired names / stories, SMS draft -> retry -> fallback, length trim, per-channel generation.
+
+## Addendum 2026-10-04
+- **Employment claims:** `employment rate, placement rate, job placement, job guarantee, guaranteed job, hiring rate, employment outcome` are in the default forbidden terms (Ali: never, from anything, on any channel, unless he approves the number and its source).
+- **One segment, always:** the missed-call text is retried up to three times to fit 160 characters; the deterministic fallback is ~150 characters; a two-segment draft is no longer accepted.
+- **Email follow-ups obey GHL opt-outs:** `build_followup_updates` now applies to the email route the same eligibility the text route uses (GHL do-not-disturb on all channels or Email, opt-out tags, no email address, unreadable record = fail closed); a skip removes the send-trigger fields (Ticket #2 + Message).
+- **Skips leave a trace:** `enter_campaign` writes `audit_log` rows `campaign_entry_skipped` (reason: outbound_campaigns_paused, cold_lead_campaign_paused, do_not_call, urgent_escalation_unresolved, enrolled_student, no_phone_number).

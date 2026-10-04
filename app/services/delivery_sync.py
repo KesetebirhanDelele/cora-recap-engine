@@ -197,11 +197,44 @@ def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) ->
     return by_conv, statuses, final
 
 
+def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: str, at: datetime, now: datetime) -> None:
+    """Record outbound text / email that names a retired course or makes an employment claim (content audit). Never raises."""
+    try:
+        from app.core import content_audit as ca
+        from app.core import offer
+        from app.core.app_config import get_config_value
+
+        raw = get_config_value("offer_forbidden_terms", session, settings, None) if settings is not None else None
+        hits = ca.forbidden_in(m.get("body"), offer.parse_terms(raw))
+        if hits:
+            _upsert_event(session, kind="content_flag", channel=channel, contact_id=cid, external_id=m["id"],
+                          status_raw=None, outcome=None, error=", ".join(hits)[:290], event_at=at, now=now,
+                          source=str(m.get("source") or "?")[:30],
+                          detail={"terms": hits, "snippet": (m.get("body") or "")[:160]})
+    except Exception as exc:
+        logger.warning("delivery_sync: content audit failed: %s", exc)
+
+
+def _flag_opt_out_answers(session: Session, settings: Any, conv: dict, msgs: list[dict], now: datetime) -> None:
+    try:
+        from app.core import content_audit as ca
+
+        cid = conv.get("contactId") or ""
+        for m in ca.opt_out_answers(msgs, _parse_ts):
+            _upsert_event(session, kind="content_flag", channel="sms", contact_id=m.get("contactId") or cid, external_id=m["id"],
+                          status_raw=None, outcome=None, error="answered_opt_out", event_at=_parse_ts(m.get("dateAdded")) or now,
+                          now=now, source=str(m.get("source") or "?")[:30],
+                          detail={"terms": ["answered_opt_out"], "snippet": (m.get("body") or "")[:160]})
+    except Exception as exc:
+        logger.warning("delivery_sync: opt-out answer audit failed: %s", exc)
+
+
 def _process_conversation(session: Session, conv: dict, msgs: list[dict], email_status: dict, final_emails: set,
                           since: datetime, now: datetime, stats: dict, settings: Any = None,
                           llm_budget: list[int] | None = None) -> None:
     stats["conversations"] += 1
     contact_id = conv.get("contactId") or ""
+    _flag_opt_out_answers(session, settings, conv, msgs, now)
     for m in msgs:
         channel = TYPE_MAP.get(m.get("messageType") or m.get("type") or "")
         at = _parse_ts(m.get("dateAdded"))
@@ -215,6 +248,7 @@ def _process_conversation(session: Session, conv: dict, msgs: list[dict], email_
             continue
         if channel == "call" or direction != "outbound":
             continue                                   # outbound call outcome = call_events, not GHL
+        _flag_content(session, settings, m, channel, cid, at, now)
         if channel == "sms":
             status = m.get("status")
             err = ch.extract_error(m) if ch.sms_outcome(status) == ch.FAILED else None

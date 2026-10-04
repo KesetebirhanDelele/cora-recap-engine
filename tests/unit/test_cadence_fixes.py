@@ -489,3 +489,32 @@ def test_prompt_override_keeps_the_free_signup_address_out_of_the_sms():
 
     block = build_schedule_block("", "", "https://rsvp.test", "www.myfreeaiclass.com")
     assert "ONLY in the email" in block and "NEVER put any link" in block
+
+
+# ── email follow-ups obey the same GHL opt-out signals as texts (Ali, 2026-10-03) ──────────────────
+
+def _rec(**over):
+    c = {"id": "c", "phone": "+15551230000", "email": "a@b.test", "dnd": False, "dndSettings": {}, "tags": []}
+    c.update(over)
+    return {"contact": c}
+
+
+@pytest.mark.parametrize("record,why", [
+    (_rec(tags=["Do Not Contact"]), "tagged"),
+    (_rec(tags=["unsubscribed"]), "tagged"),
+    (_rec(dnd=True), "DND is on (all channels)"),
+    (_rec(dndSettings={"Email": {"status": "active"}}), "DND is on for Email"),
+    (_rec(email=""), "no email address"),
+    ({}, "could not be read"),
+])
+def test_email_followup_is_withheld_when_ghl_says_stop_or_has_no_address(record, why):
+    u, skip = build_followup_updates(CFG, channel="email", subject="Subj", body="<p>Body</p>", ghl_contact=record)
+    assert skip and why in skip
+    assert "Support Issue Ticket #2" not in u and "Message:" not in u        # no email workflow trigger is written
+    assert u.get("Mark as Lead") == "Yes"                                       # bookkeeping fields are untouched
+
+
+def test_other_channel_dnd_does_not_block_an_email():
+    rec = _rec(dndSettings={"SMS": {"status": "active"}, "Call": {"status": "active"}}, tags=["not interested"])
+    u, skip = build_followup_updates(CFG, channel="email", subject="Subj", body="<p>Body</p>", ghl_contact=rec)
+    assert skip is None and u["Support Issue Ticket #2"] == "Subj"

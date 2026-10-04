@@ -355,6 +355,12 @@ class TestScheduleMessagingAfterVoicemail:
 # ---------------------------------------------------------------------------
 
 class TestChannelJobs:
+    @pytest.fixture(autouse=True)
+    def _inside_the_sending_window(self):
+        """Pin the window check open so these job-completion tests pass at any hour."""
+        with patch("app.worker.jobs.channel_jobs._check_active_window", return_value=True):
+            yield
+
     def _make_claimed_sms_job(self, session, contact_id):
         """Create a ScheduledJob already in 'running' state for testing job handlers."""
         job = ScheduledJob(

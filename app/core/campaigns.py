@@ -73,6 +73,25 @@ _SWITCH_RULES: dict[tuple[str, str], str] = {
 }
 
 
+def _record_skip(session: Session, lead: Any, campaign_name: str, reason: str, detail: str = "") -> None:
+    """Durable record of why a lead was NOT entered into a campaign (the INFO log line is not kept on the server, so a
+    trigger that "did nothing" used to leave no trace). Never raises."""
+    try:
+        import uuid
+        from datetime import datetime, timezone
+
+        from app.models.audit import AuditLog
+
+        session.add(AuditLog(
+            id=str(uuid.uuid4()), entity_type="campaign_entry", entity_id=str(lead.contact_id),
+            action="campaign_entry_skipped", operator_id="system",
+            context_json={"campaign": campaign_name, "reason": reason, "detail": detail[:200]},
+            created_at=datetime.now(tz=timezone.utc)))
+        session.flush()
+    except Exception as exc:
+        logger.warning("enter_campaign: could not record skip (%s): %s", reason, exc)
+
+
 def enter_campaign(
     session: Session,
     lead: Any,
@@ -112,12 +131,14 @@ def enter_campaign(
                 "enter_campaign: outbound campaigns paused — skipping entry | "
                 "contact_id=%s campaign=%s", lead.contact_id, campaign_name,
             )
+            _record_skip(session, lead, campaign_name, "outbound_campaigns_paused")
             return
         if campaign_type == "cold_lead" and flags.cold_lead_campaign_paused:
             logger.info(
                 "enter_campaign: cold lead campaign paused — skipping entry | "
                 "contact_id=%s campaign=%s", lead.contact_id, campaign_name,
             )
+            _record_skip(session, lead, campaign_name, "cold_lead_campaign_paused")
             return
 
     # ── Do-not-call guard ────────────────────────────────────────────────────
@@ -133,6 +154,7 @@ def enter_campaign(
             "enter_campaign: do_not_call set — skipping entry | contact_id=%s campaign=%s",
             lead.contact_id, campaign_name,
         )
+        _record_skip(session, lead, campaign_name, "do_not_call")
         return
 
     # ── Urgent-escalation guard ──────────────────────────────────────────────
@@ -151,6 +173,7 @@ def enter_campaign(
             lead.contact_id, campaign_name,
             escalation["detected_intent"], escalation["call_time"],
         )
+        _record_skip(session, lead, campaign_name, "urgent_escalation_unresolved", str(escalation.get("detected_intent")))
         return
 
     # ── Enrolled-student guard (spec/27) ─────────────────────────────────────
@@ -179,6 +202,7 @@ def enter_campaign(
                 lead.contact_id, campaign_name,
                 student["classification_source"], student["matched_tags"],
             )
+            _record_skip(session, lead, campaign_name, "enrolled_student", ",".join(student["matched_tags"] or []))
             return
 
     # 1. Cancel existing pending jobs (clean slate for the new campaign)
@@ -236,6 +260,7 @@ def enter_campaign(
             "contact_id=%s campaign=%s",
             lead.contact_id, campaign_type,
         )
+        _record_skip(session, lead, campaign_name, "no_phone_number")
         return
 
     if _has_pending_outbound(session, lead.contact_id):

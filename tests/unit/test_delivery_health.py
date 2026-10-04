@@ -496,3 +496,27 @@ def test_system_alert_headers_and_drill_shapes():
     import pytest as _pt
     with _pt.raises(ValueError):
         build_drill("bogus")
+
+
+@db
+def test_content_flags_are_recorded_once_and_raise_a_single_alert_then_resolve(session, settings):
+    from sqlalchemy import text
+
+    from app.services import channel_health as svc
+    from app.services import delivery_sync as ds
+
+    sent = []
+    msg = {"id": "m1", "body": "Our program has a 71% employment rate", "source": "app"}
+    ds._flag_content(session, settings, msg, "sms", "ct1", NOW - timedelta(minutes=30), NOW)
+    ds._flag_content(session, settings, msg, "sms", "ct1", NOW - timedelta(minutes=30), NOW)        # same message again
+    ds._flag_content(session, settings, {"id": "m2", "body": "Hello there", "source": "app"}, "sms", "ct2", NOW, NOW)
+    session.commit()
+    assert session.execute(text("SELECT count(*) FROM channel_events WHERE kind='content_flag'")).scalar() == 1
+    with patch("app.services.alerting._send_alert_email", lambda **kw: sent.append(kw["alert_type"])):
+        assert svc.run_content_flag_check(session, settings, NOW) == 1
+        assert svc.run_content_flag_check(session, settings, NOW) == 1                            # still one alert, not two
+        session.commit()
+        assert sent == ["ghl_content_flag"]
+        assert svc.run_content_flag_check(session, settings, NOW + timedelta(hours=25)) == 0      # window passed -> resolves
+        session.commit()
+    assert session.execute(text("SELECT status FROM alert_events WHERE alert_type='ghl_content_flag'")).scalar() == "resolved"

@@ -156,7 +156,7 @@ def test_sms_marketing_draft_twice_falls_back_to_a_safe_notice(llm):
     bad = {"sms_text": "Our class starts Nov 12! RSVP for the Open House at myfreeaiclass.com"}
     llm.scripts = [bad, bad]
     out = generate_vm_sms(_ctx(name="Sam"), NS())
-    assert out.startswith("Hi Sam, it's Cora from Colaberry. I just tried to call you about the AI Systems Architect Accelerator")
+    assert out.startswith("Hi Sam, it's Cora from Colaberry. I tried calling about the AI Systems Architect Accelerator")
     assert g.decide(out, g.GateUsage(), _cfg(notification_only=True)).action == g.ALLOW
 
 
@@ -209,3 +209,18 @@ def test_employment_and_placement_claims_are_forbidden_in_every_message():
                   "A guaranteed job after week 12", "Great job placement support"):
         assert offer.forbidden_hits(claim, terms), claim
     assert offer.forbidden_hits("Colaberry helps learners prepare for AI roles.", terms) == []
+
+
+def test_a_two_segment_draft_is_never_sent_when_a_one_segment_one_is_possible(llm):
+    long_ok = {"sms_text": "Hi Sam, it's Cora from Colaberry. I've called a couple of times about the AI Systems Architect Accelerator. "
+                           "What time is good for you to talk this week?"}
+    short_ok = {"sms_text": "Hi Sam, it's Cora from Colaberry. I tried calling about the AI Systems Architect Accelerator. When can we talk?"}
+    llm.scripts = [long_ok, long_ok, short_ok]            # two drafts over 160 characters, then a one-segment draft
+    out = generate_vm_sms(_ctx(name="Sam"), NS())
+    assert len(out) <= 160 and out.endswith("Text STOP to stop alerts") and "When can we talk?" in out
+
+
+def test_the_deterministic_fallback_is_a_single_segment_even_for_long_names(llm):
+    llm.scripts = []
+    out = generate_vm_sms(_ctx(name="Alexandria"), NS())
+    assert len(out) <= 160 and g.count_segments(out) == 1
