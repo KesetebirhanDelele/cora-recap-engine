@@ -27,7 +27,10 @@ DEFAULT_OFFER_FACTS = (
 # Course / subject names of the retired offer. A text or email containing one is rejected.
 DEFAULT_FORBIDDEN_TERMS = (
     "data analytics,data analyst,data science,bootcamp,boot camp,power bi,tableau,sql,excel,"
-    "full stack,full-stack,cybersecurity,cyber security,business intelligence"
+    "full stack,full-stack,cybersecurity,cyber security,business intelligence,"
+    # Never state an employment / placement outcome: an unprovable number to a prospective student is a regulatory exposure
+    # (Ali, 2026-10-03: only with his written approval of the number and its source).
+    "employment rate,placement rate,job placement,job guarantee,guaranteed job,hiring rate,employment outcome"
 )
 
 # Wording that belongs in email, not in a missed-call notification SMS.

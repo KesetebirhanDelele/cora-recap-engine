@@ -199,3 +199,13 @@ def test_followup_requests_only_the_channel_it_needs(llm):
     llm.seen.clear()
     r = generate_vm_followup(_ctx(), NS(), None, channel="email")
     assert r.sms_text == "" and r.email_subject == "s" and len(llm.seen) == 1
+
+
+def test_employment_and_placement_claims_are_forbidden_in_every_message():
+    from app.core import offer
+
+    terms = offer.parse_terms(None)
+    for claim in ("Our program has a 71% employment rate.", "We boast a high placement rate", "Job guarantee for graduates",
+                  "A guaranteed job after week 12", "Great job placement support"):
+        assert offer.forbidden_hits(claim, terms), claim
+    assert offer.forbidden_hits("Colaberry helps learners prepare for AI roles.", terms) == []
