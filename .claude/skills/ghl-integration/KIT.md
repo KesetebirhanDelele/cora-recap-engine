@@ -89,7 +89,7 @@ Verify, then write a spec before code:
    for native calls). This decides how call outcomes are stored and how soon after the call they are known.
 3. **Outcome vocabulary** - map GHL's status / end reason / voicemail detection to your own outcomes.
 4. **Agent prompt and knowledge base live inside GHL** (AI Agents), not in your repo: treat them as external places to keep consistent.
-5. **Call DND and consent** - confirm whether Voice AI honours Call DND and calling hours itself; keep your own gate anyway.
+5. **Call DND and consent** - **do not assume GHL's Voice AI honours Call DND.** Observed once (test contact, Call DND switched on about 19 minutes before): a GHL Voice AI outbound call, started from a workflow, was still placed and completed (101 s), while the contact's DND tooltip appeared only on the manual dialer. Likewise a workflow's webhook and other non-messaging actions keep running when DND is on (DND only affects communication actions). So gate **inside the workflow** (an If/Else at the start that exits when Call DND is on or an opt-out tag is present, placed before any Voice AI / call action) and verify enforcement per account with a test contact before going live. Re-test after any change to the workflow or the agent.
 6. **Transfer / callback / booking actions** and their events.
 
 ## 9. Start-up checklist for a new repo
