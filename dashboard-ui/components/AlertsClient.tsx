@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { fetchAlerts, acknowledgeAlert } from "@/lib/api";
+import { fetchAlerts, acknowledgeAlert, resolveAlert } from "@/lib/api";
 import type { Alert, AlertStatus } from "@/types";
 
 const SEV_COLOR: Record<string, string> = {
@@ -32,11 +32,11 @@ function AlertRow({ alert, onAcknowledged }: { alert: Alert; onAcknowledged: (id
   const [acking, setAcking] = useState(false);
   const [ackError, setAckError] = useState<string | null>(null);
 
-  async function handleAcknowledge() {
+  async function handleAcknowledge(resolve = false) {
     setAcking(true);
     setAckError(null);
     try {
-      await acknowledgeAlert(alert.id);
+      await (resolve ? resolveAlert(alert.id) : acknowledgeAlert(alert.id));
       onAcknowledged(alert.id);
     } catch (e) {
       setAckError(String(e));
@@ -92,7 +92,7 @@ function AlertRow({ alert, onAcknowledged }: { alert: Alert; onAcknowledged: (id
             {timeAgo(alert.created_at)}
           </span>
         </div>
-        <div style={{ fontSize: "0.82rem", color: "#374151" }}>{alert.message}</div>
+        <div style={{ fontSize: "0.82rem", color: "#374151", whiteSpace: "pre-wrap" as const }}>{alert.message}</div>
         {alert.current_value !== null && (
           <div style={{ marginTop: 4, fontSize: "0.7rem", color: "#64748b" }}>
             Value: <strong style={{ color: sevColor }}>{alert.current_value}</strong>
@@ -104,26 +104,33 @@ function AlertRow({ alert, onAcknowledged }: { alert: Alert; onAcknowledged: (id
         )}
       </div>
 
-      {alert.status === "active" && (
-        <button
-          onClick={handleAcknowledge}
-          disabled={acking}
-          style={{
-            flexShrink: 0,
-            padding: "0.25rem 0.65rem",
-            border: "1px solid #bfdbfe",
-            borderRadius: 5,
-            background: "#eff6ff",
-            color: "#1d4ed8",
-            fontSize: "0.72rem",
-            fontWeight: 600,
-            cursor: acking ? "not-allowed" : "pointer",
-            opacity: acking ? 0.6 : 1,
-            whiteSpace: "nowrap" as const,
-          }}
-        >
-          {acking ? "…" : "Acknowledge"}
-        </button>
+      {(alert.status === "active" || alert.status === "acknowledged") && (
+        <div style={{ display: "flex", gap: "0.4rem", flexShrink: 0 }}>
+          {alert.status === "active" && (
+            <button
+              onClick={() => handleAcknowledge(false)}
+              disabled={acking}
+              style={{
+                padding: "0.25rem 0.65rem", border: "1px solid #bfdbfe", borderRadius: 5, background: "#eff6ff",
+                color: "#1d4ed8", fontSize: "0.72rem", fontWeight: 600, cursor: acking ? "not-allowed" : "pointer",
+                opacity: acking ? 0.6 : 1, whiteSpace: "nowrap" as const,
+              }}
+            >
+              {acking ? "…" : "Acknowledge"}
+            </button>
+          )}
+          <button
+            onClick={() => handleAcknowledge(true)}
+            disabled={acking}
+            style={{
+              padding: "0.25rem 0.65rem", border: "1px solid #bbf7d0", borderRadius: 5, background: "#f0fdf4",
+              color: "#15803d", fontSize: "0.72rem", fontWeight: 600, cursor: acking ? "not-allowed" : "pointer",
+              opacity: acking ? 0.6 : 1, whiteSpace: "nowrap" as const,
+            }}
+          >
+            {acking ? "…" : "Resolve"}
+          </button>
+        </div>
       )}
     </div>
   );

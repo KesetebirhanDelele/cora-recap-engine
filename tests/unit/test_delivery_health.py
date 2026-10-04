@@ -512,11 +512,29 @@ def test_content_flags_are_recorded_once_and_raise_a_single_alert_then_resolve(s
     ds._flag_content(session, settings, {"id": "m2", "body": "Hello there", "source": "app"}, "sms", "ct2", NOW, NOW)
     session.commit()
     assert session.execute(text("SELECT count(*) FROM channel_events WHERE kind='content_flag'")).scalar() == 1
-    with patch("app.services.alerting._send_alert_email", lambda **kw: sent.append(kw["alert_type"])):
+    def _send(**kw):
+        sent.append(kw["alert_type"])
+        bodies.append(kw["message"])
+
+    bodies = []
+    with patch("app.services.alerting._send_alert_email", _send),             patch.object(svc, "_lead_line", lambda st, cid: f"Jo Lead, phone +15551230000, email jo@x.com, contact {cid}"):
         assert svc.run_content_flag_check(session, settings, NOW) == 1
         assert svc.run_content_flag_check(session, settings, NOW) == 1                            # still one alert, not two
         session.commit()
         assert sent == ["ghl_content_flag"]
-        assert svc.run_content_flag_check(session, settings, NOW + timedelta(hours=25)) == 0      # window passed -> resolves
+        assert "+15551230000" in bodies[0] and "jo@x.com" in bodies[0] and "m1" in bodies[0]      # who was messaged
+        session.execute(text("UPDATE alert_events SET status='acknowledged', resolved_at=:n"), {"n": NOW})
         session.commit()
-    assert session.execute(text("SELECT status FROM alert_events WHERE alert_type='ghl_content_flag'")).scalar() == "resolved"
+        assert svc.run_content_flag_check(session, settings, NOW) == 1                            # acknowledged: NOT re-alerted
+        session.commit()
+        assert sent == ["ghl_content_flag"]
+        ds._flag_content(session, settings, {"id": "m3", "body": "71% employment rate", "source": "app"}, "sms", "ct3", NOW, NOW)
+        session.commit()
+        svc.run_content_flag_check(session, settings, NOW)                                        # a NEW message does alert
+        session.commit()
+        assert sent == ["ghl_content_flag", "ghl_content_flag"]
+        session.execute(text("UPDATE alert_events SET status='acknowledged' WHERE status='active'"))
+        session.commit()
+        assert svc.run_content_flag_check(session, settings, NOW + timedelta(hours=25)) == 0      # window passed, nothing active
+        session.commit()
+    assert session.execute(text("SELECT count(*) FROM alert_events WHERE status='active'")).scalar() == 0

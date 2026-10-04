@@ -413,29 +413,49 @@ def mark_no_address(session: Session, ghl: Any, now: datetime | None = None, con
 CONTENT_ALERT = "ghl_content_flag"
 
 
+def _lead_line(settings: Any, contact_id: str) -> str:
+    """Name, phone and email of the lead, read from GHL so whoever gets the alert can see who was messaged. Never raises."""
+    try:
+        from app.adapters.ghl import GHLClient
+
+        c = GHLClient(settings=settings).get_contact(contact_id)
+        c = c.get("contact", c)
+        name = " ".join(x for x in (c.get("firstName"), c.get("lastName")) if x) or "(no name)"
+        return f"{name}, phone {c.get('phone') or 'none'}, email {c.get('email') or 'none'}, contact {contact_id}"
+    except Exception as exc:
+        logger.warning("content flag: could not read contact %s: %s", contact_id, exc)
+        return f"contact {contact_id}"
+
+
 def run_content_flag_check(session: Session, settings: Any, now: datetime | None = None) -> int:
-    """One alert (email to alert_email_to, system-alert headers) while any content flag exists in the last 24 hours;
-    resolved when there are none. Returns the number of flags in the window."""
+    """One alert (email to alert_email_to, system-alert headers) per batch of NEW content flags, naming each lead.
+    A flag is reported once: its message id is written into the alert, so acknowledging or resolving an alert never
+    makes the same message alert again. Active alerts resolve themselves when no flag is left in the 24 h window.
+    Returns the number of flags in the window."""
     from app.models.alert_event import AlertEvent
     from app.services.alerting import _send_alert_email
 
     now = now or datetime.now(tz=timezone.utc)
-    rows = session.execute(text("""
-        SELECT error, source, count(*) FROM channel_events WHERE kind = 'content_flag' AND event_at >= :s
-        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 6"""), {"s": now - timedelta(hours=24)}).fetchall()
-    total = sum(int(r[2]) for r in rows)
+    flags = session.execute(text("""
+        SELECT external_id, contact_id, channel, error, source, event_at FROM channel_events
+        WHERE kind = 'content_flag' AND event_at >= :s ORDER BY event_at"""), {"s": now - timedelta(hours=24)}).fetchall()
+    total = len(flags)
+    reported = " ".join(r[0] or "" for r in session.execute(
+        text("SELECT message FROM alert_events WHERE alert_type = :t"), {"t": CONTENT_ALERT}).fetchall())
+    new = [f for f in flags if f[0] and f[0] not in reported]
     active = session.execute(
         text("SELECT id FROM alert_events WHERE alert_type = :t AND status = 'active' LIMIT 1"), {"t": CONTENT_ALERT}).fetchone()
-    if total and not active:
-        detail = "; ".join(f"{r[0]} x{r[2]} (sent by {r[1]})" for r in rows)
-        msg = (f"{total} outbound message(s) in the last 24 h named a retired course, made an employment claim, or answered an "
-               f"opt-out: {detail}. See channel_events kind=content_flag.")
+    if new:
+        lines = [f"- {_lead_line(settings, f[1])}: {f[2]} sent by {f[4]} at {f[5]:%Y-%m-%d %H:%M} UTC; found: {f[3]}; message id {f[0]}"
+                 for f in new[:10]]
+        msg = (f"{len(new)} new outbound message(s) named a retired course, made an employment claim, or answered an "
+               f"opt-out ({total} in the last 24 h):\n" + "\n".join(lines))
         aid = str(uuid.uuid4())
         session.add(AlertEvent(id=aid, alert_type=CONTENT_ALERT, severity="warning", status="active", message=msg,
                                email_sent_at=now, last_seen_at=now, created_at=now))
         _send_alert_email(settings=settings, alert_id=aid, alert_type=CONTENT_ALERT, severity="warning", message=msg, now=now)
     elif total and active:
         session.execute(text("UPDATE alert_events SET last_seen_at = :n WHERE id = :i"), {"n": now, "i": active[0]})
-    elif active:
+    elif not total and active:
         session.execute(text("UPDATE alert_events SET status='resolved', resolved_at=:n WHERE id=:i"), {"n": now, "i": active[0]})
     return total

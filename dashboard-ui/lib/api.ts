@@ -347,6 +347,10 @@ export async function acknowledgeAlert(alertId: string, note = ""): Promise<{ st
   return post("/dashboard/actions/acknowledge-alert", { alert_id: alertId, note });
 }
 
+export async function resolveAlert(alertId: string, note = ""): Promise<{ status: string; alert_id: string; audit_log_id: string | null }> {
+  return post("/dashboard/actions/resolve-alert", { alert_id: alertId, note });
+}
+
 export async function fetchCardMetrics(): Promise<CardMetricsResponse> {
   return get<CardMetricsResponse>("/dashboard/card-metrics");
 }

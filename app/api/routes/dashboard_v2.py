@@ -942,6 +942,32 @@ def action_acknowledge_alert(
     return {"status": "ok", "alert_id": body.alert_id, "audit_log_id": audit.id}
 
 
+@router.post("/actions/resolve-alert")
+def action_resolve_alert(
+    body: AcknowledgeAlertRequest,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Mark an active or acknowledged alert as resolved (the problem is dealt with)."""
+    from sqlalchemy import text
+    import uuid
+    from app.models.audit import AuditLog
+
+    now = datetime.now(tz=timezone.utc)
+    result = session.execute(text("""
+        UPDATE alert_events SET status = 'resolved', resolved_at = :now
+        WHERE id = :alert_id AND status IN ('active', 'acknowledged') RETURNING id
+    """), {"alert_id": body.alert_id, "now": now})
+    if result.rowcount == 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Alert not found or already resolved")
+    audit = AuditLog(id=str(uuid.uuid4()), entity_type="alert", entity_id=body.alert_id, action="resolve_alert",
+                     operator_id=auth["operator_id"], context_json={"note": body.note}, created_at=now)
+    session.add(audit)
+    session.flush()
+    session.commit()
+    return {"status": "ok", "alert_id": body.alert_id, "audit_log_id": audit.id}
+
+
 # ── Delivery Health (spec/35) ────────────────────────────────────────────────
 
 @router.get("/delivery-health")
