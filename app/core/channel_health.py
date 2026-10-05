@@ -100,7 +100,23 @@ class ChannelStats:
         return (self.delivered / resolved) if resolved else None
 
 
-def evaluate(stats: ChannelStats, now: datetime, th: Thresholds, tracker_age_hours: float) -> ChannelStats:
+def active_day_hours(since: datetime, now: datetime, days: set[int], tz_name: str) -> float:
+    """Hours between `since` and `now` that fall on a campaign-active weekday (0=Mon .. 6=Sun, in tz_name).
+    Calls only run on active days (cold leads Mon-Fri), so a weekend of silence is expected, not an outage."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(tz_name)
+    cur, end, total = since.astimezone(tz), now.astimezone(tz), 0.0
+    while cur < end:
+        nxt = min(end, (cur + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0))
+        if cur.weekday() in days:
+            total += (nxt - cur).total_seconds() / 3600
+        cur = nxt
+    return total
+
+
+def evaluate(stats: ChannelStats, now: datetime, th: Thresholds, tracker_age_hours: float,
+             silent_hours: float | None = None) -> ChannelStats:
     """Fill stats.level / stats.reasons. Rules (same for the tile colour and the alert):
       RED   no delivery for >= silence_hours, or >= min_volume sent in 24h and < red_rate delivered
       AMBER silent >= amber_silence_hours, or delivered rate < amber_rate, or > amber_unconfirmed unconfirmed
@@ -123,7 +139,7 @@ def evaluate(stats: ChannelStats, now: datetime, th: Thresholds, tracker_age_hou
 
     silent_h = None
     if stats.last_delivered_at is not None:
-        silent_h = (now - stats.last_delivered_at).total_seconds() / 3600
+        silent_h = silent_hours if silent_hours is not None else (now - stats.last_delivered_at).total_seconds() / 3600
     judged = silent_h is not None or tracker_age_hours >= th.silence_hours
     if judged:
         if silent_h is None or silent_h >= th.silence_hours:

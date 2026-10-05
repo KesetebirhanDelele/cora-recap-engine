@@ -168,7 +168,15 @@ def channel_stats(session: Session, settings: Any, channel: str, now: datetime) 
         stats.ghl_delivered_24h = int(session.execute(
             text("SELECT count(*) FROM channel_events WHERE kind='delivery' AND channel=:c AND outcome='delivered' AND event_at >= :s"),
             {"c": channel, "s": now - timedelta(hours=24)}).scalar() or 0)
-    return ch.evaluate(stats, now, th, tracker_age_hours(session, now))
+    silent = None
+    if channel == "call" and stats.last_delivered_at is not None:
+        # Cold Lead calls run on cold_lead_active_days only (Mon-Fri): count silence on those days, not the weekend.
+        try:
+            days = {int(x) for x in _cfg(session, settings, "cold_lead_active_days", "0,1,2,3,4").split(",") if x.strip()}
+            silent = ch.active_day_hours(stats.last_delivered_at, now, days, getattr(settings, "default_timezone", "America/Chicago"))
+        except Exception as exc:
+            logger.warning("channel_health: call active days unreadable: %s", exc)
+    return ch.evaluate(stats, now, th, tracker_age_hours(session, now), silent_hours=silent)
 
 
 def trend(session: Session, channel: str, now: datetime, days: int = 7) -> list[dict[str, Any]]:

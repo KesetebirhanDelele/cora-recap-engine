@@ -538,3 +538,27 @@ def test_content_flags_are_recorded_once_and_raise_a_single_alert_then_resolve(s
         assert svc.run_content_flag_check(session, settings, NOW + timedelta(hours=25)) == 0      # window passed, nothing active
         session.commit()
     assert session.execute(text("SELECT count(*) FROM alert_events WHERE status='active'")).scalar() == 0
+
+
+def test_weekend_does_not_count_as_call_silence():
+    from datetime import datetime, timezone
+
+    friday_evening = datetime(2026, 10, 3, 0, 35, tzinfo=timezone.utc)        # Fri Oct 2, 7:35 PM CDT
+    monday_8am = datetime(2026, 10, 5, 13, 1, tzinfo=timezone.utc)            # Mon Oct 5, 8:01 AM CDT
+    weekdays = {0, 1, 2, 3, 4}
+    h = ch.active_day_hours(friday_evening, monday_8am, weekdays, "America/Chicago")
+    assert 12 < h < 14                                                       # 4.4 h of Friday + 8 h of Monday
+    s = _stats(last_delivered_at=friday_evening)
+    assert ch.evaluate(s, monday_8am, TH, 100, silent_hours=h).level == ch.GREEN
+    s = _stats(last_delivered_at=friday_evening)
+    assert ch.evaluate(s, monday_8am, TH, 100).level == ch.RED                 # without the weekday rule it was the false alarm
+
+
+def test_a_real_weekday_outage_still_counts_as_call_silence():
+    from datetime import datetime, timezone
+
+    last = datetime(2026, 10, 5, 13, 0, tzinfo=timezone.utc)                  # Mon
+    now = datetime(2026, 10, 8, 3, 0, tzinfo=timezone.utc)                    # Wed night: 2.4 weekdays later
+    h = ch.active_day_hours(last, now, {0, 1, 2, 3, 4}, "America/Chicago")
+    assert h > 58
+    assert ch.evaluate(_stats(last_delivered_at=last), now, TH, 100, silent_hours=h + 3).level == ch.RED
