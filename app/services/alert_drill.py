@@ -60,7 +60,7 @@ def send_drill(settings: Any, session: Any, kind: str, channel: str = "sms") -> 
     subject, body, headers = build_drill(kind, channel)
     to = [x.strip() for x in (getattr(settings, "alert_email_to", "") or "").split(",") if x.strip()]
     cc = ([x.strip() for x in _cfg(session, settings, "channel_silence_cc", DEFAULT_CC).split(",") if x.strip()]
-          if kind == "health" else [])
+          if kind == "health" else [x.strip() for x in (getattr(settings, "alert_email_cc", "") or "").split(",") if x.strip()])
     _smtp_send(settings, to, subject, body, log_label=f"drill:{kind}", cc_addrs=cc, extra_headers=headers)
     return {"subject": subject, "to": to, "cc": cc, "headers": sorted(headers)}
 

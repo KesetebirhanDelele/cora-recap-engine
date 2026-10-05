@@ -320,6 +320,7 @@ class Settings(BaseSettings):
     smtp_password: Optional[str] = None
     alert_email_from: Optional[str] = None
     alert_email_to: Optional[str] = None  # comma-separated
+    alert_email_cc: Optional[str] = None  # comma-separated; copied on every generic system alert (not on to_override sends)
 
     # Sales-queue urgent-notice routing (spec/30). Per Kes, 2026-09-11: Rose
     # handles admissions questions, Taiwo handles payment/IPBC questions.

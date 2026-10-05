@@ -1398,7 +1398,8 @@ def _send_alert_email(
     ]
     body = "\n".join(body_lines)
 
-    _smtp_send(settings, to_addrs, subject, body, log_label=alert_type,
+    cc = [] if to_override is not None else [a.strip() for a in (getattr(settings, "alert_email_cc", None) or "").split(",") if a.strip()]
+    _smtp_send(settings, to_addrs, subject, body, log_label=alert_type, cc_addrs=cc,
                extra_headers=system_alert_headers(alert_type, severity, "resolved" if is_resolution else "active"))
 
 

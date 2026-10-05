@@ -193,6 +193,22 @@ def test_send_alert_email_splits_comma_separated_recipients(mock_smtp_cls):
 
 
 @patch("app.services.alerting.smtplib.SMTP")
+def test_send_alert_email_copies_alert_email_cc_but_not_on_override_sends(mock_smtp_cls):
+    settings = _make_settings(alert_email_to="a@x.com", alert_email_cc="boss@x.com")
+    mock_server = MagicMock()
+    mock_smtp_cls.return_value.__enter__ = MagicMock(return_value=mock_server)
+    mock_smtp_cls.return_value.__exit__ = MagicMock(return_value=False)
+
+    from datetime import datetime, timezone
+    now = datetime.now(tz=timezone.utc)
+    _send_alert_email(settings=settings, alert_id="a1", alert_type="queue_lag", severity="critical", message="t", now=now)
+    assert mock_server.sendmail.call_args[0][1] == ["a@x.com", "boss@x.com"]
+    _send_alert_email(settings=settings, alert_id="a2", alert_type="sales_queue_urgent", severity="warning", message="t",
+                      now=now, to_override=["rose@x.com"])
+    assert mock_server.sendmail.call_args[0][1] == ["rose@x.com"]
+
+
+@patch("app.services.alerting.smtplib.SMTP")
 def test_send_alert_email_to_override_bypasses_default_recipient(mock_smtp_cls):
     settings = _make_settings(alert_email_to="kesetebeirhan@gmail.com")
     mock_server = MagicMock()
