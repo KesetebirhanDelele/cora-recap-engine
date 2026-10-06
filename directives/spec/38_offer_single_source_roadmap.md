@@ -51,6 +51,13 @@ Status key: OK = matches the voice prompts; GAP = disagrees or unverified; ? = n
 | D4 | Is Nov 12 a real class start? If not, clear the setting. | A wrong date is what the wrong-date monitor exists to catch |
 | D5 | Which GHL snippets and which knowledge base are in active use, and which can be archived? | Defines the cleanup in phase 4 |
 
+### Answers (Kes, 2026-10-05; wording follows Ali's 2026-10-04 ruling: never "free" as a standalone claim, use "$0 to start", "No card needed", "Membership from $149/mo")
+- **D1 - answered: yes, but only when the lead asks.** Follow-ups state prices ($149 a month billed annually, $199 month-to-month) when the lead asks about cost; they are not volunteered. Voice, email and the GHL assistant must give the same answer.
+- **D2 - answered:** the main aim is to get the lead started at $0 through the myfreeaiclass.com link. When the lead asks how to learn, offer the two options: self-paced, or the Open House for live classes. Voice, email and the assistant describe both paths the same way. (Open: the domain name itself contains "free"; Ali's TWC ruling covers advertising wording, check with him whether the URL needs a different treatment.)
+- **D3 - answered: yes.** A lead who says "ready to enroll" gets the training.colaberry.com link in follow-ups, as voice does. Texts may therefore carry that link; the sms/email gates and forbidden terms stay as they are.
+- **D4 - answered: yes, Nov 12 is a real class start.** Keep the setting.
+- **D5 - still open** (needs Kes's review of which GHL snippets and knowledge bases are in use; the Oct 4 incident adds the three workflows to this list).
+
 ## 5. Phases (each independently verifiable)
 | Phase | Purpose | Work | Done when | Depends on |
 |---|---|---|---|---|
