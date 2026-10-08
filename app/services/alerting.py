@@ -1403,6 +1403,39 @@ def _send_alert_email(
                extra_headers=system_alert_headers(alert_type, severity, "resolved" if is_resolution else "active"))
 
 
+def send_exception_resolved_email(session: Session, settings: Any, exception_id: str, resolved_by: str, note: str = "") -> None:
+    """Email a resolved report (what the error was, what was done, who closed it) after an operator resolves an exception by
+    hand. Goes to alert_email_to, copying alert_email_cc (Ali). Never raises."""
+    try:
+        from app.core.alert_resolution import build_resolution_email
+
+        row = session.execute(text(
+            "SELECT id, type, severity, entity_type, entity_id, context_json, created_at FROM exceptions WHERE id = :i"),
+            {"i": exception_id}).fetchone()
+        if row is None:
+            return
+        exc = {"id": row[0], "type": row[1], "severity": row[2], "entity_type": row[3], "entity_id": row[4],
+               "context": row[5] or {}, "created_at": row[6]}
+        actions = []
+        for a in session.execute(text(
+                "SELECT action, operator_id, context_json, created_at FROM audit_log "
+                "WHERE entity_type = 'exception' AND entity_id = :i AND action IN ('retry_now', 'retry_with_delay') "
+                "ORDER BY created_at"), {"i": exception_id}).fetchall():
+            ctx = a[2] or {}
+            job_status = None
+            if ctx.get("new_job_id"):
+                job_status = session.execute(text("SELECT status FROM scheduled_jobs WHERE id = :j"),
+                                             {"j": ctx["new_job_id"]}).scalar()
+            actions.append({"action": a[0], "operator": a[1], "context": ctx, "at": a[3], "job_status": job_status})
+        subject, body = build_resolution_email(exc, actions, resolved_by, note, datetime.now(tz=timezone.utc))
+        to = [x.strip() for x in (getattr(settings, "alert_email_to", "") or "").split(",") if x.strip()]
+        cc = [x.strip() for x in (getattr(settings, "alert_email_cc", "") or "").split(",") if x.strip()]
+        _smtp_send(settings, to, subject, body, log_label="exception_resolved", cc_addrs=cc,
+                   extra_headers=system_alert_headers(exc["type"], exc["severity"], "resolved"))
+    except Exception as exc_:
+        logger.warning("alerting: resolved report failed for %s: %s", exception_id, exc_)
+
+
 def system_alert_headers(alert_type: str, severity: str, state: str) -> dict[str, str]:
     """Hidden labels on every generic system alert (value `system`; delivery-health alerts use `health`), so a mail rule
     that matches the X-Cora-Alert header keeps both. Keep these names stable - rules are pinned to them."""

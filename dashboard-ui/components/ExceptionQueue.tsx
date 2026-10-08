@@ -240,8 +240,10 @@ function ExceptionItem({ exc, onAction }: { exc: ExceptionRecord; onAction: () =
   const isOpen = exc.status === "open";
 
   async function doResolve() {
+    const note = window.prompt("How was this resolved? (goes in the resolved report to Ali)", "operator resolved");
+    if (note === null) return;
     setBusy(true);
-    try { await resolveException({ exception_id: exc.id, note: "operator resolved" }); onAction(); }
+    try { await resolveException({ exception_id: exc.id, note: note.trim() || "operator resolved" }); onAction(); }
     catch { /* surfaced in parent */ }
     setBusy(false);
   }

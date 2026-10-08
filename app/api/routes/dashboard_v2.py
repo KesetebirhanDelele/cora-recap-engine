@@ -699,6 +699,11 @@ def action_resolve(
     session.flush()
     session.commit()
 
+    from app.config import get_settings
+    from app.services.alerting import send_exception_resolved_email
+
+    send_exception_resolved_email(session, get_settings(), body.exception_id, operator_id, body.note)
+
     return {"status": "ok", "audit_log_id": audit.id}
 
 
