@@ -103,3 +103,10 @@ def apply_block(session: Session, job: Any, contact_id: str, result: GateResult)
            {"reason": result.reason, "job_id": job.id, "other_jobs_cancelled": cancelled, "do_not_call_set": result.strong})
     logger.warning("call gate: %s - call cancelled | contact_id=%s job_id=%s other_jobs_cancelled=%s",
                    result.reason, contact_id, job.id, cancelled)
+    try:
+        from app.config import get_settings
+        from app.services import dnd_request
+
+        dnd_request.on_blocked_callback(session, get_settings(), job, contact_id, result.reason)
+    except Exception as exc:                       # the staff alert must never undo the block
+        logger.warning("call gate: staff alert failed: %s", exc)

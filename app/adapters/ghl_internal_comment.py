@@ -40,6 +40,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings, get_settings
+from app.core.http_retry import connect_retry_transport
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,7 @@ class GhlInternalCommentClient:
     def __init__(self, settings: Settings | None = None, _http: httpx.Client | None = None):
         self.settings = settings or get_settings()
         self._http = _http or httpx.Client(
+            transport=connect_retry_transport(),
             base_url=self.settings.ghl_base_url,
             timeout=self.settings.ghl_timeout_seconds,
         )

@@ -44,6 +44,7 @@ Deduplication key: (alert_type, status='active').
 from __future__ import annotations
 
 import logging
+import time
 import re
 import smtplib
 import uuid
@@ -1337,12 +1338,19 @@ def _smtp_send(
     envelope_addrs = to_addrs + [a for a in cc_addrs if a not in to_addrs]
 
     try:
-        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
-            if settings.smtp_use_tls:
-                server.starttls()
-            if settings.smtp_username and settings.smtp_password:
-                server.login(settings.smtp_username, settings.smtp_password)
-            server.sendmail(from_addr, envelope_addrs, msg.as_string())
+        for attempt in range(3):
+            try:
+                with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+                    if settings.smtp_use_tls:
+                        server.starttls()
+                    if settings.smtp_username and settings.smtp_password:
+                        server.login(settings.smtp_username, settings.smtp_password)
+                    server.sendmail(from_addr, envelope_addrs, msg.as_string())
+                break
+            except (ConnectionError, TimeoutError, OSError) as exc:    # could not reach the mail server: try again, 2 s apart
+                if attempt == 2 or isinstance(exc, smtplib.SMTPException):
+                    raise
+                time.sleep(2)
         logger.info(
             "alerting: email sent for %s (to=%d, cc=%d recipient(s))",
             log_label, len(to_addrs), len(cc_addrs),

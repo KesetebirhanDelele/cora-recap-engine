@@ -145,6 +145,10 @@ def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: 
             # write must use the contacts token, which optout builds itself.
             optout.handle_reply(session, settings, None, channel=channel, message=m, contact_id=contact_id,
                                 llm_budget=llm_budget)
+            from app.services import dnd_request
+
+            dnd_request.on_reply(session, settings, channel=channel, contact_id=contact_id, message_id=m["id"],
+                                 body=m.get("body") or "")
 
 
 def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) -> tuple[dict, dict, set]:

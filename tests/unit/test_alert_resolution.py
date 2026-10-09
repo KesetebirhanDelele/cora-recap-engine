@@ -42,3 +42,17 @@ def test_resolved_report_goes_to_the_alert_recipients_with_cc_and_never_raises()
     assert kw["extra_headers"]["X-Cora-Alert"] == "system" and kw["extra_headers"]["X-Cora-Alert-State"] == "resolved"
     session.execute.side_effect = RuntimeError("db down")
     alerting.send_exception_resolved_email(session, settings, "e1", "kes", "done")     # must not raise
+
+
+def test_retry_payload_carries_the_failed_jobs_own_payload_not_just_the_error():
+    from app.services.dashboard import _retry_payload
+
+    original = MagicMock(payload_json={"contact_id": "+16824081767", "phone_number": "+16824081767", "campaign_name": "Cold Lead"})
+    session = MagicMock()
+    session.get.return_value = original
+    ctx = {"error": "[Errno 101] Network is unreachable", "job_id": "j1"}
+    p = _retry_payload(session, ctx)
+    assert p["phone_number"] == "+16824081767" and p["campaign_name"] == "Cold Lead" and p["error"] == ctx["error"]
+    session.get.return_value = None                                   # original job row gone: context only, as before
+    assert _retry_payload(session, ctx) == ctx
+    assert _retry_payload(session, {"error": "x"}) == {"error": "x"}

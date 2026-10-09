@@ -75,6 +75,15 @@ def _load_open_exception(session: Session, exception_id: str) -> ExceptionRecord
     return exc
 
 
+def _retry_payload(session: Session, ctx: dict) -> dict:
+    """Payload for a retried job: the failed job's own payload (phone number, campaign, call id...) overlaid on the exception
+    context. The context alone holds only error details, so a retry built from it ran with nothing to act on (2026-10-08:
+    three outbound_launch_failed retries 'completed' without placing a call)."""
+    job_id = ctx.get("job_id") or ctx.get("original_job_id")
+    original = session.get(ScheduledJob, job_id) if job_id else None
+    return {**ctx, **((original.payload_json or {}) if original is not None else {})}
+
+
 def _resolve_retry_job_type(session: Session, ctx: dict) -> str:
     """
     Determine which job_type a retry should re-enqueue.
@@ -132,7 +141,7 @@ def retry_now(
         entity_type=entity_type,
         entity_id=entity_id,
         run_at=datetime.now(tz=timezone.utc),
-        payload=ctx,
+        payload=_retry_payload(session, ctx),
     )
 
     _audit(
@@ -179,7 +188,7 @@ def retry_with_delay(
         entity_type=entity_type,
         entity_id=entity_id,
         run_at=run_at,
-        payload=ctx,
+        payload=_retry_payload(session, ctx),
     )
 
     _audit(

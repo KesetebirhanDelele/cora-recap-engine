@@ -35,6 +35,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings, get_settings
+from app.core.http_retry import connect_retry_transport
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class GHLClient:
         self._api_key_override = api_key_override
         # _http injected in tests to avoid real network calls
         self._http = _http or httpx.Client(
+            transport=connect_retry_transport(),
             base_url=self.settings.ghl_base_url,
             timeout=self.settings.ghl_timeout_seconds,
         )
