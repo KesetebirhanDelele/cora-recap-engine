@@ -31,6 +31,23 @@ def forbidden_in(body: str | None, terms: tuple[str, ...]) -> list[str]:
     return offer.forbidden_hits(body, terms)
 
 
+DEFAULT_BRAND_PHRASES = "Colaberry School of Data Analytics,School of Data Analytics"
+
+
+def parse_brand_phrases(value: str | None) -> tuple[str, ...]:
+    raw = DEFAULT_BRAND_PHRASES if value is None else value
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def strip_brand(body: str | None, phrases: tuple[str, ...]) -> str:
+    """Remove the company's own name (e.g. in a staff email signature) before the keyword scan. Only the phrase is removed,
+    so 'the Data Analytics bootcamp at Colaberry School of Data Analytics' still leaves 'Data Analytics bootcamp'."""
+    text = body or ""
+    for p in sorted(phrases, key=len, reverse=True):          # longest first: the full name before its shorter form
+        text = re.sub(r"(?i)" + re.escape(p), " ", text)
+    return text
+
+
 def visible_text(body: str | None) -> str:
     """Body with HTML tags and entities-as-spaces removed, whitespace collapsed (emails arrive as HTML)."""
     return re.sub(r"\s+", " ", _TAGS.sub(" ", body or "").replace("&nbsp;", " ")).strip()

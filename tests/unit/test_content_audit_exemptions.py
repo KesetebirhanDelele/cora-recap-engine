@@ -169,3 +169,29 @@ def test_interview_marker_does_not_exempt_an_employment_claim():
 def test_interview_marker_is_configurable():
     events, _ = _run("[Hiring Update] Data Analyst interview Friday", config={"interview_marker": "[Hiring Update]"})
     assert events == []
+
+
+# ── company name in a signature (Claudia Zapata email, 2026-10-12) ───────────
+
+SIGNATURE_EMAIL = ("Hello Claudia, Please reach out to Dhee at dhee@colaberry.com regarding all internship inquiries. "
+                   "Thank you. TAIWO OLUDIMIMU K Colaberry School of Data Analytics 972-992-1024 support@colaberry.com "
+                   "training.colaberry.com facebook.com/colaberryschoolofdataanalytics")
+
+
+def test_company_name_in_a_signature_is_not_flagged_and_needs_no_llm():
+    events, calls = _run(SIGNATURE_EMAIL, verdict=cj.OFFERS)
+    assert events == [] and calls == []
+
+
+def test_only_the_brand_phrase_is_removed_a_course_named_beside_it_is_still_flagged():
+    events, _ = _run("Join our Data Analytics bootcamp. Colaberry School of Data Analytics", verdict=cj.OFFERS)
+    assert len(events) == 1 and "bootcamp" in events[0]["detail"]["terms"]
+
+
+def test_brand_phrases_are_configurable_and_empty_disables():
+    assert len(_run(SIGNATURE_EMAIL, verdict=cj.OFFERS, config={"brand_phrases": ""})[0]) == 1
+
+
+def test_strip_brand_is_case_insensitive_and_longest_first():
+    out = ca.strip_brand("A COLABERRY SCHOOL OF DATA ANALYTICS b", ca.parse_brand_phrases(None))
+    assert "analytics" not in out.lower() and "school" not in out.lower()

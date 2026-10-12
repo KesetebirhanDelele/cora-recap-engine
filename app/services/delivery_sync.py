@@ -205,6 +205,8 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
                   conv_msgs: list[dict] | None = None, llm_budget: list[int] | None = None) -> None:
     """Record outbound text / email that names a retired course or makes an employment claim (content audit). Never raises.
 
+    The company's own name (`brand_phrases`, e.g. "Colaberry School of Data Analytics" in a staff signature) is removed
+    from the text before the scan.
     Two exemptions, both removing course-name hits only (an employment / placement claim is always flagged):
       - an interview notification (body starts with the `interview_marker`, default "[Interview Notification]")
       - a reply the LLM judge says only DECLINES the retired course (any doubt or failure leaves it flagged)"""
@@ -218,7 +220,8 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
             return get_config_value(key, session, settings, default) if settings is not None else default
 
         body = m.get("body")
-        hits = ca.forbidden_in(body, offer.parse_terms(cfg("offer_forbidden_terms", None)))
+        scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
+        hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
         verdict = None
         if hits and ca.is_interview_notice(body, cfg("interview_marker", ca.DEFAULT_INTERVIEW_MARKER)):
             hits = [h for h in hits if ca.is_employment_term(h)]
