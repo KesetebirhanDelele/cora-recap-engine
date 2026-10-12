@@ -201,6 +201,7 @@ class Settings(BaseSettings):
     openai_model_ghl_analysis: str = "gpt-4o-mini"    # GHL call analysis (rich output)
     openai_model_student_summary: str = "gpt-4o-mini"
     openai_model_consent_detector: str = "gpt-4o-mini"
+    openai_model_content_audit: str = "gpt-4o-mini"   # decline-vs-offer judge for the GHL content audit (spec/35)
     openai_model_vm_content: str = "gpt-4o-mini"
     openai_model_call_transcription: str = "whisper-1"
     openai_timeout_seconds: int = 60

@@ -201,20 +201,43 @@ def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) ->
     return by_conv, statuses, final
 
 
-def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: str, at: datetime, now: datetime) -> None:
-    """Record outbound text / email that names a retired course or makes an employment claim (content audit). Never raises."""
+def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: str, at: datetime, now: datetime,
+                  conv_msgs: list[dict] | None = None, llm_budget: list[int] | None = None) -> None:
+    """Record outbound text / email that names a retired course or makes an employment claim (content audit). Never raises.
+
+    Two exemptions, both removing course-name hits only (an employment / placement claim is always flagged):
+      - an interview notification (body starts with the `interview_marker`, default "[Interview Notification]")
+      - a reply the LLM judge says only DECLINES the retired course (any doubt or failure leaves it flagged)"""
     try:
         from app.core import content_audit as ca
         from app.core import offer
         from app.core.app_config import get_config_value
+        from app.services import content_judge
 
-        raw = get_config_value("offer_forbidden_terms", session, settings, None) if settings is not None else None
-        hits = ca.forbidden_in(m.get("body"), offer.parse_terms(raw))
+        def cfg(key: str, default: str | None) -> str | None:
+            return get_config_value(key, session, settings, default) if settings is not None else default
+
+        body = m.get("body")
+        hits = ca.forbidden_in(body, offer.parse_terms(cfg("offer_forbidden_terms", None)))
+        verdict = None
+        if hits and ca.is_interview_notice(body, cfg("interview_marker", ca.DEFAULT_INTERVIEW_MARKER)):
+            hits = [h for h in hits if ca.is_employment_term(h)]
+        elif ca.course_only(hits) and settings is not None \
+                and str(cfg("content_llm_enabled", "true")).lower() in ("true", "1", "yes") \
+                and (llm_budget is None or llm_budget[0] > 0):
+            if llm_budget is not None:
+                llm_budget[0] -= 1
+            prior = ca.prior_inbound(conv_msgs or [], m, _parse_ts)
+            verdict = content_judge.judge(settings, m["id"], ca.visible_text(body), prior)
+            if verdict == content_judge.DECLINES:
+                hits = []
         if hits:
+            detail = {"terms": hits, "snippet": (body or "")[:160]}
+            if verdict:
+                detail["llm_verdict"] = verdict
             _upsert_event(session, kind="content_flag", channel=channel, contact_id=cid, external_id=m["id"],
                           status_raw=None, outcome=None, error=", ".join(hits)[:290], event_at=at, now=now,
-                          source=str(m.get("source") or "?")[:30],
-                          detail={"terms": hits, "snippet": (m.get("body") or "")[:160]})
+                          source=str(m.get("source") or "?")[:30], detail=detail)
     except Exception as exc:
         logger.warning("delivery_sync: content audit failed: %s", exc)
 
@@ -252,7 +275,7 @@ def _process_conversation(session: Session, conv: dict, msgs: list[dict], email_
             continue
         if channel == "call" or direction != "outbound":
             continue                                   # outbound call outcome = call_events, not GHL
-        _flag_content(session, settings, m, channel, cid, at, now)
+        _flag_content(session, settings, m, channel, cid, at, now, conv_msgs=msgs, llm_budget=llm_budget)
         if channel == "sms":
             status = m.get("status")
             err = ch.extract_error(m) if ch.sms_outcome(status) == ch.FAILED else None
