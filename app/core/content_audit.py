@@ -53,6 +53,19 @@ def visible_text(body: str | None) -> str:
     return re.sub(r"\s+", " ", _TAGS.sub(" ", body or "").replace("&nbsp;", " ")).strip()
 
 
+_FOOTER_SENTENCE = re.compile(
+    r"(?i)unsubscrib|no longer (?:wish|want|care) to (?:receive|get)|manage (?:your )?(?:email )?(?:preferences|subscription)|"
+    r"view (?:this )?(?:email )?in (?:your )?browser|reply stop|to opt[- ]out")
+
+
+def strip_footer(text: str | None) -> str:
+    """Drop unsubscribe / footer boilerplate sentences from already-visible text. Used ONLY for what the LLM judge reads: a
+    footer line such as "if you no longer wish to receive these emails" otherwise reads as a decline of the course. The keyword
+    scan still runs on the full text, so a forbidden term inside a footer is still found."""
+    parts = re.split(r"(?<=[.!?])\s+|\[https?://[^\]]*\]", text or "")
+    return " ".join(p for p in parts if p and not _FOOTER_SENTENCE.search(p)).strip()
+
+
 def is_interview_notice(body: str | None, marker: str | None = DEFAULT_INTERVIEW_MARKER) -> bool:
     """True when the visible text STARTS with the interview marker (case / spacing insensitive). A marker anywhere else
     in the message does not count, so it cannot be dropped into a marketing text to get past the audit."""

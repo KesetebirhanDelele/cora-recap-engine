@@ -231,7 +231,7 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
             if llm_budget is not None:
                 llm_budget[0] -= 1
             prior = ca.prior_inbound(conv_msgs or [], m, _parse_ts)
-            verdict = content_judge.judge(settings, m["id"], ca.visible_text(body), prior)
+            verdict = content_judge.judge(settings, m["id"], ca.strip_footer(ca.visible_text(body)), prior)
             if verdict == content_judge.DECLINES:
                 hits = []
         if hits:

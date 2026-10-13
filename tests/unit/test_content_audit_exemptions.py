@@ -64,6 +64,9 @@ def test_prior_inbound_is_the_latest_inbound_before_the_message():
 
 # ── judge (OpenAI mocked) ────────────────────────────────────────────────────
 
+DECLINE_BODY = "We are no longer enrolling in the Data Analytics bootcamp."
+
+
 def _client(out=None, exc=None):
     c = MagicMock()
     if exc:
@@ -82,7 +85,7 @@ def _client(out=None, exc=None):
 ])
 def test_judge_maps_verdicts_and_defaults_to_unclear(out, want):
     with patch("app.adapters.openai_client.OpenAIClient", return_value=_client(out)):
-        assert cj.judge(SimpleNamespace(), "m1", "text", None) == want
+        assert cj.judge(SimpleNamespace(), "m1", DECLINE_BODY, None) == want
 
 
 def test_judge_failure_is_unclear_and_not_cached():
@@ -96,7 +99,7 @@ def test_judge_caches_a_verdict_per_message():
     with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
         cj.judge(SimpleNamespace(), "m1", "text", None)
         cj.judge(SimpleNamespace(), "m1", "text", None)
-    assert c.chat_completion.call_count == 1
+    assert c.chat_completion.call_count == cj.JUDGE_VOTES      # asked JUDGE_VOTES times once, then cached
 
 
 # ── _flag_content wiring ─────────────────────────────────────────────────────
@@ -195,3 +198,93 @@ def test_brand_phrases_are_configurable_and_empty_disables():
 def test_strip_brand_is_case_insensitive_and_longest_first():
     out = ca.strip_brand("A COLABERRY SCHOOL OF DATA ANALYTICS b", ca.parse_brand_phrases(None))
     assert "analytics" not in out.lower() and "school" not in out.lower()
+
+
+# ── judge votes + footer stripping (Ali 2026-10-13, replay of the 7 stored flags) ─────────────────────────────
+
+def _client_seq(*outs):
+    c = MagicMock()
+    c.chat_completion.side_effect = list(outs)
+    return c
+
+
+@pytest.mark.parametrize("votes,want", [
+    (("declines", "declines"), cj.DECLINES),
+    (("declines", "unclear"), cj.UNCLEAR),         # a split vote must NOT clear the flag
+    (("unclear", "declines"), cj.UNCLEAR),
+    (("declines", "offers"), cj.OFFERS),           # any 'offers' wins
+    (("offers", "declines"), cj.OFFERS),
+    (("unclear", "unclear"), cj.UNCLEAR),
+    (("declines", "maybe"), cj.UNCLEAR),           # off-schema vote counts as unclear
+])
+def test_judge_clears_only_when_every_vote_declines(votes, want):
+    c = _client_seq(*({"verdict": v} for v in votes))
+    with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
+        assert cj.judge(SimpleNamespace(), "mv", DECLINE_BODY, None) == want
+    assert c.chat_completion.call_count == cj.JUDGE_VOTES
+
+
+def test_one_failed_ask_is_unclear_and_not_cached():
+    c = _client_seq({"verdict": "declines"}, RuntimeError("boom"))
+    with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
+        assert cj.judge(SimpleNamespace(), "mf", "text", None) == cj.UNCLEAR
+    assert "mf" not in cj._cache
+
+
+MOCK_INTERVIEW_EMAIL = (
+    "Mock interview notification. Hi taiwo, This is a TEST of the Colaberry interview notification email. Your Data Analyst "
+    "interview with Test Company is Thursday, October 8 at 2:00 PM CT, by video. No action is needed for this test. "
+    "If you no longer wish to receive these emails you may unsubscribe [https://services.msgsndr.com/emails/builder/unsubscribe/x] "
+    "View this email in browser")
+
+
+def test_strip_footer_removes_unsubscribe_boilerplate_but_keeps_the_message():
+    out = ca.strip_footer(MOCK_INTERVIEW_EMAIL)
+    assert "no longer wish" not in out.lower() and "unsubscribe" not in out.lower() and "browser" not in out.lower()
+    assert "Data Analyst interview with Test Company" in out
+
+
+def test_strip_footer_keeps_a_genuine_decline_sentence():
+    text = "We no longer enroll new students in the Data Analytics bootcamp. Instead we offer the AI Accelerator."
+    assert ca.strip_footer(text) == text
+
+
+def test_strip_footer_handles_empty():
+    assert ca.strip_footer(None) == "" and ca.strip_footer("") == ""
+
+
+def test_judge_sees_the_body_without_the_footer_but_the_keyword_scan_still_finds_a_footer_term():
+    events, calls = _run(MOCK_INTERVIEW_EMAIL, verdict=cj.UNCLEAR)
+    assert len(events) == 1 and len(calls) == 1
+    assert "no longer wish" not in calls[0][0].lower()           # judge input is footer-free
+    events, _ = _run("Hello. Unsubscribe here: Data Analytics bootcamp", verdict=cj.UNCLEAR)
+    assert len(events) == 1                                       # a term inside a footer-like sentence is still flagged
+
+
+@pytest.mark.parametrize("text,want", [
+    ("We are no longer enrolling in the Data Analytics bootcamp.", True),
+    ("That course is not available anymore.", True),
+    ("The Excel program was discontinued last year.", True),
+    ("We have retired the bootcamp.", True),
+    ("The course isn't offered any more.", True),
+    ("Your Data Analyst interview with Test Company is Thursday at 2 PM.", False),
+    ("Our Data Analytics bootcamp starts Monday, want a spot?", False),
+    ("Yes, the Tableau course is still available.", False),
+    ("", False), (None, False),
+])
+def test_has_decline_phrase(text, want):
+    assert cj.has_decline_phrase(text) is want
+
+
+def test_model_declines_but_text_has_no_decline_phrase_stays_flagged():
+    """Replay finding 2026-10-13: the model said 'declines' for an interview notice that merely names a job title."""
+    c = _client({"verdict": "declines"})
+    with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
+        v = cj.judge(SimpleNamespace(), "mi", "Your Data Analyst interview with Test Company is Thursday at 2 PM CT.", None)
+    assert v == cj.UNCLEAR
+
+
+def test_offer_that_contains_the_word_still_is_not_cleared_even_if_model_says_declines():
+    c = _client({"verdict": "declines"})
+    with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
+        assert cj.judge(SimpleNamespace(), "mo", "Our Data Analytics bootcamp starts Monday, want a spot?", None) == cj.UNCLEAR
