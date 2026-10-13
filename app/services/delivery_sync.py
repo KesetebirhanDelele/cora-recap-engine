@@ -207,9 +207,9 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
 
     The company's own name (`brand_phrases`, e.g. "Colaberry School of Data Analytics" in a staff signature) is removed
     from the text before the scan.
-    Two exemptions, both removing course-name hits only (an employment / placement claim is always flagged):
-      - an interview notification (body starts with the `interview_marker`, default "[Interview Notification]")
-      - a reply the LLM judge says only DECLINES the retired course (any doubt or failure leaves it flagged)"""
+    One exemption, removing course-name hits only (an employment / placement claim is always flagged):
+      - a reply the LLM judge says only DECLINES the retired course (any doubt or failure leaves it flagged)
+    There is no interview-notification exemption (removed 2026-10-13: SMS / email notices never name the job title)."""
     try:
         from app.core import content_audit as ca
         from app.core import offer
@@ -223,9 +223,7 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
         scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
         hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
         verdict = None
-        if hits and ca.is_interview_notice(body, cfg("interview_marker", ca.DEFAULT_INTERVIEW_MARKER)):
-            hits = [h for h in hits if ca.is_employment_term(h)]
-        elif ca.course_only(hits) and settings is not None \
+        if ca.course_only(hits) and settings is not None \
                 and str(cfg("content_llm_enabled", "true")).lower() in ("true", "1", "yes") \
                 and (llm_budget is None or llm_budget[0] > 0):
             if llm_budget is not None:

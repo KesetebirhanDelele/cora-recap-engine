@@ -1,4 +1,4 @@
-"""Content audit exemptions: interview-notification marker and the LLM decline-vs-offer judge (spec/35). No DB, no real LLM."""
+"""Content audit exemptions: the LLM decline-vs-offer judge, company-name strip and footer strip (spec/35). No DB, no real LLM."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -24,22 +24,6 @@ def _clear_cache():
 
 
 # ── pure logic ───────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize("body,want", [
-    ("[Interview Notification] Your interview for the Data Analyst position is on Friday.", True),
-    ("  [interview   notification] hi", True),
-    ("<html><body><p>[Interview Notification]</p><p>Hello</p></body></html>", True),
-    ("Hi! [Interview Notification] Data Analyst bootcamp starts Monday", False),    # marker not at the start
-    ("[Interview Notice] Data Analyst", False),                                      # typo does not count
-    ("", False),
-])
-def test_interview_marker_must_start_the_visible_text(body, want):
-    assert ca.is_interview_notice(body) is want
-
-
-def test_empty_marker_config_disables_the_exemption():
-    assert ca.is_interview_notice("[Interview Notification] hi", "") is False
-
 
 def test_course_only_separates_course_names_from_employment_claims():
     assert ca.course_only(["data analytics", "bootcamp"]) is True
@@ -154,24 +138,28 @@ def test_clean_message_makes_no_llm_call_and_no_flag():
     assert events == [] and calls == []
 
 
-def test_interview_notification_with_a_job_title_is_not_flagged_and_skips_the_judge():
-    events, calls = _run("[Interview Notification] Your interview for the Data Analyst position is Friday 2 PM CT.")
-    assert events == [] and calls == []
+def test_interview_text_with_a_job_title_is_flagged_even_with_the_old_marker():
+    """The [Interview Notification] exemption was removed 2026-10-13 (Ali condition 1): a prefix is a password anyone can type."""
+    for body in ("[Interview Notification] Your interview for the Data Analyst position is Friday 2 PM CT.",
+                 "Your interview for the Data Analyst position is Friday 2 PM CT."):
+        events, _ = _run(body, verdict=cj.UNCLEAR)
+        assert len(events) == 1
 
 
-def test_same_text_without_the_marker_is_flagged():
-    events, _ = _run("Your interview for the Data Analyst position is Friday 2 PM CT.", verdict=cj.UNCLEAR)
+def test_marketing_text_copying_the_old_marker_is_flagged():
+    events, _ = _run("[Interview Notification] Our Data Analytics bootcamp starts Monday", verdict=cj.UNCLEAR)
     assert len(events) == 1
 
 
-def test_interview_marker_does_not_exempt_an_employment_claim():
-    events, _ = _run("[Interview Notification] Data Analyst role, 90% placement rate")
-    assert len(events) == 1 and events[0]["detail"]["terms"] == ["placement rate"]
+def test_interview_notice_without_any_listed_term_is_not_flagged():
+    """What InboxGenius sends today: no job title, so no exemption is needed."""
+    events, calls = _run("Hi Sam, your interview with Acme for the position you applied for is on Thu Oct 8 at 2:00 PM CT.")
+    assert events == [] and calls == []
 
 
-def test_interview_marker_is_configurable():
-    events, _ = _run("[Hiring Update] Data Analyst interview Friday", config={"interview_marker": "[Hiring Update]"})
-    assert events == []
+def test_employment_claim_is_flagged_and_never_sent_to_the_judge():
+    events, calls = _run("[Interview Notification] Data Analyst role, 90% placement rate", verdict=cj.DECLINES)
+    assert len(events) == 1 and "placement rate" in events[0]["detail"]["terms"] and calls == []
 
 
 # ── company name in a signature (Claudia Zapata email, 2026-10-12) ───────────
