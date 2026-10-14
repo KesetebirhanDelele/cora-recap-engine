@@ -201,9 +201,40 @@ def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) ->
     return by_conv, statuses, final
 
 
+_CONTACT_EMAIL_CACHE: dict[str, str | None] = {}
+_CONTACT_EMAIL_CACHE_MAX = 500
+
+
+def _contact_email(settings: Any, contact_id: str) -> str | None:
+    """Email address of the GHL contact a conversation belongs to (GHL gives no recipient address on the message itself).
+    Cached per process; None on any failure, which means the message is audited as before."""
+    if not contact_id:
+        return None
+    if contact_id in _CONTACT_EMAIL_CACHE:
+        return _CONTACT_EMAIL_CACHE[contact_id]
+    try:
+        from app.adapters.ghl import GHLClient
+
+        c = GHLClient(settings=settings).get_contact(contact_id)
+        c = c.get("contact", c)
+        email = (c.get("email") or "").strip().lower() or None
+    except Exception as exc:
+        logger.warning("delivery_sync: could not read contact %s for the internal-recipient check: %s", contact_id, exc)
+        return None                                   # not cached: try again next time
+    if len(_CONTACT_EMAIL_CACHE) >= _CONTACT_EMAIL_CACHE_MAX:
+        _CONTACT_EMAIL_CACHE.clear()
+    _CONTACT_EMAIL_CACHE[contact_id] = email
+    return email
+
+
 def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: str, at: datetime, now: datetime,
                   conv_msgs: list[dict] | None = None, llm_budget: list[int] | None = None) -> None:
     """Record outbound text / email that names a retired course or makes an employment claim (content audit). Never raises.
+
+    An EMAIL whose recipient (the conversation's contact) is on our own staff domains (`audit_internal_email_domains`, default
+    colaberry.com,trillionsquare.com; empty disables) is not audited at all: GHL's own system mail such as the AI Receptionist's
+    "AI Call Recap" quotes what a caller said and went to 6 staff addresses at once. The recipient is where GHL really
+    delivered it, not a label in the text; an unreadable contact keeps the message audited. Texts are always audited.
 
     The company's own name (`brand_phrases`, e.g. "Colaberry School of Data Analytics" in a staff signature) is removed
     from the text before the scan.
@@ -223,6 +254,10 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
         scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
         hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
         verdict = None
+        if hits and channel == "email" and ca.is_internal_email(
+                _contact_email(settings, cid) if settings is not None else None,
+                ca.parse_internal_domains(cfg("audit_internal_email_domains", None))):
+            return
         if ca.course_only(hits) and settings is not None \
                 and str(cfg("content_llm_enabled", "true")).lower() in ("true", "1", "yes") \
                 and (llm_budget is None or llm_budget[0] > 0):

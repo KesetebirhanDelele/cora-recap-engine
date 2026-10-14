@@ -69,6 +69,27 @@ def is_employment_term(term: str) -> bool:
     return bool(_EMPLOYMENT_TERM.search(term))
 
 
+DEFAULT_INTERNAL_EMAIL_DOMAINS = "colaberry.com,trillionsquare.com"
+
+
+def parse_internal_domains(value: str | None) -> tuple[str, ...]:
+    """Domains whose mailboxes are our own staff. None -> default list; an empty string disables the exemption."""
+    raw = DEFAULT_INTERNAL_EMAIL_DOMAINS if value is None else value
+    return tuple(d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip())
+
+
+def is_internal_email(address: str | None, domains: tuple[str, ...]) -> bool:
+    """True only for a well-formed address on (or a subdomain of) one of `domains`. Anything else - missing, malformed,
+    a look-alike such as "colaberry.com.evil.com" or "notcolaberry.com" - is NOT internal, so the message is audited."""
+    a = (address or "").strip().lower()
+    if a.count("@") != 1 or not domains:
+        return False
+    local, _, host = a.partition("@")
+    if not local or "." not in host:
+        return False
+    return any(host == d or host.endswith("." + d) for d in domains)
+
+
 def is_hard_term(term: str) -> bool:
     """An employment / placement claim or the banned word "free" (TWC advertising rule): always flagged, never sent to the
     LLM judge, because the judge only decides whether a message declines a retired COURSE."""

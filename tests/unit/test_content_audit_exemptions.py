@@ -88,8 +88,9 @@ def test_judge_caches_a_verdict_per_message():
 
 # ── _flag_content wiring ─────────────────────────────────────────────────────
 
-def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1"):
-    """Run _flag_content with the judge and event writer stubbed. Returns (events_written, judge_calls)."""
+def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1", channel="sms", contact_email=None):
+    """Run _flag_content with the judge, the event writer and the GHL contact lookup stubbed.
+    Returns (events_written, judge_calls)."""
     events, calls = [], []
 
     def fake_judge(settings, message_id, text, prior):
@@ -98,9 +99,10 @@ def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1"):
 
     cfg = {"offer_forbidden_terms": None, **(config or {})}
     with patch.object(ds, "_upsert_event", lambda *a, **kw: events.append(kw)), \
+            patch.object(ds, "_contact_email", lambda settings, cid: contact_email), \
             patch("app.services.content_judge.judge", fake_judge), \
             patch("app.core.app_config.get_config_value", lambda key, s, st, default=None: cfg.get(key, default)):
-        ds._flag_content(None, SimpleNamespace(), {"id": mid, "body": body, "source": "app"}, "sms", "c1", NOW, NOW,
+        ds._flag_content(None, SimpleNamespace(), {"id": mid, "body": body, "source": "app"}, channel, "c1", NOW, NOW,
                          conv_msgs=conv, llm_budget=budget)
     return events, calls
 
@@ -288,3 +290,103 @@ def test_a_decline_that_also_says_start_free_stays_flagged_and_never_reaches_the
 def test_feel_free_in_a_staff_text_is_not_flagged():
     events, calls = _run("Hi Sam, feel free to call me back anytime.")
     assert events == [] and calls == []
+
+
+# ── emails delivered to our own staff are not audited (AI Call Recap false positive, 2026-10-14) ─────────────────
+
+RECAP = ("Your AI Employee has handled another call for Colaberry! Call Summary: The user, an alumnus of Colaberry, called "
+         "to ask how to present his experience on his resume for a senior Power BI developer position.")
+
+
+@pytest.mark.parametrize("address,want", [
+    ("staff@colaberry.com", True),
+    ("Staff@Colaberry.COM", True),
+    ("narendra@trillionsquare.com", True),
+    ("a@mail.colaberry.com", True),                 # subdomain of an internal domain
+    ("lead@gmail.com", False),
+    ("x@colaberry.com.evil.com", False),            # look-alike
+    ("x@notcolaberry.com", False),
+    ("colaberry.com", False),                       # not an address
+    ("a@b@colaberry.com", False),
+    ("", False), (None, False),
+])
+def test_is_internal_email(address, want):
+    assert ca.is_internal_email(address, ca.parse_internal_domains(None)) is want
+
+
+def test_internal_domain_config_parsing():
+    assert ca.parse_internal_domains(None) == ("colaberry.com", "trillionsquare.com")
+    assert ca.parse_internal_domains(" @Foo.com , bar.org ") == ("foo.com", "bar.org")
+    assert ca.parse_internal_domains("") == ()
+    assert ca.is_internal_email("a@colaberry.com", ca.parse_internal_domains("")) is False
+
+
+def test_recap_email_to_a_staff_contact_is_not_flagged_and_skips_the_judge():
+    events, calls = _run(RECAP, channel="email", contact_email="aleem@colaberry.com")
+    assert events == [] and calls == []
+
+
+def test_the_same_text_to_an_outside_lead_is_still_flagged():
+    events, _ = _run(RECAP, channel="email", contact_email="someone@gmail.com")
+    assert len(events) == 1 and "power bi" in events[0]["detail"]["terms"]
+
+
+@pytest.mark.parametrize("email", [None, "", "not-an-address"])
+def test_unreadable_or_missing_contact_email_keeps_the_message_audited(email):
+    events, _ = _run(RECAP, channel="email", contact_email=email)
+    assert len(events) == 1
+
+
+def test_texts_are_always_audited_even_if_the_contact_has_a_staff_email():
+    events, _ = _run(RECAP, channel="sms", contact_email="aleem@colaberry.com")
+    assert len(events) == 1
+
+
+def test_empty_config_disables_the_staff_exemption():
+    events, _ = _run(RECAP, channel="email", contact_email="aleem@colaberry.com", config={"audit_internal_email_domains": ""})
+    assert len(events) == 1
+
+
+def test_config_can_replace_the_internal_domain_list():
+    events, _ = _run(RECAP, channel="email", contact_email="x@partner.org", config={"audit_internal_email_domains": "partner.org"})
+    assert events == []
+    events, _ = _run(RECAP, channel="email", contact_email="x@colaberry.com", config={"audit_internal_email_domains": "partner.org"})
+    assert len(events) == 1
+
+
+def test_clean_email_to_staff_does_not_even_look_up_the_contact(monkeypatch):
+    looked_up, events = [], []
+    monkeypatch.setattr(ds, "_contact_email", lambda settings, cid: looked_up.append(cid) or "a@colaberry.com")
+    monkeypatch.setattr(ds, "_upsert_event", lambda *a, **kw: events.append(kw))
+    with patch("app.core.app_config.get_config_value", lambda key, s, st, default=None: default):
+        ds._flag_content(None, SimpleNamespace(), {"id": "m9", "body": "Hi Sam, your interview is on Thursday.", "source": "app"},
+                         "email", "c1", NOW, NOW)
+    assert events == [] and looked_up == []             # no hit -> no GHL read
+
+
+def test_contact_email_helper_reads_ghl_once_and_caches(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, settings=None, **kw): pass
+        def get_contact(self, cid):
+            calls.append(cid)
+            return {"contact": {"email": "Aleem@Colaberry.com "}}
+
+    ds._CONTACT_EMAIL_CACHE.clear()
+    monkeypatch.setattr("app.adapters.ghl.GHLClient", FakeClient)
+    assert ds._contact_email(SimpleNamespace(), "cidX") == "aleem@colaberry.com"
+    assert ds._contact_email(SimpleNamespace(), "cidX") == "aleem@colaberry.com"
+    assert calls == ["cidX"]
+    ds._CONTACT_EMAIL_CACHE.clear()
+
+
+def test_contact_email_helper_failure_returns_none_and_is_not_cached(monkeypatch):
+    class Boom:
+        def __init__(self, settings=None, **kw): pass
+        def get_contact(self, cid): raise RuntimeError("ghl down")
+
+    ds._CONTACT_EMAIL_CACHE.clear()
+    monkeypatch.setattr("app.adapters.ghl.GHLClient", Boom)
+    assert ds._contact_email(SimpleNamespace(), "cidY") is None
+    assert "cidY" not in ds._CONTACT_EMAIL_CACHE
