@@ -22,7 +22,6 @@ _ACK = re.compile(r"(?i)\b(unsubscrib\w+|stop messaging|will stop|no longer (?:r
                   r"won't (?:receive|message|contact)|will not (?:receive|message|contact)|removed you|sorry for the bother)\b")
 
 
-DEFAULT_INTERVIEW_MARKER = "[Interview Notification]"
 _TAGS = re.compile(r"(?s)<(?:style|script)\b.*?</(?:style|script)>|<[^>]+>")
 _EMPLOYMENT_TERM = re.compile(r"(?i)employment|placement|job guarantee|guaranteed job|hiring rate")
 
@@ -64,13 +63,6 @@ def strip_footer(text: str | None) -> str:
     scan still runs on the full text, so a forbidden term inside a footer is still found."""
     parts = re.split(r"(?<=[.!?])\s+|\[https?://[^\]]*\]", text or "")
     return " ".join(p for p in parts if p and not _FOOTER_SENTENCE.search(p)).strip()
-
-
-def is_interview_notice(body: str | None, marker: str | None = DEFAULT_INTERVIEW_MARKER) -> bool:
-    """True when the visible text STARTS with the interview marker (case / spacing insensitive). A marker anywhere else
-    in the message does not count, so it cannot be dropped into a marketing text to get past the audit."""
-    m = re.sub(r"\s+", " ", (marker or "").strip()).lower()
-    return bool(m) and visible_text(body).lower().startswith(m)
 
 
 def is_employment_term(term: str) -> bool:
