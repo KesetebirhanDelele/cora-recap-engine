@@ -88,17 +88,22 @@ def test_judge_caches_a_verdict_per_message():
 
 # ── _flag_content wiring ─────────────────────────────────────────────────────
 
-def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1", channel="sms", contact_email=None):
+def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1", channel="sms", contact_email=None, ok_events=None):
     """Run _flag_content with the judge, the event writer and the GHL contact lookup stubbed.
-    Returns (events_written, judge_calls)."""
+    Returns (flag_events_written, judge_calls). Messages the judge clears are recorded as kind 'content_ok'
+    rows, collected in `ok_events` (not in the flag events)."""
     events, calls = [], []
+    ok_events = [] if ok_events is None else ok_events
 
-    def fake_judge(settings, message_id, text, prior):
+    def fake_judge(settings, message_id, text, prior, terms=None):
         calls.append((text, prior))
         return verdict or cj.UNCLEAR
 
+    def write(*a, **kw):
+        (ok_events if kw.get("kind") == "content_ok" else events).append(kw)
+
     cfg = {"offer_forbidden_terms": None, **(config or {})}
-    with patch.object(ds, "_upsert_event", lambda *a, **kw: events.append(kw)), \
+    with patch.object(ds, "_upsert_event", write), \
             patch.object(ds, "_contact_email", lambda settings, cid: contact_email), \
             patch("app.services.content_judge.judge", fake_judge), \
             patch("app.core.app_config.get_config_value", lambda key, s, st, default=None: cfg.get(key, default)):
@@ -251,33 +256,45 @@ def test_judge_sees_the_body_without_the_footer_but_the_keyword_scan_still_finds
     assert len(events) == 1                                       # a term inside a footer-like sentence is still flagged
 
 
-@pytest.mark.parametrize("text,want", [
-    ("We are no longer enrolling in the Data Analytics bootcamp.", True),
-    ("That course is not available anymore.", True),
-    ("The Excel program was discontinued last year.", True),
-    ("We have retired the bootcamp.", True),
-    ("The course isn't offered any more.", True),
-    ("Your Data Analyst interview with Test Company is Thursday at 2 PM.", False),
-    ("Our Data Analytics bootcamp starts Monday, want a spot?", False),
-    ("Yes, the Tableau course is still available.", False),
-    ("", False), (None, False),
-])
-def test_has_decline_phrase(text, want):
-    assert cj.has_decline_phrase(text) is want
+def test_judge_sends_the_flagged_terms_and_the_whole_long_message_to_the_model():
+    c = _client({"verdict": "offers"})
+    long_body = ("Intro. " * 200) + "Join our Data Analytics bootcamp, seats are open."        # the offer sits past 800 chars
+    with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
+        cj.judge(SimpleNamespace(), "mlong", long_body, "hello", terms=["data analytics", "bootcamp"])
+    user = c.chat_completion.call_args_list[0].args[0][1]["content"]
+    assert "Flagged terms: data analytics, bootcamp" in user and "seats are open" in user and "hello" in user
 
 
-def test_model_declines_but_text_has_no_decline_phrase_stays_flagged():
-    """Replay finding 2026-10-13: the model said 'declines' for an interview notice that merely names a job title."""
+def test_the_previous_prompts_word_declines_is_still_understood_as_not_offering():
     c = _client({"verdict": "declines"})
     with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
-        v = cj.judge(SimpleNamespace(), "mi", "Your Data Analyst interview with Test Company is Thursday at 2 PM CT.", None)
-    assert v == cj.UNCLEAR
+        assert cj.judge(SimpleNamespace(), "mold", "x", None) == cj.NOT_OFFERING
 
 
-def test_offer_that_contains_the_word_still_is_not_cleared_even_if_model_says_declines():
-    c = _client({"verdict": "declines"})
-    with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
-        assert cj.judge(SimpleNamespace(), "mo", "Our Data Analytics bootcamp starts Monday, want a spot?", None) == cj.UNCLEAR
+def test_there_is_no_wording_list_in_the_judge_module():
+    """Kes 2026-10-14: no whack-a-mole phrase lists - the model decides from the whole message."""
+    assert not hasattr(cj, "has_decline_phrase") and not hasattr(cj, "_DECLINE_PHRASE")
+
+
+def test_context_decides_not_keywords_so_explaining_the_change_clears_when_the_judge_says_not_offering():
+    explain = "Hi Olu, Colaberry has now transitioned from offering a standalone Data Analytics program to focusing on AI training."
+    ok = []
+    events, calls = _run(explain, verdict=cj.NOT_OFFERING, ok_events=ok)
+    assert events == [] and len(calls) == 1
+    assert len(ok) == 1 and ok[0]["detail"]["verdict"] == cj.NOT_OFFERING and ok[0]["detail"]["terms"] == ["data analytics"]
+
+
+def test_an_offer_stays_flagged_and_leaves_no_content_ok_row():
+    ok = []
+    events, _ = _run("Join our Data Analytics bootcamp, seats are open.", verdict=cj.OFFERS, ok_events=ok)
+    assert len(events) == 1 and ok == []
+
+
+@pytest.mark.parametrize("verdict", [cj.UNCLEAR, cj.OFFERS])
+def test_doubt_or_offer_never_clears(verdict):
+    ok = []
+    events, _ = _run("Rather than focusing on Data Analytics alone, the new program teaches AI.", verdict=verdict, ok_events=ok)
+    assert len(events) == 1 and ok == []
 
 
 def test_a_decline_that_also_says_start_free_stays_flagged_and_never_reaches_the_judge():

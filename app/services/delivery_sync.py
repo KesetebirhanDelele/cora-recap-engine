@@ -238,9 +238,11 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
 
     The company's own name (`brand_phrases`, e.g. "Colaberry School of Data Analytics" in a staff signature) is removed
     from the text before the scan.
-    One exemption, removing course-name hits only (an employment / placement claim is always flagged):
-      - a reply the LLM judge says only DECLINES the retired course (any doubt or failure leaves it flagged)
-    There is no interview-notification exemption (removed 2026-10-13: SMS / email notices never name the job title)."""
+    One exemption, removing course-name hits only (an employment / placement claim and the word "free" are always flagged):
+      - the LLM judge reads the whole message in context and says it does NOT OFFER the retired course (a refusal, an
+        explanation of the move to the AI program, a quoted caller, a job title...). Both votes must agree; any doubt, split,
+        error or exhausted budget leaves it flagged. Every cleared message is recorded as channel_events kind 'content_ok'.
+    There is no interview-notification exemption (removed 2026-10-13) and no wording list in code."""
     try:
         from app.core import content_audit as ca
         from app.core import offer
@@ -264,9 +266,15 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
             if llm_budget is not None:
                 llm_budget[0] -= 1
             prior = ca.prior_inbound(conv_msgs or [], m, _parse_ts)
-            verdict = content_judge.judge(settings, m["id"], ca.strip_footer(ca.visible_text(body)), prior)
-            if verdict == content_judge.DECLINES:
+            cleared_terms = list(hits)
+            verdict = content_judge.judge(settings, m["id"], ca.strip_footer(ca.visible_text(body)), prior, terms=cleared_terms)
+            if verdict == content_judge.NOT_OFFERING:
                 hits = []
+                # audit trail: everything the model let through can be spot-checked (kind 'content_ok')
+                _upsert_event(session, kind="content_ok", channel=channel, contact_id=cid, external_id=m["id"],
+                              status_raw=None, outcome=None, error=None, event_at=at, now=now,
+                              source=str(m.get("source") or "?")[:30],
+                              detail={"terms": cleared_terms, "verdict": verdict, "snippet": (body or "")[:160]})
         if hits:
             detail = {"terms": hits, "snippet": (body or "")[:160]}
             if verdict:
