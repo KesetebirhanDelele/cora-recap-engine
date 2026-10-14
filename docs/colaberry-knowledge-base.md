@@ -6,7 +6,7 @@ _Source of truth for Cora (AI Admissions Assistant). Each section is written to 
 
 ## About Colaberry
 
-Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com** — use this by default, including for a cold lead (previously interested, did not enroll) who says they're now ready to enroll. For a prospect who is still undecided or exploring before committing — cold leads default to this state until they say otherwise — offer the free no-commitment preview at **www.myfreeaiclass.com** instead.
+Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com** — use this by default, including for a cold lead (previously interested, did not enroll) who says they're now ready to enroll. For a prospect who is still undecided or exploring before committing — cold leads default to this state until they say otherwise — offer the explorer no-commitment preview at **www.myfreeaiclass.com** instead.
 
 ---
 
@@ -29,7 +29,7 @@ The AI Systems Architect Accelerator is built to fit around a full-time job: it 
 | Class clock times | Confirmed with enrolled students; specific times not yet published |
 | Start date | Rolling enrollment — no fixed start date, begin anytime |
 
-All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create a free account at www.myfreeaiclass.com and begin exploring the material immediately.
+All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create an account at www.myfreeaiclass.com and begin exploring the material immediately.
 
 ---
 
@@ -58,15 +58,15 @@ Preparation for the **Anthropic Architect Certification (CCA-F)** is built into 
 
 ## Pricing
 
-The AI Systems Architect Accelerator offers a free plan and two paid full-access plans:
+The AI Systems Architect Accelerator offers an explorer plan and two paid full-access plans:
 
 | Plan | Price | Billing | What's included |
 |---|---|---|---|
-| Explorer (Free) | $0 / month | No payment required | Preview access to explore the material and see how the program works |
+| Explorer | $0 / month | No payment, No Card required | Preview access to explore the material and see how the program works |
 | Annual | $149 / month | Billed $1,788 once per year | All 12 weeks, live classes, projects, mentorship, internship, certification prep |
 | Month-to-Month | $199 / month | Billed monthly, cancel anytime | Same full access as the Annual plan |
 
-A learner can move between the free Explorer plan and the paid plans at any time. Once logged into their Colaberry training account, upgrading takes just a couple of clicks and full access unlocks the moment payment clears.
+A learner can move between the Explorer plan and the paid plans at any time. Once logged into their Colaberry training account, upgrading takes just a couple of clicks and full access unlocks the moment payment clears.
 
 ---
 
@@ -83,13 +83,13 @@ That is roughly **$30 per month total**, paid directly to Anthropic. These tools
 
 ## Scholarships & Affordability
 
-Scholarships are **not currently available** for the AI Systems Architect Accelerator. If cost is a concern, a prospective student can start with the **free Explorer plan** at $0 per month (preview access, no payment, no commitment), or ask to be connected with the Colaberry Admissions team to discuss options.
+Scholarships are **not currently available** for the AI Systems Architect Accelerator. If cost is a concern, a prospective student can start with the **Explorer plan** at $0 per month (preview access, no payment, no commitment, no card), or ask to be connected with the Colaberry Admissions team to discuss options.
 
 ---
 
 ## How to Enroll / Getting Started
 
-A prospect who is ready to enroll can go straight to **training.colaberry.com**. A prospect who is undecided or wants to explore first — or a cold lead being re-engaged — can instead **create a free account at www.myfreeaiclass.com**. There is no payment and no commitment for the free Explorer plan, and a new learner can explore the material right away.
+A prospect who is ready to enroll can go straight to **training.colaberry.com**. A prospect who is undecided or wants to explore first — or a cold lead being re-engaged — can instead **create an account at www.myfreeaiclass.com**. There is no payment, no commitment, and no card needed for the Explorer plan, and a new learner can explore the material right away.
 
 When a learner is ready for full access — all 12 weeks, live classes, projects, mentorship, internship, and certification prep — upgrading takes just a couple of clicks from inside their account, and access unlocks as soon as payment clears.
 
@@ -105,7 +105,7 @@ Learners must be **at least 18 years old** to enroll in the AI Systems Architect
 
 ## Admissions Calls
 
-Colaberry can schedule a short call with an **Admissions Advisor** for the AI Systems Architect Accelerator. On that call, the advisor walks the prospective student through the full program, answers final questions, and helps them get set up — whether they start with the free Explorer plan or go straight to full access.
+Colaberry can schedule a short call with an **Admissions Advisor** for the AI Systems Architect Accelerator. On that call, the advisor walks the prospective student through the full program, answers final questions, and helps them get set up — whether they start with the Explorer plan or go straight to full access.
 
 Admissions is handled by **Roselen / the Colaberry Admissions team**. If no advisor is available for a live transfer, the fallback, in order, is: (1) book a specific callback time, (2) take the caller's name and best number for direct follow-up, (3) offer **support@colaberry.com** as a backup (monitored around the clock).
 
