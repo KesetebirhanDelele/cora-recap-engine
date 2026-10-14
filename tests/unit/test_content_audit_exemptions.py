@@ -276,3 +276,15 @@ def test_offer_that_contains_the_word_still_is_not_cleared_even_if_model_says_de
     c = _client({"verdict": "declines"})
     with patch("app.adapters.openai_client.OpenAIClient", return_value=c):
         assert cj.judge(SimpleNamespace(), "mo", "Our Data Analytics bootcamp starts Monday, want a spot?", None) == cj.UNCLEAR
+
+
+def test_a_decline_that_also_says_start_free_stays_flagged_and_never_reaches_the_judge():
+    """TWC wording rule (Ali 2026-10-04): 'free' is a claim, not a course name - the decline judge cannot clear it."""
+    events, calls = _run("We no longer enroll in the Data Analytics bootcamp, but you can start free at myfreeaiclass.com.",
+                         verdict=cj.DECLINES)
+    assert calls == [] and len(events) == 1 and "free" in events[0]["detail"]["terms"]
+
+
+def test_feel_free_in_a_staff_text_is_not_flagged():
+    events, calls = _run("Hi Sam, feel free to call me back anytime.")
+    assert events == [] and calls == []

@@ -88,7 +88,7 @@ def test_retired_course_name_is_blocked_in_every_sms():
     t = "Hi Sam, it's Cora. Interested in Data Analytics or AI? Text STOP to stop alerts"
     for notif in (True, False):
         d = g.decide(t, g.GateUsage(), _cfg(notification_only=notif))
-        assert d.action == g.BLOCK and "no longer offer" in d.reason
+        assert d.action == g.BLOCK and "banned wording" in d.reason
 
 
 def test_default_is_at_most_two_segments():
@@ -118,6 +118,8 @@ def test_no_prompt_names_a_retired_course_or_uses_stories(family, version):
     text = system + msgs[1]["content"]
     # retired names may appear only inside the email prompt's explicit "never mention" rule
     scrubbed = re.sub(r"- Offer the .*?\n- Do not use", "- Do not use", text, flags=re.S)
+    # ...and the word "free" only inside the sentences that FORBID it (offer_facts and the email hard rule)
+    scrubbed = re.sub(r"Never use the word ['\"]free['\"].*?(?:instead\.|accreditation\.)", "", scrubbed, flags=re.S)
     assert not offer.forbidden_hits(scrubbed, TERMS), (family, version)
     assert "AI Systems Architect Accelerator" in text
     assert "video_transcripts" not in text and "story_link" not in text
@@ -149,7 +151,7 @@ def test_sms_with_a_retired_course_is_redrafted_once_then_accepted(llm):
                    {"sms_text": "Hi Sam, it's Cora from Colaberry. I tried to call - when is a good time?"}]
     out = generate_vm_sms(_ctx(), NS())
     assert "Data Analytics" not in out and "good time" in out
-    assert "rejected" in llm.seen[1][-1]["content"] and "no longer offer" in llm.seen[1][-1]["content"]
+    assert "rejected" in llm.seen[1][-1]["content"] and "banned wording" in llm.seen[1][-1]["content"]
 
 
 def test_sms_marketing_draft_twice_falls_back_to_a_safe_notice(llm):

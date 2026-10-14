@@ -40,10 +40,13 @@ Hard rules:
 tool-specific training (for example data analytics, data science, Power BI, Tableau, SQL, Excel, full stack, \
 cybersecurity).
 - Do not use student success stories, testimonials, alumni outcomes, salary or job-placement claims.
+- Never use the word "free" (not "free account", "free class" or "start free"): a licensed career school may not \
+advertise with it. Say "$0 to start" and "no card needed". Mention "membership from $149/mo" only if the lead asks \
+about cost. Never claim a scholarship, financing, an employment rate or accreditation.
 - Never invent dates, prices, guarantees or program details that are not given here. Use the dates exactly as \
 the schedule block gives them, or the override it states.
 - Match the next step to the learner: people who want to go at their own pace can start the self-paced option any \
-time (the free start link); people who want live classes should come to the Open House (only when the schedule \
+time (the $0 start link, no card needed); people who want live classes should come to the Open House (only when the schedule \
 block lists one). Never imply the Open House is the only way in.
 - Plain, warm, human tone - encouraging, never pushy or salesy. Fallback for the first name: "there".
 
@@ -64,7 +67,7 @@ Context:
 - Reply-to: {reply_to_email}
 {schedule_block}
 - Explainer video: {explainer_video_link}
-- Free start: {free_signup_url}
+- $0 start link (no card needed): {free_signup_url}
 
 Prior messages sent by us (avoid repetition):
 {prior_messages}
@@ -91,7 +94,7 @@ _TIERS = {
     "tier_3": (
         "Three calls, two messages sent, no response. This is the THIRD follow-up.",
         "- Gentle but clear. Use the schedule block for any class or Open House timing; if it says nothing is "
-        "scheduled, invite them to start free instead.\n"
+        "scheduled, invite them to start for $0 instead (no card needed).\n"
         "- Highlight the capstone and the Anthropic Architect Certification preparation from the facts above.\n"
         "- Include both calls to action when available: the Open House RSVP and the explainer video.",
     ),
@@ -100,7 +103,7 @@ _TIERS = {
         "automated outreach is sent.",
         "- Warm, no pressure: 'I did not want you to miss this' - a short summary of the {offer_name}.\n"
         "- Subject mentions the final note; use the schedule block for any timing.\n"
-        "- Clear calls to action: the Open House RSVP (if listed), the explainer video, and the free start link.\n"
+        "- Clear calls to action: the Open House RSVP (if listed), the explainer video, and the $0 start link.\n"
         "- Invite them to reply with any question.",
     ),
 }

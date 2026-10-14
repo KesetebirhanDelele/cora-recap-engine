@@ -20,14 +20,20 @@ DEFAULT_OFFER_FACTS = (
     "Hands-on work with Claude Code, the Claude API, Model Context Protocol (MCP), Docker and GitHub, ending in a "
     "capstone presented at a live Expo. Preparation for the Anthropic Architect Certification (CCA-F) is built in. "
     "Two ways to take it: SELF-PACED, with enrollment open all the time so you can start whenever you like "
-    "(anyone can start free at {free_url}); or LIVE CLASSES, about 4 hours a week of instructor-led sessions on "
-    "Mondays and Thursdays (all recorded) - the free Open House is the way to learn about and join the next live class."
+    "(anyone can start for $0 at {free_url} - no card needed; membership from $149/mo, state that price only if the "
+    "lead asks about cost); or LIVE CLASSES, about 4 hours a week of instructor-led sessions on "
+    "Mondays and Thursdays (all recorded) - the Open House is the way to learn about and join the next live class. "
+    "Never use the word 'free' (Texas Workforce Commission rule for a licensed career school): say '$0 to start' "
+    "and 'no card needed' instead."
 )
 
 # Course / subject names of the retired offer. A text or email containing one is rejected.
 DEFAULT_FORBIDDEN_TERMS = (
     "data analytics,data analyst,data science,bootcamp,boot camp,power bi,tableau,sql,excel,"
     "full stack,full-stack,cybersecurity,cyber security,business intelligence,"
+    # Ali 2026-10-04: "free" is not allowed as a standalone claim (TWC advertising rule for a licensed career school).
+    # "feel free to ..." and "free time" are not claims and are excepted in forbidden_hits().
+    "free,"
     # Never state an employment / placement outcome: an unprovable number to a prospective student is a regulatory exposure
     # (Ali, 2026-10-03: only with his written approval of the number and its source).
     "employment rate,placement rate,job placement,job guarantee,guaranteed job,hiring rate,employment outcome"
@@ -46,12 +52,26 @@ def parse_terms(value: str | None) -> tuple[str, ...]:
     return tuple(t.strip().lower() for t in raw.split(",") if t.strip())
 
 
+# Per-term exceptions: (lookbehinds, lookaheads) wrapped around the whole-word match. The text is lower-cased with
+# whitespace collapsed to single spaces first, so a literal single space is safe inside a lookbehind.
+#   excel: the verb ("skills needed to excel", "you will excel") is not the retired Excel course; "learn Excel",
+#          "Microsoft Excel", "Excel course" still hit.
+#   free:  "feel free to ask" and "free time" are not advertising claims; "start free", "free account", "free class",
+#          "risk-free" still hit.
+_VERB_BEFORE_EXCEL = ("to", "will", "can", "could", "would", "may", "might", "should", "must", "who", "you", "we", "they")
+_TERM_EXCEPTIONS: dict[str, tuple[str, str]] = {
+    "excel": ("".join(rf"(?<!\b{w} )" for w in _VERB_BEFORE_EXCEL), ""),
+    "free": (r"(?<!\bfeel )", r"(?! time\b)"),
+}
+
+
 def forbidden_hits(text: str | None, terms: tuple[str, ...]) -> list[str]:
-    """Forbidden course terms present in `text` (whole words / phrases, case-insensitive)."""
-    t = (text or "").lower()
+    """Forbidden terms present in `text` (whole words / phrases, case-insensitive; see _TERM_EXCEPTIONS)."""
+    t = re.sub(r"\s+", " ", (text or "").lower())
     hits = []
     for term in terms:
-        if re.search(r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])", t):
+        pre, post = _TERM_EXCEPTIONS.get(term, ("", ""))
+        if re.search(r"(?<![a-z0-9])" + pre + re.escape(term) + r"(?![a-z0-9])" + post, t):
             hits.append(term)
     return hits
 

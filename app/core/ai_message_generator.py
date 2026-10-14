@@ -324,7 +324,7 @@ def generate_vm_email(
             hits = offer.forbidden_hits(" ".join(out.values()), terms)
             if out["email_subject"] and out["email_html"] and not hits:
                 return out
-            why = ("names a course we no longer offer: " + ", ".join(hits)) if hits else "incomplete"
+            why = ("uses banned wording (a retired course name, or the word 'free'): " + ", ".join(hits)) if hits else "incomplete"
             logger.warning("generate_vm_email: draft rejected (%s) | contact_id=%s attempt=%d",
                            why, context.contact_id, attempt + 1)
             messages = messages + [

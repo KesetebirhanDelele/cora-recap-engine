@@ -357,7 +357,7 @@ def build_correction_text(session: Session, settings: Any, channel: str = "email
         return msg
     if has_oh and rsvp:
         msg += f" RSVP: {rsvp}."
-    msg += f" You can also start learning for free at {free_url}."
+    msg += f" You can also start learning for $0 at {free_url} - no card needed."
     msg += " Sorry for any confusion!"
     return msg
 
@@ -409,8 +409,8 @@ def build_correction_email(session: Session, settings: Any) -> tuple[str, str]:
                  "We don't have a class or Open House scheduled right now.</p>")
     html = (
         "<p>Hi there,</p>" + facts
-        + f'<p>You can also start learning for free anytime at <a href="{escape(free_href, quote=True)}">'
-          f"{escape(free_url)}</a>.</p>"
+        + f'<p>You can also start learning for $0 anytime at <a href="{escape(free_href, quote=True)}">'
+          f"{escape(free_url)}</a> - no card needed.</p>"
         + "<p>Sorry for any confusion!</p>"
         + f"<p>{escape(sender)}</p>"
     )

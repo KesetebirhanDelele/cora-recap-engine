@@ -4,7 +4,7 @@ Schedule context — pure logic, no I/O (spec/32).
 The dashboard holds two dates: next class start and next open house. Once a
 date has passed it must never be told to a lead again: the setting is cleared
 (see app/services/date_expiry.py) and messages instead invite the lead to
-start learning for free.
+start learning for $0 (no card needed).
 
 Terms
 -----
@@ -53,7 +53,7 @@ def build_schedule_block(
     Both set  -> the two dates + RSVP (plus the exact-dates rule).
     Any unset -> an explicit OVERRIDE telling the model there is nothing to
                  date, to ignore any guideline that asks for that date, and to
-                 invite the lead to start free at `free_signup_url` instead.
+                 invite the lead to start for $0 at `free_signup_url` instead.
     """
     has_class = not is_unset(class_start)
     has_oh = not is_unset(open_house)
@@ -80,7 +80,7 @@ def build_schedule_block(
             f"- SCHEDULE OVERRIDE: there is NO upcoming {' and no '.join(missing)} right now. "
             "Ignore any guideline below that asks you to mention it, create urgency before it, "
             "or link its RSVP. NEVER write any date for it. "
-            f"Instead, invite the lead to start learning for FREE by signing up at {free_signup_url}. "
+            f"Instead, invite the lead to start learning for $0 (no card needed) by signing up at {free_signup_url}. "
             "Put that address ONLY in the email - NEVER put any link or web address in the SMS "
             "(texts may not contain links); in the SMS just invite them to reply."
         )

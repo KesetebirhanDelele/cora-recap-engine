@@ -156,7 +156,7 @@ def content_violations(text: str | None, cfg: GateConfig) -> list[str]:
         out.append(f"longer than {cfg.max_segments_per_message} segments")
     hits = offer.forbidden_hits(body, cfg.forbidden_terms)
     if hits:
-        out.append("names a course we no longer offer: " + ", ".join(hits))
+        out.append("uses banned wording (a retired course name, or the word 'free'): " + ", ".join(hits))
     if cfg.notification_only:
         m = offer.marketing_hit(body)
         if m:
