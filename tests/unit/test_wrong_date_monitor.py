@@ -53,6 +53,7 @@ def session():
             "correction_email_delay_seconds": "0",
             "sms_min_gap_seconds": "0",          # tests send back-to-back; the pre-send gate's pacing is tested in test_sms_gate
             "sms_daily_segment_cap": "999",
+            "date_llm_enabled": "false",          # these DB tests exercise the rule engine + SQL only; the AI check has its own tests
         }.items():
             s.execute(text("""
                 INSERT INTO app_config (key, value, updated_by) VALUES (:k, :v, 'test')
