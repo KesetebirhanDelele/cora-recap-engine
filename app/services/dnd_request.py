@@ -69,14 +69,31 @@ def on_blocked_callback(session: Session, settings: Any, job: Any, contact_id: s
                words=last_words(session, contact_id), why_blocked=why_blocked)
 
 
-def on_reply(session: Session, settings: Any, *, channel: str, contact_id: str, message_id: str, body: str) -> None:
-    """Reply hook: a text or email asking to be called or sent information; alert only when the lead has DND / an opt-out tag."""
+def opted_out_after(session: Session, contact_id: str, at: datetime | None) -> bool:
+    """True when Cora applied this lead's DND AFTER the message at `at` (their own later "remove me" / STOP).
+    Such a message was sent while they were still contactable, so it is not a request that DND blocked."""
+    if at is None:
+        return False
+    try:
+        return session.execute(text(
+            "SELECT 1 FROM optout_actions WHERE contact_id = :c AND kind = 'dnd' AND status = 'applied' AND created_at > :at LIMIT 1"),
+            {"c": contact_id, "at": at}).fetchone() is not None
+    except Exception:
+        return False
+
+
+def on_reply(session: Session, settings: Any, *, channel: str, contact_id: str, message_id: str, body: str,
+             at: datetime | None = None) -> None:
+    """Reply hook: a text or email asking to be called or sent information; alert only when the lead had DND / an opt-out tag
+    when they wrote. `at` = when the message was sent: a DND set after it (the lead's own later opt-out) is no alert."""
     from app.core.contact_request import asks_to_be_contacted
     from app.core.sms_eligibility import ghl_dnd_reason
     from app.services import optout
 
     try:
         if not contact_id or not asks_to_be_contacted(body, channel):
+            return
+        if opted_out_after(session, contact_id, at):
             return
         record = optout._ghl(settings).get_contact(contact_id)
         c = record.get("contact", record)

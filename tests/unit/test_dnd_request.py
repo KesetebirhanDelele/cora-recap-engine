@@ -77,3 +77,20 @@ def test_reply_alerts_only_when_the_lead_is_on_dnd():
     with patch("app.services.optout._ghl") as g:                                # not a request: GHL is not even called
         dnd_request.on_reply(MagicMock(), object(), channel="sms", contact_id="c1", message_id="m2", body="STOP")
         assert g.call_count == 0
+
+
+def test_a_request_followed_by_the_leads_own_opt_out_is_not_alerted():
+    """Kinishea Tennyson 2026-10-15: "call me back" then "remove my contact info" a minute later, both read in one sync.
+    DND was set after the request, so nothing blocked it - no alert."""
+    from datetime import datetime, timezone
+
+    at = datetime(2026, 10, 15, 21, 1, tzinfo=timezone.utc)
+    ghl = MagicMock()
+    ghl.get_contact.return_value = {"contact": {"dnd": True, "dndSettings": {}, "tags": []}}
+    for opted_out_later, expect in ((True, 0), (False, 1)):
+        session = MagicMock()
+        session.execute.return_value.fetchone.return_value = (1,) if opted_out_later else None
+        with patch("app.services.optout._ghl", return_value=ghl), patch.object(dnd_request, "notify") as n:
+            dnd_request.on_reply(session, object(), channel="sms", contact_id="c1", message_id="m1",
+                                 body="Are you able to call me back?", at=at)
+            assert n.call_count == expect

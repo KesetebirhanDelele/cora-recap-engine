@@ -148,7 +148,7 @@ def _record_reply(session: Session, channel: str, m: dict, contact_id: str, at: 
             from app.services import dnd_request
 
             dnd_request.on_reply(session, settings, channel=channel, contact_id=contact_id, message_id=m["id"],
-                                 body=m.get("body") or "")
+                                 body=m.get("body") or "", at=at)
 
 
 def _prefetch(session: Session, ghl: Any, convs: list[dict], since: datetime) -> tuple[dict, dict, set]:
