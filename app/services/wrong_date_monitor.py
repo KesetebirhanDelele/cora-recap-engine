@@ -49,6 +49,10 @@ MAX_NEW_INCIDENTS_PER_CYCLE = 25
 
 _SNIPPET_CHARS = 280
 
+# At most this many LLM date reviews per 60 s scan (2 calls each); more flagged messages than that are raised as before.
+AI_CHECKS_PER_SCAN = 10
+AI_DISMISSED_BY = "auto: AI date check"
+
 # Injectable so tests don't really sleep / wait.
 _sleep = time.sleep
 _monotonic = time.monotonic
@@ -121,16 +125,29 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
         {"since": now - timedelta(hours=SCAN_LOOKBACK_HOURS), "lim": SCAN_ROW_LIMIT},
     ).fetchall()
 
+    ai_check_on = str(_config(session, settings, "date_llm_enabled", "true")).lower() in ("true", "1", "yes")
+    ai_budget = AI_CHECKS_PER_SCAN
+
     for msg_id, contact_id, channel, subject, body, created_at in rows:
         if new_count >= MAX_NEW_INCIDENTS_PER_CYCLE:
             break
-        wrong = find_wrong_dates(
-            body, subject,
-            expected_class_start=_expectation(class_start, class_changed, created_at),
-            expected_open_house=_expectation(open_house, oh_changed, created_at),
-        )
+        exp_class = _expectation(class_start, class_changed, created_at)
+        exp_oh = _expectation(open_house, oh_changed, created_at)
+        wrong = find_wrong_dates(body, subject, expected_class_start=exp_class, expected_open_house=exp_oh)
         if not wrong:
             continue
+
+        # The rule engine only guesses which event a date belongs to. Let the LLM read the whole message: only a unanimous
+        # "correct" suppresses the alert (the incident is still recorded, already dismissed, for review). Anything else -
+        # wrong, unclear, a split, an error, no budget, switched off - raises the incident exactly as before.
+        status, resolved_by, resolved_at = "open", None, None
+        if ai_check_on and ai_budget > 0:
+            ai_budget -= 1
+            from app.services import date_judge
+
+            if date_judge.review(settings, str(msg_id), subject, body or "", [w.__dict__ for w in wrong],
+                                 exp_class, exp_oh) == date_judge.CORRECT:
+                status, resolved_by, resolved_at = "dismissed", AI_DISMISSED_BY, now
 
         incident_id = str(uuid.uuid4())
         snippet = ((subject + " — ") if subject else "") + (body or "")
@@ -138,10 +155,10 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
             text("""
                 INSERT INTO wrong_date_incidents
                   (id, outbound_message_id, contact_id, channel, wrong_dates, snippet,
-                   expected_class_start, expected_open_house, message_sent_at, status, created_at)
+                   expected_class_start, expected_open_house, message_sent_at, status, resolved_by, resolved_at, created_at)
                 VALUES
                   (:id, :mid, :cid, :ch, CAST(:wd AS json), :snip,
-                   :ecs, :eoh, :sent, 'open', :now)
+                   :ecs, :eoh, :sent, :status, :rby, :rat, :now)
                 ON CONFLICT (outbound_message_id) DO NOTHING
                 RETURNING id
             """),
@@ -150,10 +167,14 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
                 "wd": json.dumps([w.__dict__ for w in wrong]),
                 "snip": snippet[:_SNIPPET_CHARS],
                 "ecs": class_start, "eoh": open_house, "sent": created_at, "now": now,
+                "status": status, "rby": resolved_by, "rat": resolved_at,
             },
         ).fetchone()
         if inserted is None:
             continue  # another worker got there first — it sends the email
+        if status == "dismissed":
+            logger.info("wrong_date: AI check says the flagged dates are correct - recorded as dismissed | message=%s", msg_id)
+            continue  # no alert email, not counted as a new incident
         new_count += 1
 
         detail = "; ".join(
