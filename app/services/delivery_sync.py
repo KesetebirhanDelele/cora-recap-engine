@@ -232,9 +232,11 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
     """Record outbound text / email that names a retired course or makes an employment claim (content audit). Never raises.
 
     An EMAIL whose recipient (the conversation's contact) is on our own staff domains (`audit_internal_email_domains`, default
-    colaberry.com,trillionsquare.com; empty disables) is not audited at all: GHL's own system mail such as the AI Receptionist's
-    "AI Call Recap" quotes what a caller said and went to 6 staff addresses at once. The recipient is where GHL really
-    delivered it, not a label in the text; an unreadable contact keeps the message audited. Texts are always audited.
+    colaberry.com,trillionsquare.com; empty disables) is still scanned but recorded as channel_events kind 'content_internal' and never
+    alerted (Ali 2026-10-15): GHL's own system mail such as the AI Receptionist's "AI Call Recap" quotes what a caller said and
+    went to 6 staff addresses at once, and the record lets a person see staff tests. An employment / placement claim is flagged
+    for every recipient, staff included. The recipient is where GHL really delivered it, not a label in the text; an unreadable
+    contact keeps the message audited. Texts are always audited.
 
     The company's own name (`brand_phrases`, e.g. "Colaberry School of Data Analytics" in a staff signature) is removed
     from the text before the scan.
@@ -259,7 +261,13 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
         if hits and channel == "email" and ca.is_internal_email(
                 _contact_email(settings, cid) if settings is not None else None,
                 ca.parse_internal_domains(cfg("audit_internal_email_domains", None))):
-            return
+            if not any(ca.is_employment_term(h) for h in hits):
+                # scanned and recorded as internal, never alerted (Ali 2026-10-15); an employment claim falls through and is flagged
+                _upsert_event(session, kind="content_internal", channel=channel, contact_id=cid, external_id=m["id"],
+                              status_raw=None, outcome=None, error=None, event_at=at, now=now,
+                              source=str(m.get("source") or "?")[:30],
+                              detail={"terms": hits, "snippet": (body or "")[:160]})
+                return
         if ca.course_only(hits) and settings is not None \
                 and str(cfg("content_llm_enabled", "true")).lower() in ("true", "1", "yes") \
                 and (llm_budget is None or llm_budget[0] > 0):

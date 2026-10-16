@@ -338,9 +338,15 @@ def test_internal_domain_config_parsing():
     assert ca.is_internal_email("a@colaberry.com", ca.parse_internal_domains("")) is False
 
 
-def test_recap_email_to_a_staff_contact_is_not_flagged_and_skips_the_judge():
+def test_recap_email_to_a_staff_contact_is_recorded_as_internal_not_flagged_and_skips_the_judge():
     events, calls = _run(RECAP, channel="email", contact_email="aleem@colaberry.com")
-    assert events == [] and calls == []
+    assert [e["kind"] for e in events] == ["content_internal"] and "power bi" in events[0]["detail"]["terms"]
+    assert calls == []
+
+
+def test_an_employment_claim_to_a_staff_contact_is_still_flagged():
+    events, _ = _run("Our job placement rate is 90 percent.", channel="email", contact_email="aleem@colaberry.com")
+    assert [e["kind"] for e in events] == ["content_flag"]
 
 
 def test_the_same_text_to_an_outside_lead_is_still_flagged():
@@ -366,9 +372,9 @@ def test_empty_config_disables_the_staff_exemption():
 
 def test_config_can_replace_the_internal_domain_list():
     events, _ = _run(RECAP, channel="email", contact_email="x@partner.org", config={"audit_internal_email_domains": "partner.org"})
-    assert events == []
+    assert [e["kind"] for e in events] == ["content_internal"]
     events, _ = _run(RECAP, channel="email", contact_email="x@colaberry.com", config={"audit_internal_email_domains": "partner.org"})
-    assert len(events) == 1
+    assert [e["kind"] for e in events] == ["content_flag"]
 
 
 def test_clean_email_to_staff_does_not_even_look_up_the_contact(monkeypatch):
