@@ -2748,6 +2748,6 @@ Kes: "deploy; $0 down fixed already". Merged `fix/wrong-date-llm-check` (PROGRES
 
 **Open:**
 - Two leads were wrongly given GHL DND (all channels) by the old opt-out check: Kyle (contact `czEFl7aAktfVSJUXOT2x`, two automated texts) and a no-name contact (`sALI8spt2MdsQU08RrMl`, a spam text). Not undone yet - waiting for Kes's go-ahead (Cora's `optout.undo` restores the earlier state).
-- Awaiting Ali's approval of the cadence change: Cora's follow-up text after the first missed call only, then at most 1 per lead per day and 2 in total unless the lead replies; fallback if the opt-out rate stays above 2% a week later: drop scheduled SMS, voice and email only.
+- Awaiting Ali's approval of the cadence change: Cora's follow-up text after the first missed call only, then at most 1 per lead per day and 2 in total unless the lead replies. (Kes removed the "drop scheduled SMS after a week above 2%" fallback from the email to Ali on 2026-10-16; it is not part of the proposal.)
 - Leads whose texts failed during the block need a follow-up by email/voice (list not built yet).
 - Ali's items: website button ("Start for $0" / "Join for $0, no card needed") and the myfreeaiclass.com link replacement + redirect; the 1:40 PM staff email he asked Kes to chase (unidentified).
