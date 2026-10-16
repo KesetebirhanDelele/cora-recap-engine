@@ -2730,3 +2730,24 @@ Kes: "deploy; $0 down fixed already". Merged `fix/wrong-date-llm-check` (PROGRES
 - **Staff-recipient emails: scan and mark, no alert (`eb049de`, Ali's alternative).** `delivery_sync._flag_content` records course-name and "free" hits to staff addresses as `channel_events` kind `content_internal`; employment/placement claims are still flagged. Spec 35 updated. Deployed.
 - **"free" ban still STAGED OFF** (`app_config.offer_forbidden_terms` override). Ali approved switching it on now. Last-24h recount: 11 of ~460 outbound would flag (9 leads), 10 from staff / Conversation AI in the app. Delete the override to switch on.
 - **Ali's website items (not Kes/Cora):** button to "Start for $0" / "Join for $0, no card needed"; replace myfreeaiclass.com in outbound links with a clean URL and redirect the old domain.
+
+
+## 2026-10-16 - GHL SMS lockout, opt-out guard, corrections to the 10-15 entry
+
+**Corrections to the 2026-10-15 (evening) entry:**
+- The "free" ban is now LIVE (override `offer_forbidden_terms` deleted 2026-10-15 evening; verified in the container: "start for free" is flagged, "feel free to" is not).
+- The QA-harness explanation for the overnight ROI calls was retracted by Ali on 10-16: the harness's voice step has never succeeded (inert). The 124 ROI calls Oct 14 6 PM - Oct 15 8:45 AM CT were recorded in Synthflow as REST-API calls from +1 269 778 2754 (100) and +1 682 228 3242 (25) to +1 682 597 5784, which is Ali's own mobile. What placed them is still unknown (Ali is checking an inbound-email webhook that phones him with no rate limit). Ali asked us to stop rebuilding the Twilio trunk (his diagnosis was wrong); the trunk Kes rebuilt and the `Synthflow ACL dev` attachment can stay. The ROI 403 ("Telephony - 403 - Forbidden", 5 s, never reaches Twilio) is still open: Kes asked Synthflow support to detach the number from the old agent in the deleted subaccount; Ali's alternative theory is a caller-ID / which-Twilio-account question.
+
+**GHL SMS lockout (10-15 17:46 CT to 10-16 17:45 CT):** GoHighLevel blocked every outbound text ("Your account has reached today's opt-out/error limit"). HighLevel's lockout is a 3% opt-out rate or 10% delivery-error rate, 24 h. The 24 h before the block: 13 opt-outs on ~270 texts (4.8%; 9 real STOP-type = 3.3%), 6 delivery errors (2.2%). Trend (opt-outs / delivered): 10-12 1.9%, 10-13 0%, 10-14 2.1%, 10-15 4.8%. Of 17 opt-out replies since 10-14 noon, 13 followed Cora's post-call text via the "AI Agent - Send SMS" workflow, 3 followed GHL-app texts, 1 was spam. GHL marks a failed workflow SMS "Success" and does not retry: 118+ leads lost their text. Kes paused the SMS workflow in GHL. The `channel_silence_sms` alert fired only at 12:29 PM on 10-16 (~18 h late). Restriction History in GHL not yet read.
+- Cora's own SMS volume is small and bounded: 708 texts to 341 leads in 7 days (Cold Lead 661, New Lead 51), 1-3 per lead.
+
+**Deployed 2026-10-16 (production `44604dc`):**
+- `app/services/sms_guard.py` + `sms_ledger.reserve` + alert cycle: rolling 24 h opt-out rate >= 2.0% (min 50 delivered texts) pauses Cora's follow-up texts (ledger BLOCK, code `optout_guard`; leads still get email/voice); resume below 1.5% or when under 50 texts remain; alert on each pause/resume; switch `sms_guard_enabled`, lines `sms_guard_pause_pct` / `sms_guard_resume_pct` / `sms_guard_min_sample`, state `app_config.sms_guard_state`. It does NOT stop GHL-workflow or staff texts. It paused itself on deploy (4 opt-outs / 81 delivered = 4.9%). Spec 35 updated.
+- `optout._handle_reply`: a keyword DND match inside a text longer than 60 characters is first checked by the LLM; skipped only when it is sure (>= 0.85) the lead is not the one asking (automated notice, spam, another service's unsubscribe message); any doubt or model failure still applies the DND. The LLM prompt now says automated/system notices are "other".
+- DND false alert fixed earlier the same day (`dnd_request.opted_out_after`).
+
+**Open:**
+- Two leads were wrongly given GHL DND (all channels) by the old opt-out check: Kyle (contact `czEFl7aAktfVSJUXOT2x`, two automated texts) and a no-name contact (`sALI8spt2MdsQU08RrMl`, a spam text). Not undone yet - waiting for Kes's go-ahead (Cora's `optout.undo` restores the earlier state).
+- Awaiting Ali's approval of the cadence change: Cora's follow-up text after the first missed call only, then at most 1 per lead per day and 2 in total unless the lead replies; fallback if the opt-out rate stays above 2% a week later: drop scheduled SMS, voice and email only.
+- Leads whose texts failed during the block need a follow-up by email/voice (list not built yet).
+- Ali's items: website button ("Start for $0" / "Join for $0, no card needed") and the myfreeaiclass.com link replacement + redirect; the 1:40 PM staff email he asked Kes to chase (unidentified).
