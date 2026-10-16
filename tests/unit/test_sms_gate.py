@@ -193,3 +193,14 @@ def test_blocked_text_is_logged_and_never_spends_budget(ledger):
 def test_unknown_source_is_rejected(ledger):
     with pytest.raises(ValueError):
         ledger.run(source="mystery")
+
+
+def test_optout_guard_blocks_followup_texts_only_while_paused(ledger, monkeypatch):
+    from app.services import sms_guard
+
+    monkeypatch.setattr(sms_guard, "is_paused", lambda s, st: "opt-out guard: paused")
+    r = ledger.run(now=_t(0))
+    assert not r.allowed and r.code == "optout_guard" and r.defer_until is None
+    assert ledger.run(now=_t(1), source="test").allowed                       # only Cora's follow-up texts are stopped
+    monkeypatch.setattr(sms_guard, "is_paused", lambda s, st: None)
+    assert ledger.run(now=_t(2)).allowed

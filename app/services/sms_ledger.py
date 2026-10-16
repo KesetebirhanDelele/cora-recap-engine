@@ -113,6 +113,12 @@ def reserve(
         cfg = dataclasses.replace(_config(s, settings), notification_only=(source == "followup"))
         before = usage(s, now)
         d = gate.decide(body, before, cfg)
+        if source == "followup" and d.action == gate.ALLOW:
+            from app.services import sms_guard
+
+            paused = sms_guard.is_paused(s, settings)       # opt-out rate near GHL's 3% lockout: Cora's own texts stop first
+            if paused:
+                d = gate.GateDecision(gate.BLOCK, d.segments, "optout_guard", paused)
 
         if d.action == gate.ALLOW:
             rid = _insert(s, status="reserved", contact_id=contact_id, source=source, body=body,
