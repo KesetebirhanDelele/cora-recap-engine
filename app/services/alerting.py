@@ -245,6 +245,13 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     except Exception as exc:
         session.rollback()
         logger.error("alerting: content flag check failed: %s", exc)
+    try:
+        from app.services import sms_guard
+        sms_guard.evaluate(session, settings, now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: sms opt-out guard failed: %s", exc)
 
     for defn in _ALERT_DEFINITIONS:
         try:
