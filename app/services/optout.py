@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 LLM_MIN_CONFIDENCE = 0.85
 TRIAGE_DISMISS_MIN = 0.8        # LLM says "not an opt-out" at >= this -> dismissed (reason kept on the row)
+LONG_DND_CHARS = 60              # a keyword DND match inside a longer text is checked by the LLM before it is applied
 SHORT_REPLY_CHARS = 200          # "not interested"/"wrong number" auto-close only on short replies
 _monotonic = time.monotonic
 
@@ -228,7 +229,9 @@ _PROMPT = (
     "Reply JSON: {\"decision\": one of opt_out_all|opt_out_call|opt_out_sms|opt_out_email|not_interested|wrong_number|other, "
     "\"confidence\": 0-1, \"reason\": short}. opt_out_* only when the lead clearly asks not to be contacted "
     "(on all channels or the named one). A question, complaint without a request to stop, out-of-office text, or "
-    "interest in the program is 'other'. Be conservative."
+    "interest in the program is 'other'. A message that is itself an automated or system notice (an unsubscribe "
+    "confirmation, a carrier or service auto-reply, a loan / payment / marketing notice that tells the reader how to opt out) "
+    "is 'other' even if it contains opt-out words: the lead must be the one asking. Be conservative."
 )
 
 
@@ -245,6 +248,16 @@ def llm_judge(settings: Any, body: str, channel: str) -> tuple[str, float, str] 
     except Exception as exc:
         logger.warning("optout: LLM judge unavailable: %s", exc)
         return None
+
+
+def is_not_the_lead_asking(settings: Any, cleaned: str, channel: str) -> bool:
+    """A keyword matched in a LONGER text: True only when the LLM is sure (>= LLM_MIN_CONFIDENCE) that it is NOT the lead asking
+    to stop (an automated notice, a spam or loan text, another service's unsubscribe message). Any doubt or an unavailable
+    model returns False, so the opt-out is applied as before - a missed opt-out costs more than a wrongly stopped lead."""
+    if len(cleaned) <= LONG_DND_CHARS:
+        return False
+    verdict = llm_judge(settings, cleaned, channel)
+    return bool(verdict and verdict[0] == "other" and verdict[1] >= LLM_MIN_CONFIDENCE)
 
 
 _DECISION_SCOPE = {"opt_out_all": set(oo.ALL), "opt_out_call": {oo.CALL}, "opt_out_sms": {oo.SMS},
@@ -264,6 +277,10 @@ def handle_reply(session: Session, settings: Any, ghl: Any, *, channel: str, mes
         return "error"
 
 
+def _llm_on(session: Session, settings: Any) -> bool:
+    return _cfg(session, settings, "optout_llm_enabled", "true").lower() in ("true", "1", "yes")
+
+
 def _handle_reply(session: Session, settings: Any, ghl: Any, channel: str, message: dict, contact_id: str,
                   llm_budget: list[int] | None) -> str:
     body = message.get("body") or ""
@@ -277,6 +294,11 @@ def _handle_reply(session: Session, settings: Any, ghl: Any, channel: str, messa
         return "none"
     ghl = ghl or _ghl(settings)        # the contacts-scoped client: the conversations token cannot edit contacts
     if cl.kind == oo.DND and cl.confidence == oo.HIGH:
+        if len(cleaned) > LONG_DND_CHARS and _llm_on(session, settings) and (llm_budget is None or llm_budget[0] > 0):
+            if llm_budget is not None:
+                llm_budget[0] -= 1
+            if is_not_the_lead_asking(settings, cleaned, channel):
+                return "none"                 # found live 2026-10-15: a spam text and two auto-replies stopped 2 leads
         return apply_dnd(session, settings, ghl, contact_id=contact_id, scope=cl.scope, source=channel + "_reply",
                          external_id=ext, phrase=cl.phrase, excerpt=ex)
     if cl.kind in (oo.NOT_INTERESTED, oo.WRONG_NUMBER):
@@ -292,8 +314,7 @@ def _handle_reply(session: Session, settings: Any, ghl: Any, channel: str, messa
             _audit(session, "optout_applied", rid, {"kind": cl.kind, "source": channel + "_reply"})
         return "applied"
     # unclear: ask the LLM (bounded), else review
-    if _cfg(session, settings, "optout_llm_enabled", "true").lower() in ("true", "1", "yes") \
-            and (llm_budget is None or llm_budget[0] > 0):
+    if _llm_on(session, settings) and (llm_budget is None or llm_budget[0] > 0):
         if llm_budget is not None:
             llm_budget[0] -= 1
         verdict = llm_judge(settings, cleaned, channel)

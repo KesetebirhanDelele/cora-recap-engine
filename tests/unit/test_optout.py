@@ -541,3 +541,21 @@ def test_a_number_with_a_lead_record_but_no_ghl_contact_still_stops_cora_calling
                           external_id="nc2", phrase="stop calling", excerpt="Stop calling", decided_by="kes")
     assert st == "applied" and ghl.dnd_calls == []
     assert tuple(session.execute(text("select do_not_call, status from lead_state where contact_id='+13145550100'")).fetchone()) == (True, "closed")
+
+
+def test_long_keyword_text_is_vetoed_only_when_the_llm_is_sure_it_is_not_the_lead_asking():
+    from app.services import optout
+
+    spam = "NOTICE TIER 1 OPTION: Amount: $286,000 Payback: $317,460 Monthly Payment $1,200. Reply STOP to opt out of these offers"
+    for verdict, want in ((("other", 0.95, "loan spam"), True), (("other", 0.6, "?"), False),
+                          (("opt_out_all", 0.95, "asks to stop"), False), (None, False)):
+        with patch.object(optout, "llm_judge", return_value=verdict):
+            assert optout.is_not_the_lead_asking(SETTINGS, spam, "sms") is want
+
+
+def test_short_texts_never_reach_the_veto():
+    from app.services import optout
+
+    with patch.object(optout, "llm_judge") as judge:
+        assert optout.is_not_the_lead_asking(SETTINGS, "Please remove my contact info from your list", "sms") is False
+        assert judge.call_count == 0
