@@ -96,6 +96,7 @@ class ChannelStats:
     last_delivered_at: datetime | None = None
     last_handoff_at: datetime | None = None
     recent_delivered: int = 0              # last `recovery_hours`
+    last_failed_at: datetime | None = None   # newest failed send inside the 24 h window
     recent_failed: int = 0
     ghl_delivered_24h: int | None = None
     muted_reason: str | None = None
@@ -157,6 +158,11 @@ def evaluate(stats: ChannelStats, now: datetime, th: Thresholds, tracker_age_hou
             bump(AMBER, f"quiet for {silent_h:.0f} hours")
     recent = stats.recent_delivered + stats.recent_failed
     recovered = recent >= th.recovery_min_resolved and stats.recent_delivered / recent >= th.recovery_rate
+    # A quiet recovered channel (overnight, or sends held on purpose) must stay recovered: no failure in the last
+    # `recovery_hours` and the newest delivery is later than the newest failure (the alert resolved at 19:51 CT on 2026-10-16
+    # and re-fired at 23:35 CT only because no text was sent in between).
+    if not recovered and stats.recent_failed == 0 and stats.last_delivered_at is not None and stats.last_failed_at is not None             and stats.last_delivered_at > stats.last_failed_at:
+        recovered = True
     if stats.sent >= th.min_volume and stats.rate is not None:
         if stats.rate < th.amber_rate and recovered:
             bump(AMBER, f"recovering: {stats.recent_delivered} of the last {recent} resolved in {th.recovery_hours:g} h delivered "

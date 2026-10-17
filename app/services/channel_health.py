@@ -163,6 +163,7 @@ def channel_stats(session: Session, settings: Any, channel: str, now: datetime) 
     stats = ch.ChannelStats(
         channel=channel, sent=t["sent"], delivered=t["delivered"], failed=t["failed"], unconfirmed=t["unconfirmed"],
         recent_delivered=recent["delivered"], recent_failed=recent["failed"],
+        last_failed_at=max((_aware(r[0]) for r in rows if r[1] == ch.FAILED), default=None),
         no_address=t["no_address"], last_delivered_at=_last_delivered(session, channel),
         last_handoff_at=max((r[0] for r in rows if r[1] != ch.NO_ADDRESS), default=None),
         muted_reason=_muted(session, settings, channel))

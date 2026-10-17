@@ -85,6 +85,17 @@ def test_a_recovered_channel_stops_alerting_before_the_24h_rate_rolls_off():
     assert s.level == ch.AMBER and any("recovering" in r for r in s.reasons)
 
 
+def test_a_quiet_recovered_channel_does_not_fire_again():
+    """The alert resolved 19:51 CT, then re-fired 23:35 CT: nothing was sent overnight, so the 3 h window was empty."""
+    lagging = dict(sent=229, delivered=31, failed=126, unconfirmed=0, last_delivered_at=NOW - timedelta(hours=4))
+    quiet = ch.evaluate(_stats(**lagging, last_failed_at=NOW - timedelta(hours=9)), NOW, TH, 100)
+    assert quiet.level == ch.AMBER and any("recovering" in r for r in quiet.reasons)
+    # a failure AFTER the last delivery is not recovery
+    assert ch.evaluate(_stats(**lagging, last_failed_at=NOW - timedelta(hours=2)), NOW, TH, 100).level == ch.RED
+    # a failure inside the recent window is not recovery either
+    assert ch.evaluate(_stats(**lagging, recent_failed=1, last_failed_at=NOW - timedelta(hours=1)), NOW, TH, 100).level == ch.RED
+
+
 def test_muted_channels_are_grey_and_never_red():
     s = ch.evaluate(_stats(last_delivered_at=NOW - timedelta(days=9), muted_reason="paused"), NOW, TH, 100)
     assert s.level == ch.GREY
