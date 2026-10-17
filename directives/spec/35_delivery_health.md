@@ -73,7 +73,7 @@ GoHighLevel locks a sub-account's texts for 24 hours at a 3% opt-out rate (10% d
 - **Rate (rolling 24 h):** opt-outs by SMS reply (`optout_actions`: source `sms_reply`, kind `dnd`, status `applied`) / texts GHL reports delivered (`channel_events` kind `delivery`, channel `sms`, outcome `delivered`).
 - **Pause** at >= `sms_guard_pause_pct` (default 2.0) with at least `sms_guard_min_sample` texts (default 50); **resume** below `sms_guard_resume_pct` (default 1.5), or when too few texts remain to judge AND at most `sms_guard_resume_max_optouts` (default 1) opt-outs are left in the window (a lockout that makes texts fail shrinks the delivered count; 2 opt-outs on 44 texts is not "too few to judge"). State in `app_config.sms_guard_state` (ok | paused), evaluated every alert cycle; `sms_guard_enabled=false` switches it off.
 - **Effect:** while paused, `sms_ledger.reserve` BLOCKS source `followup` (Cora's post-call texts; code `optout_guard`). The lead still gets the email / voice cadence. Texts sent by GHL workflows or staff are outside Cora's control and are NOT stopped. Replies to a lead who texts us are unchanged.
-- **Alerts:** one dashboard + email alert per pause and per resume.
+- **No alerts (Kes 2026-10-16):** a pause or resume raises no dashboard alert and sends no email; it is an `app_config` change (audit_log, updated_by "auto: sms opt-out guard") plus a log line.
 - Tests: `tests/unit/test_sms_guard.py`, `tests/unit/test_sms_gate.py` (guard blocks follow-ups only).
 
 ## Recovery rule for the delivered-rate alert (added 2026-10-16)

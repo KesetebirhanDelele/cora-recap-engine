@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 STATE_KEY = "sms_guard_state"
-ALERT_TYPE = "sms_optout_guard"
+
 WINDOW_HOURS = 24
 DEFAULT_PAUSE_PCT = 2.0
 DEFAULT_RESUME_PCT = 1.5
