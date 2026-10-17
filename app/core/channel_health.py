@@ -73,6 +73,12 @@ class Thresholds:
     red_rate: float = 0.5
     amber_rate: float = 0.9
     amber_unconfirmed: float = 0.10
+    # Recovery (Kes 2026-10-16): the 24 h delivered share lags after an outage (GHL's SMS lockout: sending was back at 17:56 CT
+    # but the alert stayed RED ~a day while the failures aged out). When the last `recovery_hours` show at least
+    # `recovery_min_resolved` resolved sends delivered at >= `recovery_rate`, the rate rules no longer alert.
+    recovery_hours: float = 3.0
+    recovery_min_resolved: int = 5
+    recovery_rate: float = 0.9
 
     @staticmethod
     def hours(value: float) -> timedelta:
@@ -89,6 +95,8 @@ class ChannelStats:
     no_address: int = 0
     last_delivered_at: datetime | None = None
     last_handoff_at: datetime | None = None
+    recent_delivered: int = 0              # last `recovery_hours`
+    recent_failed: int = 0
     ghl_delivered_24h: int | None = None
     muted_reason: str | None = None
     reasons: list[str] = field(default_factory=list)
@@ -147,8 +155,13 @@ def evaluate(stats: ChannelStats, now: datetime, th: Thresholds, tracker_age_hou
                                               else f"the last {tracker_age_hours / 24:.1f} days"))
         elif silent_h >= th.amber_silence_hours:
             bump(AMBER, f"quiet for {silent_h:.0f} hours")
+    recent = stats.recent_delivered + stats.recent_failed
+    recovered = recent >= th.recovery_min_resolved and stats.recent_delivered / recent >= th.recovery_rate
     if stats.sent >= th.min_volume and stats.rate is not None:
-        if stats.rate < th.red_rate:
+        if stats.rate < th.amber_rate and recovered:
+            bump(AMBER, f"recovering: {stats.recent_delivered} of the last {recent} resolved in {th.recovery_hours:g} h delivered "
+                        f"(24 h rate {stats.rate:.0%})")
+        elif stats.rate < th.red_rate:
             bump(RED, f"only {stats.rate:.0%} of {stats.delivered + stats.failed} resolved were delivered")
         elif stats.rate < th.amber_rate:
             bump(AMBER, f"delivery rate {stats.rate:.0%}")

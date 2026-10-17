@@ -75,3 +75,6 @@ GoHighLevel locks a sub-account's texts for 24 hours at a 3% opt-out rate (10% d
 - **Effect:** while paused, `sms_ledger.reserve` BLOCKS source `followup` (Cora's post-call texts; code `optout_guard`). The lead still gets the email / voice cadence. Texts sent by GHL workflows or staff are outside Cora's control and are NOT stopped. Replies to a lead who texts us are unchanged.
 - **Alerts:** one dashboard + email alert per pause and per resume.
 - Tests: `tests/unit/test_sms_guard.py`, `tests/unit/test_sms_gate.py` (guard blocks follow-ups only).
+
+## Recovery rule for the delivered-rate alert (added 2026-10-16)
+The "< 50% of resolved delivered in 24 h" rule lagged after an outage: GHL's SMS lockout ended 17:45 CT and a text delivered at 17:56, but `channel_silence_sms` stayed RED for hours because the 24 h window still held the failures. Now, when the last `recovery_hours` (3) hold at least `recovery_min_resolved` (5) resolved sends delivered at >= `recovery_rate` (0.9), the rate rules downgrade to AMBER ("recovering: ...") and the alert resolves. Too few recent sends = no recovery claim, so a quiet channel stays RED until it proves itself. Test: `test_a_recovered_channel_stops_alerting_before_the_24h_rate_rolls_off`.

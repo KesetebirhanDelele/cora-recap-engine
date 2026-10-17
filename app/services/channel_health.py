@@ -159,8 +159,10 @@ def channel_stats(session: Session, settings: Any, channel: str, now: datetime) 
     confirm = 25 if channel == "call" else th.confirm_minutes
     rows = _rows(session, channel, now - timedelta(hours=24))
     t = _tally(rows, now, confirm)
+    recent = _tally([r for r in rows if _aware(r[0]) >= now - timedelta(hours=th.recovery_hours)], now, confirm)
     stats = ch.ChannelStats(
         channel=channel, sent=t["sent"], delivered=t["delivered"], failed=t["failed"], unconfirmed=t["unconfirmed"],
+        recent_delivered=recent["delivered"], recent_failed=recent["failed"],
         no_address=t["no_address"], last_delivered_at=_last_delivered(session, channel),
         last_handoff_at=max((r[0] for r in rows if r[1] != ch.NO_ADDRESS), default=None),
         muted_reason=_muted(session, settings, channel))

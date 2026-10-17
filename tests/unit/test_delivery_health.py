@@ -75,6 +75,16 @@ def test_low_delivery_rate_needs_volume_and_new_tracker_is_not_judged():
     assert ch.evaluate(_stats(last_delivered_at=None), NOW, TH, 72).level == ch.RED
 
 
+def test_a_recovered_channel_stops_alerting_before_the_24h_rate_rolls_off():
+    """GHL's SMS lockout (2026-10-15/16): sending was back, but the 24 h share stayed at 7% and the alert stayed RED a day."""
+    lagging = dict(sent=239, delivered=11, failed=157, unconfirmed=0)
+    assert ch.evaluate(_stats(**lagging), NOW, TH, 100).level == ch.RED                                     # still failing now
+    assert ch.evaluate(_stats(**lagging, recent_delivered=3, recent_failed=2), NOW, TH, 100).level == ch.RED  # 60% of 5 recent
+    assert ch.evaluate(_stats(**lagging, recent_delivered=2, recent_failed=0), NOW, TH, 100).level == ch.RED  # too few to call it
+    s = ch.evaluate(_stats(**lagging, recent_delivered=9, recent_failed=0), NOW, TH, 100)                   # 100% of 9 recent
+    assert s.level == ch.AMBER and any("recovering" in r for r in s.reasons)
+
+
 def test_muted_channels_are_grey_and_never_red():
     s = ch.evaluate(_stats(last_delivered_at=NOW - timedelta(days=9), muted_reason="paused"), NOW, TH, 100)
     assert s.level == ch.GREY
