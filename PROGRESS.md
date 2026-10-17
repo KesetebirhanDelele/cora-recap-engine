@@ -2751,3 +2751,10 @@ Kes: "deploy; $0 down fixed already". Merged `fix/wrong-date-llm-check` (PROGRES
 - Awaiting Ali's approval of the cadence change: Cora's follow-up text after the first missed call only, then at most 1 per lead per day and 2 in total unless the lead replies. (Kes removed the "drop scheduled SMS after a week above 2%" fallback from the email to Ali on 2026-10-16; it is not part of the proposal.)
 - Leads whose texts failed during the block need a follow-up by email/voice (list not built yet).
 - Ali's items: website button ("Start for $0" / "Join for $0, no card needed") and the myfreeaiclass.com link replacement + redirect; the 1:40 PM staff email he asked Kes to chase (unidentified).
+
+
+## 2026-10-16 (night) - alert recovery rule, guard small-sample fix, DND leads closed
+- **Deployed (`55737df`):** (1) delivery-health recovery rule: when the last 3 h hold >= 5 resolved sends delivered at >= 90%, the 24 h rate rules drop to AMBER "recovering" and the alert resolves (the SMS alert had stayed RED ~a day after GHL's lockout ended; spec 35). (2) SMS opt-out guard: resume on a small sample only when at most `sms_guard_resume_max_optouts` (1) opt-outs remain; before this the guard resumed at 2 opt-outs on 44 texts (4.5%) because the GHL lockout had shrunk the delivered count under the 50-text minimum. The guard is `ok` now and re-pauses at >= 50 delivered texts and >= 2%.
+- **State:** Kes restarted the GHL "AI Agent - Send SMS" workflow; texts delivering again (26 delivered / 0 failed in 3 h). The opt-out rate was still ~4.5% on a small sample.
+- **Closed:** the two leads listed in the previous entry as wrongly DND'd (Kyle `czEFl7aAktfVSJUXOT2x`, no-name `sALI8spt2MdsQU08RrMl`): Kes checked them and they are blocked for another justified reason. Leave them blocked; no undo.
+- **Still open:** Ali's approval of the cadence change (1 text per lead per day, 2 per week unless the lead replies; ~39% fewer Cora texts on last week's volume); resend/follow-up list for leads whose texts failed during the lockout; Restriction History not read; Ali's website items.
