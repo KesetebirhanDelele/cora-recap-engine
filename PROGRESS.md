@@ -2758,3 +2758,8 @@ Kes: "deploy; $0 down fixed already". Merged `fix/wrong-date-llm-check` (PROGRES
 - **State:** Kes restarted the GHL "AI Agent - Send SMS" workflow; texts delivering again (26 delivered / 0 failed in 3 h). The opt-out rate was still ~4.5% on a small sample.
 - **Closed:** the two leads listed in the previous entry as wrongly DND'd (Kyle `czEFl7aAktfVSJUXOT2x`, no-name `sALI8spt2MdsQU08RrMl`): Kes checked them and they are blocked for another justified reason. Leave them blocked; no undo.
 - **Still open:** Ali's approval of the cadence change (1 text per lead per day, 2 per week unless the lead replies; ~39% fewer Cora texts on last week's volume); resend/follow-up list for leads whose texts failed during the lockout; Restriction History not read; Ali's website items.
+
+
+## 2026-10-16 (late) - SMS guard made silent
+- **Deployed (`f9e27c6`):** `sms_guard` pauses / resumes Cora's follow-up texts WITHOUT any dashboard alert or email (Kes: "I don't want to see alert about preventing follow-ups"). The pause itself is unchanged (>= 2% rolling 24 h opt-out rate on >= 50 delivered texts; resume below 1.5%, or a small sample with at most 1 opt-out). A pause / resume is an `app_config.sms_guard_state` change (audit_log, updated_by "auto: sms opt-out guard") plus a log line. The one active "Scheduled texts PAUSED" alert (d6d30ac0...) was resolved by hand. Spec 35 updated.
+- **State at the time:** the guard re-paused at 01:17 UTC 10-17 (3 opt-outs on 50 delivered = 6.0%); Cora's follow-up texts are held until the rate falls below 1.5%. GHL workflows / staff texts are not affected.
