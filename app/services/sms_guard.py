@@ -13,13 +13,12 @@ and stops Cora's follow-up texts first:
 
 While paused, `sms_ledger.reserve` BLOCKS source "followup" (Cora's post-call texts). The lead is not texted for that touch and
 still gets the email / voice cadence. Texts sent by GHL workflows or staff are outside Cora's control and are not stopped.
-Every pause and resume writes an alert (dashboard + email). `sms_guard_enabled` = false switches the guard off.
+No alert or email is raised (Kes 2026-10-16: not wanted); a pause or resume is an app_config change (audit_log, updated_by "auto: sms opt-out guard") and a log line. `sms_guard_enabled` = false switches the guard off.
 The state lives in `app_config.sms_guard_state` (ok | paused); it is evaluated each alert cycle and read at send time.
 """
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -80,21 +79,6 @@ def is_paused(session: Session, settings: Any) -> str | None:
         return None
 
 
-def _alert(session: Session, settings: Any, title: str, detail: str, now: datetime, severity: str) -> None:
-    try:
-        from app.models.alert_event import AlertEvent
-        from app.services.alerting import _send_alert_email
-
-        msg = f"{title}\n{detail}"
-        aid = str(uuid.uuid4())
-        session.add(AlertEvent(id=aid, alert_type=ALERT_TYPE, severity=severity, status="active", message=msg,
-                               email_sent_at=now, last_seen_at=now, created_at=now))
-        session.flush()
-        _send_alert_email(settings=settings, alert_id=aid, alert_type=ALERT_TYPE, severity=severity, message=msg, now=now)
-    except Exception as exc:
-        logger.warning("sms_guard: alert failed: %s", exc)
-
-
 def evaluate(session: Session, settings: Any, now: datetime | None = None) -> str:
     """One check (run each alert cycle). Returns 'off', 'ok', 'paused', 'paused_now' or 'resumed'. Caller commits."""
     from app.core.app_config import set_config_value
@@ -112,17 +96,10 @@ def evaluate(session: Session, settings: Any, now: datetime | None = None) -> st
 
     if not paused and sent >= min_sample and pct >= pause_pct:
         set_config_value(session, STATE_KEY, "paused", updated_by="auto: sms opt-out guard")
-        _alert(session, settings, "Scheduled texts PAUSED: opt-out rate reached the guard line.",
-               f"{stats} (guard line {pause_pct:g}%; GoHighLevel locks all texts for 24 h at 3%). Cora's follow-up texts "
-               f"are paused; leads still get email and voice. Texts sent by GHL workflows or staff are not stopped by this "
-               f"guard. It resumes by itself below {resume_pct:g}%.", now, "warning")
+        logger.info("sms_guard: PAUSED Cora follow-up texts | %s (guard line %g%%)", stats, pause_pct)
         return "paused_now"
     if paused and (pct < resume_pct or (sent < min_sample and optouts <= resume_max)):
         set_config_value(session, STATE_KEY, "ok", updated_by="auto: sms opt-out guard")
-        session.execute(text("UPDATE alert_events SET status = 'resolved', resolved_at = :n WHERE alert_type = :t AND status = 'active'"),
-                        {"n": now, "t": ALERT_TYPE})
-        _alert(session, settings, "Scheduled texts RESUMED.", f"{stats} (resume line {resume_pct:g}%).", now, "warning")
-        session.execute(text("UPDATE alert_events SET status = 'resolved', resolved_at = :n WHERE alert_type = :t AND status = 'active'"),
-                        {"n": now, "t": ALERT_TYPE})
+        logger.info("sms_guard: RESUMED Cora follow-up texts | %s (resume line %g%%)", stats, resume_pct)
         return "resumed"
     return "paused" if paused else "ok"

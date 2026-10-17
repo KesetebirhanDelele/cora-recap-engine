@@ -21,25 +21,21 @@ def env(monkeypatch):
         c.execute(text("CREATE TABLE channel_events (id INTEGER PRIMARY KEY, kind TEXT, channel TEXT, outcome TEXT, event_at TIMESTAMP)"))
     cfg = {"sms_guard_state": "ok"}
     monkeypatch.setattr(G, "_cfg", lambda s, st, key, default: cfg.get(key, default))
-    changes, alerts = [], []
+    changes = []
 
     def set_value(session, key, value, updated_by="x"):
         cfg[key] = value
         changes.append(value)
 
     monkeypatch.setattr("app.core.app_config.set_config_value", set_value)
-    monkeypatch.setattr(G, "_alert", lambda *a, **k: alerts.append(a[2]))
-    monkeypatch.setattr(Session, "execute", Session.execute)       # real session; resolve-UPDATE needs the alert table
     with Session(engine) as s:
-        s.execute(text("CREATE TABLE alert_events (id TEXT, alert_type TEXT, status TEXT, resolved_at TIMESTAMP)"))
-
         def load(optouts, delivered, hours_ago=1):
             at = NOW - timedelta(hours=hours_ago)
             for _ in range(optouts):
                 s.execute(text("INSERT INTO optout_actions (source, kind, status, created_at) VALUES ('sms_reply','dnd','applied',:t)"), {"t": at})
             for _ in range(delivered):
                 s.execute(text("INSERT INTO channel_events (kind, channel, outcome, event_at) VALUES ('delivery','sms','delivered',:t)"), {"t": at})
-        yield NS(s=s, cfg=cfg, load=load, changes=changes, alerts=alerts)
+        yield NS(s=s, cfg=cfg, load=load, changes=changes)
 
 
 def test_rate_counts_only_sms_reply_dnd_and_delivered_texts_in_the_window(env):
@@ -48,12 +44,12 @@ def test_rate_counts_only_sms_reply_dnd_and_delivered_texts_in_the_window(env):
     assert G.rate(env.s, NOW) == (3, 100, 3.0)
 
 
-def test_pauses_at_two_percent_with_enough_texts_and_alerts_once(env):
+def test_pauses_at_two_percent_with_enough_texts_without_raising_an_alert(env):
     env.load(3, 100)
     assert G.evaluate(env.s, NS(), NOW) == "paused_now"
-    assert env.cfg["sms_guard_state"] == "paused" and len(env.alerts) == 1
-    assert G.is_paused(env.s, NS())
-    assert G.evaluate(env.s, NS(), NOW) == "paused" and len(env.alerts) == 1      # no second alert while paused
+    assert env.cfg["sms_guard_state"] == "paused" and G.is_paused(env.s, NS())
+    assert not hasattr(G, "_alert")                                # Kes 2026-10-16: no alert or email for a pause / resume
+    assert G.evaluate(env.s, NS(), NOW) == "paused" and env.changes == ["paused"]
 
 
 def test_small_samples_never_pause(env):
