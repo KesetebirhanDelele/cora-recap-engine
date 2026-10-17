@@ -74,10 +74,17 @@ def test_resumes_only_below_the_lower_line(env):
     assert G.evaluate(env.s, NS(), NOW) == "resumed" and env.cfg["sms_guard_state"] == "ok"
 
 
-def test_resumes_when_too_few_texts_remain_to_judge(env):
+def test_resumes_when_too_few_texts_remain_to_judge_and_opt_outs_are_low(env):
     env.cfg["sms_guard_state"] = "paused"
-    env.load(2, 10)
+    env.load(1, 10)
     assert G.evaluate(env.s, NS(), NOW) == "resumed"
+
+
+def test_a_small_sample_with_several_opt_outs_stays_paused(env):
+    """2026-10-16: a GHL lockout shrank the delivered count to 44; 2 opt-outs (4.5%) must not read as 'too few to judge'."""
+    env.cfg["sms_guard_state"] = "paused"
+    env.load(2, 44)
+    assert G.evaluate(env.s, NS(), NOW) == "paused" and G.is_paused(env.s, NS())
 
 
 def test_switch_off_disables_the_guard(env):
