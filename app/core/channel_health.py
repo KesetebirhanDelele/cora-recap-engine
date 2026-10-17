@@ -165,8 +165,9 @@ def evaluate(stats: ChannelStats, now: datetime, th: Thresholds, tracker_age_hou
         recovered = True
     if stats.sent >= th.min_volume and stats.rate is not None:
         if stats.rate < th.amber_rate and recovered:
-            bump(AMBER, f"recovering: {stats.recent_delivered} of the last {recent} resolved in {th.recovery_hours:g} h delivered "
-                        f"(24 h rate {stats.rate:.0%})")
+            bump(AMBER, (f"recovering: {stats.recent_delivered} of the last {recent} resolved in {th.recovery_hours:g} h delivered "
+                         if recent else f"recovering: no failure in the last {th.recovery_hours:g} h, newest delivery is after the newest failure ")
+                 + f"(24 h rate {stats.rate:.0%})")
         elif stats.rate < th.red_rate:
             bump(RED, f"only {stats.rate:.0%} of {stats.delivered + stats.failed} resolved were delivered")
         elif stats.rate < th.amber_rate:
