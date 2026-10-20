@@ -156,7 +156,7 @@ def test_a_flagged_call_is_recorded_with_its_origin_and_what_the_agent_said():
 def test_a_clean_call_is_marked_scanned_and_not_flagged():
     s = FakeSession()
     out = svc.audit_voice_calls(s, None, NOW, ghl=FakeGHL([[_log("ok1", "bot:A team member will call you back.")]]), judge=MagicMock())
-    assert _kinds(s) == [("voice_scanned", "ok1")] and out["flagged"] == 0
+    assert _kinds(s) == [("voice_seen", "ok1")] and out["flagged"] == 0
 
 
 def test_replay_does_not_scan_or_flag_the_same_call_twice():
@@ -223,7 +223,7 @@ def test_a_call_without_a_transcript_waits_then_is_given_up_on():
     s = FakeSession()
     out = svc.audit_voice_calls(s, None, NOW, ghl=FakeGHL([[fresh, old]]), judge=MagicMock())
     assert out["waiting"] == 1
-    assert _kinds(s) == [("voice_scanned", "n2")]
+    assert _kinds(s) == [("voice_seen", "n2")]
 
 
 def test_calls_older_than_the_lookback_window_are_ignored():
@@ -262,3 +262,19 @@ def test_a_text_alert_line_names_its_ghl_source():
     with patch.object(chs, "_lead_line", return_value="Lead A"):
         line = chs._flag_line(None, _row("sms", source="app", cid="c1", error="free", ext="m1"))
     assert "sms sent by app" in line and "[origin: GHL sms with source 'app'" in line
+
+
+# ───────────────────────── database column widths (production bug 2026-10-20) ─────────────────────────
+
+def test_every_value_written_fits_the_channel_events_columns():
+    """channel_events.kind is varchar(12), channel varchar(10), source varchar(30). 'voice_scanned' (13) broke the first
+    production run; the fake session above cannot see column widths, so pin them here."""
+    s = FakeSession()
+    svc.audit_voice_calls(s, None, NOW, ghl=FakeGHL([[
+        _log("w1", ABERE), _log("w2", "bot:ok"), _log("w3", "human:SQL?\nbot:Colaberry no longer offers the SQL course."),
+        _log("w4", "", age_min=300)]]), judge=MagicMock(return_value="not_offering"))
+    kinds = {p["k"] for p in s.inserts}
+    assert {"content_flag", "content_ok", "voice_seen"} <= kinds
+    for p in s.inserts:
+        assert len(p["k"]) <= 12 and len("voice") <= 10 and len(p["src"]) <= 30, p
+        assert len(p["x"]) <= 100 and len(p["c"]) <= 100 and len(p["e"] or "") <= 300

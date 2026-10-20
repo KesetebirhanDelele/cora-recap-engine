@@ -4,7 +4,7 @@ AI agent) and flags what the BOT said that names a retired course, makes an empl
 
 Texts and emails are audited in delivery_sync; calls never were. The flag is written as channel_events kind 'content_flag',
 channel 'voice', source 'ghl_voice_ai', so the existing hourly alert (channel_health.run_content_flag_check) reports it and
-labels its origin. A call is scanned once (kind 'voice_scanned' marks it), so replays never alert twice.
+labels its origin. A call is scanned once (kind 'voice_seen' marks it), so replays never alert twice.
 
 Failure is never silent: if the call logs cannot be read, ONE `ghl_voice_audit_error` alert says the audit is not running and
 why, and it resolves itself on the next successful read.
@@ -109,7 +109,7 @@ def audit_voice_calls(session: Session, settings: Any, now: datetime | None = No
             if in_window:
                 seen = {r[0] for r in session.execute(
                     text("SELECT external_id FROM channel_events WHERE channel = 'voice' AND external_id IN :ids "
-                         "AND kind IN ('voice_scanned', 'content_flag')").bindparams(bindparam("ids", expanding=True)),
+                         "AND kind IN ('voice_seen', 'content_flag')").bindparams(bindparam("ids", expanding=True)),
                     {"ids": [lg["id"] for lg in in_window]}).fetchall()}
             fresh = [lg for lg in in_window if lg["id"] not in seen]
             for lg in fresh:
@@ -137,14 +137,14 @@ def _scan_one(session: Session, settings: Any, lg: dict, terms: tuple[str, ...],
         if now - at < RETRY_NO_TRANSCRIPT_AFTER:
             stats["waiting"] += 1
             return                                      # transcript may still be on its way; look again next cycle
-        _upsert(session, kind="voice_scanned", log=lg, at=at, now=now, detail={"no_transcript": True})
+        _upsert(session, kind="voice_seen", log=lg, at=at, now=now, detail={"no_transcript": True})
         return
     base = {"origin": va.origin_label(lg.get("agentId")), "agent_id": lg.get("agentId"), "call_id": lg["id"],
             "from_number": lg.get("fromNumber"), "duration": lg.get("duration")}
     finding = va.scan_call(transcript, terms, brand)
     stats["scanned"] += 1
     if finding is None:
-        _upsert(session, kind="voice_scanned", log=lg, at=at, now=now, detail=base)
+        _upsert(session, kind="voice_seen", log=lg, at=at, now=now, detail=base)
         return
     verdict = None
     if finding.course_only and judge is not None:
@@ -155,7 +155,7 @@ def _scan_one(session: Session, settings: Any, lg: dict, terms: tuple[str, ...],
             logger.warning("voice_audit: judge failed for %s: %s", lg["id"], exc)
     if verdict == "not_offering":
         _upsert(session, kind="content_ok", log=lg, at=at, now=now, detail={**base, "terms": finding.terms, "verdict": verdict})
-        _upsert(session, kind="voice_scanned", log=lg, at=at, now=now, detail=base)
+        _upsert(session, kind="voice_seen", log=lg, at=at, now=now, detail=base)
         stats["cleared"] += 1
         return
     detail = {**base, "terms": finding.terms, "snippet": finding.excerpt}
