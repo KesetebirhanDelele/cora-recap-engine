@@ -96,7 +96,7 @@ def test_email_writes_subject_to_ticket2_and_html_body_to_message(session, setti
     assert subject == "Correction: our class and Open House dates"            # originates from the engine
     assert len(subject) < 80 and "Quick correction" not in subject
     assert body.startswith("<p>Hi there,</p>") and "November 12, 2026" in body and "October 29, 2026" in body
-    assert 'href="https://example.test/rsvp"' in body and "www.myfreeaiclass.com" in body
+    assert 'href="https://example.test/rsvp"' in body and "https://training.colaberry.com/start-free" in body
     assert "Text STOP" not in body and subject not in body.replace("Correction:", "")
     assert _ledger(session, "a") == ("corrected", "email", True, False)
     rec = session.execute(text(
@@ -123,7 +123,7 @@ def test_correction_email_variants_and_escaping(session, settings):
     _cfg(session, "next_class_start", "")
     subject, html = wdm.build_correction_email(session, settings)
     assert "don't have a class or Open House scheduled" in html and "<li>" not in html
-    assert "myfreeaiclass.com" in html and subject == wdm.DEFAULT_EMAIL_SUBJECT
+    assert "https://training.colaberry.com/start-free" in html and subject == wdm.DEFAULT_EMAIL_SUBJECT
 
 
 def test_failed_write_clears_the_email_ledger(session, settings):
@@ -355,7 +355,7 @@ def test_every_correction_sms_is_recorded_in_the_sms_ledger(session, settings):
         r = wdm.send_corrections_bulk(session, settings, "kes", channel="sms")
     assert r["sent"] == 2
     assert _gate_rows(session) == [("correction", "sent", "ok", 2)] * 2      # the correction text is 2 segments
-    assert "myfreeaiclass" not in session.execute(text("SELECT string_agg(body, ' ') FROM sms_send_ledger")).scalar()
+    assert "training.colaberry.com" not in session.execute(text("SELECT string_agg(body, ' ') FROM sms_send_ledger")).scalar()
 
 
 def test_budget_exhausted_stops_the_bulk_run_and_leaves_incidents_open(session, settings):

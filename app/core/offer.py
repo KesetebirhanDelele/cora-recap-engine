@@ -65,9 +65,15 @@ _TERM_EXCEPTIONS: dict[str, tuple[str, str]] = {
 }
 
 
+# Colaberry's own $0 sign-up link. Its path contains the word "free" but it is the approved link (Kes 2026-10-20), so it is
+# removed before the scan. Only this exact path: "/start-free-trial", "/start-free2" and other hosts still hit.
+_ALLOWED_FREE_LINK = re.compile(
+    r"(?:https?://)?(?:www\.)?training\.colaberry\.com/start-free(?![a-z0-9-])(?:/|\?[^\s\"'<>]*)?")
+
+
 def forbidden_hits(text: str | None, terms: tuple[str, ...]) -> list[str]:
-    """Forbidden terms present in `text` (whole words / phrases, case-insensitive; see _TERM_EXCEPTIONS)."""
-    t = re.sub(r"\s+", " ", (text or "").lower())
+    """Forbidden terms present in `text` (whole words / phrases, case-insensitive; see _TERM_EXCEPTIONS and _ALLOWED_FREE_LINK)."""
+    t = re.sub(r"\s+", " ", _ALLOWED_FREE_LINK.sub(" ", (text or "").lower()))
     hits = []
     for term in terms:
         pre, post = _TERM_EXCEPTIONS.get(term, ("", ""))

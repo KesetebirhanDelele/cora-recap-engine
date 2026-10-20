@@ -7,7 +7,7 @@ GHL the write itself is what sends the message:
   channel "email" -> Support Issue Ticket #2 (subject)  + Message (body)  -> workflow "AI Agent - Send Email"
   channel "sms"   -> Support issue Ticket #4 (the text)                   -> workflow "AI Agent - Send SMS"
 
-An "sms" follow-up is delivered as a real SMS - unless it carries a link other than myfreeaiclass.com
+An "sms" follow-up is delivered as a real SMS - unless it carries a link other than https://training.colaberry.com/start-free
 (app/core/sms_links.py), in which case it is delivered as an EMAIL instead. Setting app_config `sms_delivery_mode` to "email"
 restores the legacy behaviour (the SMS text goes to Ticket #2 and is emailed) as an instant rollback.
 
@@ -98,7 +98,7 @@ def build_followup_updates(
     if isinstance(record.get("contact"), dict):
         record = record["contact"]
 
-    # A text may only carry allow-listed links (default myfreeaiclass.com). Any other link means
+    # A text may only carry allow-listed links (default https://training.colaberry.com/start-free). Any other link means
     # this touch must go by EMAIL (Kes, 2026-10-01).
     if sms_needs_email(body, parse_allowed_domains(allowed_link_domains)):
         if not record:

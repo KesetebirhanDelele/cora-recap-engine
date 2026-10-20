@@ -2763,3 +2763,9 @@ Kes: "deploy; $0 down fixed already". Merged `fix/wrong-date-llm-check` (PROGRES
 ## 2026-10-16 (late) - SMS guard made silent
 - **Deployed (`f9e27c6`):** `sms_guard` pauses / resumes Cora's follow-up texts WITHOUT any dashboard alert or email (Kes: "I don't want to see alert about preventing follow-ups"). The pause itself is unchanged (>= 2% rolling 24 h opt-out rate on >= 50 delivered texts; resume below 1.5%, or a small sample with at most 1 opt-out). A pause / resume is an `app_config.sms_guard_state` change (audit_log, updated_by "auto: sms opt-out guard") plus a log line. The one active "Scheduled texts PAUSED" alert (d6d30ac0...) was resolved by hand. Spec 35 updated.
 - **State at the time:** the guard re-paused at 01:17 UTC 10-17 (3 opt-outs on 50 delivered = 6.0%); Cora's follow-up texts are held until the rate falls below 1.5%. GHL workflows / staff texts are not affected.
+
+## 2026-10-20 — $0 sign-up link moved to training.colaberry.com/start-free (branch fix/start-free-url, NOT yet merged/deployed)
+- Kes: `https://training.colaberry.com/start-free` is the approved $0 link and must not trip the banned-word "free" check; it replaces myfreeaiclass.com everywhere.
+- `app/core/offer.py`: `forbidden_hits()` strips that exact link (any scheme/www/case, optional trailing `/` or `?query`) before scanning, so the email audit, SMS gate and message generator all honour it. `/start-free-trial`, other hosts, and the word "free" outside the link still hit. Tests in `tests/unit/test_offer_terms.py`.
+- `DEFAULT_FREE_SIGNUP_URL` is now the full URL. Old domain replaced in app, dashboard-ui, docs, directives, tests (history in this file left as written).
+- DEPLOY CHECK: `free_signup_url` can be overridden in app_config (Settings) - if production has the old value saved it keeps winning; update it after deploy. Also GHL email templates / Synthflow prompts / workflows outside this repo may still carry the old domain.

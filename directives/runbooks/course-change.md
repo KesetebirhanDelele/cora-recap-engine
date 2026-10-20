@@ -28,7 +28,7 @@ Name, what it is, schedule, plans and prices, extra costs, eligibility, links, t
 | 8 | GHL Marketing > Snippets (texts and emails staff paste) | archive stale ones (watch for old-course payment reminders meant only for current students), update the rest | Kes |
 | 9 | GHL workflows, SMS and email templates, campaign automations | search them for the old course and old facts | Kes |
 | 10 | GHL appointment reminders and the reschedule workflow | read the wording | Kes |
-| 11 | Eventbrite page, www.myfreeaiclass.com, training.colaberry.com | wording and link targets | Kes |
+| 11 | Eventbrite page, https://training.colaberry.com/start-free, training.colaberry.com | wording and link targets | Kes |
 | 12 | Settings page: next class start, next Open House, sms delay etc. | confirm the dates are still true | Kes |
 | 13 | Call-scoring prompt and date-expiry fallback text in the repo | grep for old wording | Claude |
 

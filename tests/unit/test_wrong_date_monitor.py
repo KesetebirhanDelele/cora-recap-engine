@@ -169,7 +169,7 @@ def test_correction_text_uses_current_dates_and_rsvp(session, settings):
     sms = wdm.build_correction_text(session, settings, "sms")
     assert CLASS in sms and OH in sms
     assert "https://example.test/rsvp" not in sms             # no long third-party link in a text
-    assert "myfreeaiclass" not in sms and "www." not in sms and "http" not in sms   # no link at all in a text
+    assert "training.colaberry.com" not in sms and "www." not in sms and "http" not in sms   # no link at all in a text
     assert sms.endswith("Text STOP to stop alerts")
 
 

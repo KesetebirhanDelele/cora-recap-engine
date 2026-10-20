@@ -177,7 +177,7 @@ def test_blank_means_nothing_scheduled_so_any_dated_mention_is_wrong():
 
 def test_blank_with_no_dates_is_fine():
     assert find_wrong_dates(
-        "Start learning for free at www.myfreeaiclass.com today!", None,
+        "Start learning for free at https://training.colaberry.com/start-free today!", None,
         expected_class_start="", expected_open_house="",
     ) == []
 

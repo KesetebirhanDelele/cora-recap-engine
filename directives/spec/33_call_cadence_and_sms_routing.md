@@ -7,7 +7,7 @@
 | "SMS" follow-ups delivered as real SMS (`app/core/followup_routing.py`, `crm_jobs.update_ghl_after_vm_message`) | **BUILT + tested locally. NOT deployed.** |
 | TCPA 08:00–21:00 local floor for Cora's real SMS (`channel_jobs._check_active_window(tcpa=True)`) | **BUILT + tested locally. NOT deployed.** |
 | Classification tag no longer written to Support issue Ticket #4 | **BUILT. URGENT to deploy — see "Live hazard".** |
-| Links in SMS: only `myfreeaiclass.com`; any other link -> delivered as an EMAIL (`app/core/sms_links.py`) | **BUILT + tested locally. NOT deployed.** |
+| Links in SMS: only `https://training.colaberry.com/start-free`; any other link -> delivered as an EMAIL (`app/core/sms_links.py`) | **BUILT + tested locally. NOT deployed.** |
 
 ## Required cadence (Settings page, verified saved in `app_config` 2026-10-01)
 | Missed call | Cold Lead delay to next call | New Lead delay to next call | Text | Email |
@@ -33,7 +33,7 @@ Plus: **max 2 calls per lead per local day** (lead's timezone) unless the lead a
 - **TCPA:** `send_sms_job` also requires 08:00–21:00 in the lead's timezone even when the campaign window is wider (New Lead runs to 22:00); otherwise it re-schedules to 08:00 local.
 
 ## Links in SMS (Kes, 2026-10-01 — final decision: NO links at all)
-- **No link of any kind goes out in an SMS — not even `myfreeaiclass.com`.** The allow-list `app_config sms_allowed_link_domains` is **empty by default** (comma-separated domains re-allow specific sites later, e.g. `myfreeaiclass.com` once the A2P campaign is confirmed to allow embedded links; no deploy needed).
+- **No link of any kind goes out in an SMS — not even `https://training.colaberry.com/start-free`.** The allow-list `app_config sms_allowed_link_domains` is **empty by default** (comma-separated domains re-allow specific sites later, e.g. `https://training.colaberry.com/start-free` once the A2P campaign is confirmed to allow embedded links; no deploy needed).
 - A follow-up written as "sms" whose text carries ANY link (Eventbrite RSVP, YouTube, our own site, other domains, shorteners such as bit.ly) is delivered as an **EMAIL** instead: Ticket #2 = short subject (first meaningful sentence of the text, link-free), Message = small HTML body with the link clickable and the "Text STOP" line removed (GHL appends the unsubscribe footer). Ticket #4 is not touched, so nothing is texted. If the lead cannot be emailed (no address / Email DND / unreadable) nothing is sent.
 - Email addresses are not links. Detection: `http(s)://`, `www.`, and bare domains on common TLDs (`app/core/sms_links.py`).
 - The correction SMS (switched off) carries dates only; the AI prompt override for expired dates tells the model to put the free-signup address ONLY in the email and just invite a reply in the SMS.

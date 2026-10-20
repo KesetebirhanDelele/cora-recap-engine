@@ -85,7 +85,7 @@ def test_pacing_min_gap_and_per_minute():
 @pytest.mark.parametrize("body,why", [
     ("", "empty"),
     ("warm_lead", "stray token"),
-    ("Visit myfreeaiclass.com to start learning for free today", "link"),
+    ("Visit https://training.colaberry.com/start-free to start learning for free today", "link"),
     ("RSVP https://eventbrite.com/e/1 for the open house today", "link"),
     ("Hi {{contact.first_name}} it is Cora from Colaberry", "placeholder"),
     ("Hi None it is Cora from Colaberry today", "placeholder"),
@@ -107,8 +107,8 @@ def test_wrong_date_in_an_outgoing_sms_is_blocked_and_correct_one_passes():
 
 
 def test_domain_can_be_re_allowed_by_config():
-    cfg = g.GateConfig(allowed_link_domains="myfreeaiclass.com")
-    assert g.decide("Start free at myfreeaiclass.com whenever you like", g.GateUsage(), cfg).action == g.ALLOW
+    cfg = g.GateConfig(allowed_link_domains="training.colaberry.com")
+    assert g.decide("Start free at https://training.colaberry.com/start-free whenever you like", g.GateUsage(), cfg).action == g.ALLOW
 
 
 def test_usage_level():
@@ -182,7 +182,7 @@ def test_pacing_defers_without_spending_or_logging(ledger):
 
 
 def test_blocked_text_is_logged_and_never_spends_budget(ledger):
-    r = ledger.run(body="see myfreeaiclass.com now please", now=_t(0))
+    r = ledger.run(body="see https://training.colaberry.com/start-free now please", now=_t(0))
     assert not r.allowed and r.defer_until is None
     with ledger.factory() as s:
         row = s.execute(text("SELECT status, segments FROM sms_send_ledger")).fetchone()

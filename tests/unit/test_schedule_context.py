@@ -58,14 +58,14 @@ def test_both_set_lists_dates_and_rsvp_no_override():
     assert "Next class: November 12, 2026" in b
     assert "Next Open House: October 29, 2026" in b
     assert "Open House RSVP: https://rsvp.test" in b
-    assert "OVERRIDE" not in b and "myfreeaiclass" not in b
+    assert "OVERRIDE" not in b and "training.colaberry.com" not in b
 
 
 def test_both_unset_overrides_and_points_to_free_signup():
     b = build_schedule_block("", "", "https://rsvp.test")
     assert "SCHEDULE OVERRIDE" in b
     assert DEFAULT_FREE_SIGNUP_URL in b
-    assert "www.myfreeaiclass.com" in b
+    assert "https://training.colaberry.com/start-free" in b
     assert "https://rsvp.test" not in b          # RSVP for a dead event is never sent
     assert "Next class:" not in b and "Next Open House:" not in b
 
@@ -110,7 +110,7 @@ def test_every_tier_renders_active_and_expired(version):
         "next_class_start": "", "next_open_house_date": "",
         "live_open_house_link": "https://rsvp.test"}))[1]["content"]
     assert "SCHEDULE OVERRIDE" in expired
-    assert "www.myfreeaiclass.com" in expired
+    assert "https://training.colaberry.com/start-free" in expired
     assert "https://rsvp.test" not in expired
     assert "November 12" not in expired and "October 29" not in expired
 

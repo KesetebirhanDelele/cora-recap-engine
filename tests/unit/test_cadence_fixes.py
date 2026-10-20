@@ -348,7 +348,7 @@ def test_sms_inside_tcpa_hours_proceeds(session):
     assert _check_active_window(session, job, cid, "New Lead", _window_settings(), tcpa=True, now=at_1400) is True
 
 
-# ═══════════════════ links in SMS: only myfreeaiclass.com, else email ═══════════════════
+# ═══════════════════ links in SMS: only https://training.colaberry.com/start-free, else email ═══════════════════
 
 from app.core.sms_links import (  # noqa: E402
     email_html_from_text,
@@ -359,13 +359,13 @@ from app.core.sms_links import (  # noqa: E402
 )
 
 NO_LINKS = parse_allowed_domains(None)                       # the default: no link of any kind in an SMS
-ALLOW = parse_allowed_domains("myfreeaiclass.com")           # only when explicitly re-allowed in app_config
+ALLOW = parse_allowed_domains("training.colaberry.com")           # only when explicitly re-allowed in app_config
 
 
 @pytest.mark.parametrize("text", [
-    "Start free at myfreeaiclass.com. Text STOP to stop alerts",
-    "Start free at www.myfreeaiclass.com",
-    "Start free at https://www.myfreeaiclass.com/learn",
+    "Start free at https://training.colaberry.com/start-free. Text STOP to stop alerts",
+    "Start free at https://training.colaberry.com/start-free",
+    "Start free at https://training.colaberry.com/start-free/learn",
     "Email admissions@colaberry.com with questions",           # an email address is not a link
     "No links here at all.Thanks",
 ])
@@ -374,9 +374,9 @@ def test_sms_text_that_may_stay_an_sms_only_when_the_domain_is_explicitly_allowe
 
 
 @pytest.mark.parametrize("text", [
-    "Start free at myfreeaiclass.com. Text STOP to stop alerts",
-    "Start free at www.myfreeaiclass.com",
-    "Start free at https://www.myfreeaiclass.com/learn",
+    "Start free at https://training.colaberry.com/start-free. Text STOP to stop alerts",
+    "Start free at https://training.colaberry.com/start-free",
+    "Start free at https://training.colaberry.com/start-free/learn",
 ])
 def test_by_default_not_even_our_own_website_may_be_in_an_sms(text):
     assert sms_needs_email(text, NO_LINKS)
@@ -393,8 +393,8 @@ def test_texts_without_any_link_or_with_an_email_address_stay_sms_by_default():
     "see bit.ly/abc123",
     "go to colaberry.com today",
     "visit www.example.org",
-    "evil-myfreeaiclass.com.attacker.io",
-    "Start free at myfreeaiclass.com and RSVP at eventbrite.com/e/1",   # one bad link is enough
+    "evil-training.colaberry.com.attacker.io",
+    "Start free at https://training.colaberry.com/start-free and RSVP at eventbrite.com/e/1",   # one bad link is enough
 ])
 def test_sms_text_with_any_other_link_must_go_by_email(text):
     assert sms_needs_email(text, ALLOW)
@@ -402,9 +402,9 @@ def test_sms_text_with_any_other_link_must_go_by_email(text):
 
 def test_default_and_empty_allow_lists_are_the_same_and_subdomains_of_allowed_pass():
     assert parse_allowed_domains(None) == parse_allowed_domains("") == frozenset()
-    assert sms_needs_email("Start free at myfreeaiclass.com", parse_allowed_domains(""))
-    assert not sms_needs_email("Start at learn.myfreeaiclass.com", ALLOW)
-    assert parse_allowed_domains("WWW.MyFreeAIClass.com, colaberry.com") == frozenset({"myfreeaiclass.com", "colaberry.com"})
+    assert sms_needs_email("Start free at https://training.colaberry.com/start-free", parse_allowed_domains(""))
+    assert not sms_needs_email("Start at learn.training.colaberry.com", ALLOW)
+    assert parse_allowed_domains("training.colaberry.com, colaberry.com") == frozenset({"training.colaberry.com", "colaberry.com"})
 
 
 def test_link_extraction_trims_punctuation():
@@ -432,10 +432,10 @@ def test_sms_with_a_link_is_delivered_as_an_email_not_a_text():
 
 
 def test_sms_with_our_own_website_goes_by_email_by_default_and_stays_sms_only_if_allowed():
-    body = "Start free at myfreeaiclass.com. Text STOP to stop alerts"
+    body = "Start free at https://training.colaberry.com/start-free. Text STOP to stop alerts"
     plan = _build(CFG, channel="sms", subject="", body=body, ghl_contact=CLEAN)
     assert plan.route == "sms_link_to_email" and "Support issue Ticket #4" not in plan.updates
-    ok = _build(CFG, channel="sms", subject="", body=body, ghl_contact=CLEAN, allowed_link_domains="myfreeaiclass.com")
+    ok = _build(CFG, channel="sms", subject="", body=body, ghl_contact=CLEAN, allowed_link_domains="training.colaberry.com")
     assert ok.route == "sms" and "Support issue Ticket #4" in ok.updates and "Support Issue Ticket #2" not in ok.updates
 
 
@@ -458,7 +458,7 @@ def test_allow_list_is_configurable_per_call():
     body = "RSVP https://eventbrite.com/e/1"
     assert _build(CFG, channel="sms", subject="", body=body, ghl_contact=CLEAN,
                   allowed_link_domains="eventbrite.com").route == "sms"
-    assert _build(CFG, channel="sms", subject="", body="Start free at myfreeaiclass.com", ghl_contact=CLEAN,
+    assert _build(CFG, channel="sms", subject="", body="Start free at https://training.colaberry.com/start-free", ghl_contact=CLEAN,
                   allowed_link_domains="").route == "sms_link_to_email"
 
 
@@ -475,7 +475,7 @@ def test_the_correction_sms_text_contains_no_link_of_any_kind():
 
     settings = NS(next_class_start="November 12, 2026", next_open_house_date="October 29, 2026",
                   live_open_house_link="https://eventbrite.com/e/1", sender_name="Cora from Colaberry",
-                  unsubscribe_text="Text STOP to stop alerts", free_signup_url="www.myfreeaiclass.com")
+                  unsubscribe_text="Text STOP to stop alerts", free_signup_url="https://training.colaberry.com/start-free")
     sms = wdm.build_correction_text(_S(), settings, "sms")
     assert "November 12, 2026" in sms and "October 29, 2026" in sms and sms.endswith("Text STOP to stop alerts")
     assert not sms_needs_email(sms, NO_LINKS), sms
@@ -487,7 +487,7 @@ def test_the_correction_sms_text_contains_no_link_of_any_kind():
 def test_prompt_override_keeps_the_free_signup_address_out_of_the_sms():
     from app.core.schedule_context import build_schedule_block
 
-    block = build_schedule_block("", "", "https://rsvp.test", "www.myfreeaiclass.com")
+    block = build_schedule_block("", "", "https://rsvp.test", "https://training.colaberry.com/start-free")
     assert "ONLY in the email" in block and "NEVER put any link" in block
 
 

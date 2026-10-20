@@ -11,7 +11,7 @@
 | Test send to the operator's own contact (email + SMS) | **LIVE** (needs `correction_test_contacts`, set in prod DB) |
 
 ## Problem statement
-Leads were told the wrong next-class-start / next-open-house date (stale dashboard value, or an AI-invented date — the prompts had no open-house date before this spec). Kes needs: (1) an email the moment it happens, (2) a dashboard tile listing affected leads with 24h metrics, (3) a safe one-click correction, (4) past dates never told again — once a date passes the setting clears and leads are invited to start free at `www.myfreeaiclass.com`.
+Leads were told the wrong next-class-start / next-open-house date (stale dashboard value, or an AI-invented date — the prompts had no open-house date before this spec). Kes needs: (1) an email the moment it happens, (2) a dashboard tile listing affected leads with 24h metrics, (3) a safe one-click correction, (4) past dates never told again — once a date passes the setting clears and leads are invited to start free at `https://training.colaberry.com/start-free`.
 
 Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_open_house_date`) — nothing is hard-coded. As of 2026-10-01: class start November 12, 2026; open house October 29, 2026.
 
@@ -26,7 +26,7 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 ## Date auto-expiry + free-signup fallback
 - Each cycle `expire_past_dates` sets `next_class_start` / `next_open_house_date` to `""` the day AFTER the date (in `default_timezone`, America/Chicago). Conditional UPDATE (an operator's newer value is never overwritten), audited (`config_expired`), one email (`date_setting_expired`). **Year-less values ("Oct 29") are never auto-cleared — always type the year.**
 - "Unset" = blank or upcoming/tbd/tba/none/n-a/null (not free text like "Q3 2026").
-- Prompts get `{schedule_block}`: both set → dates + RSVP; any unset → a SCHEDULE OVERRIDE (never write a date for it, ignore guidelines asking for it, invite the lead to start free at `www.myfreeaiclass.com`; RSVP link withheld when the open house is unset). Override the address with `free_signup_url`.
+- Prompts get `{schedule_block}`: both set → dates + RSVP; any unset → a SCHEDULE OVERRIDE (never write a date for it, ignore guidelines asking for it, invite the lead to start free at `https://training.colaberry.com/start-free`; RSVP link withheld when the open house is unset). Override the address with `free_signup_url`.
 
 ## How corrections are delivered (verified against live GHL, 2026-10-01)
 - Cora's follow-ups — **including the ones Cora records as "SMS"** — reach leads as outbound **emails** through GHL workflow **"AI Agent - Send Email"**: trigger *Support Issue Ticket #2 has changed*, 5 s wait, then the email. Evidence: GHL conversations for 6 leads show only TYPE_EMAIL from Cora; a recorded SMS text arrived as an email a minute later. **Mapping (corrected in GHL 2026-10-01):** Subject = `{{contact.support_issue_ticket_2}}`, Body = `{{contact.message}}`, From Name = `Colaberry Admissions Team` (or default). Before that fix the two were SWAPPED (subject = the whole message, body = only the short subject) — the engine itself always wrote them correctly (Ticket #2 = subject, Message = body; verifiable in `scheduled_jobs.payload_json` of `update_ghl_after_vm_message`).
@@ -52,7 +52,7 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 | Key | Default | Meaning |
 |---|---|---|
 | `next_class_start`, `next_open_house_date`, `live_open_house_link` | — | Settings page |
-| `free_signup_url` | `www.myfreeaiclass.com` | fallback invitation |
+| `free_signup_url` | `https://training.colaberry.com/start-free` | fallback invitation |
 | `correction_email_subject` | `Correction: our class and Open House dates` | subject of the correction email (written to Ticket #2) |
 | `sms_corrections_enabled` | `false` | allow SMS corrections |
 | `correction_test_contacts` | empty (feature off) | comma-separated allowed test emails |

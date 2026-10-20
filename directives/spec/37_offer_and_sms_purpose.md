@@ -11,7 +11,7 @@
 | | SMS (`vm_sms_notice`) | Email (`vm_followup_generator`) |
 |---|---|---|
 | Purpose | "we tried to reach you - when is a good time?" | describes the one program, Open House / explainer / free-start next steps |
-| Offer | names the Accelerator at most once as the reason for the call; never describes it | the Accelerator only, using `offer_facts` (12 weeks, online, ~4 h/week live + recorded, Claude Code / Claude API / MCP / Docker / GitHub, capstone Expo, CCA-F prep, free start at myfreeaiclass.com) |
+| Offer | names the Accelerator at most once as the reason for the call; never describes it | the Accelerator only, using `offer_facts` (12 weeks, online, ~4 h/week live + recorded, Claude Code / Claude API / MCP / Docker / GitHub, capstone Expo, CCA-F prep, free start at https://training.colaberry.com/start-free) |
 | Never | links, dates, prices, enrollment push, stories, urgency, other courses, "you called us" | other courses, stories/testimonials, salary or placement claims, invented dates/prices, a "Text STOP" line (the platform adds the footer) |
 | Length | <= 160 chars incl. opt-out on the first draft (1 segment), hard ceiling 240 (2 segments) | 130-190 words |
 Generation: `generate_vm_followup(..., channel="sms"|"email")` - only the needed channel is generated (half the LLM calls). Tier by attempt: tier_1..tier_3, tier_final.
@@ -27,7 +27,7 @@ Generation: `generate_vm_followup(..., channel="sms"|"email")` - only the needed
 ## Not done / open
 * **Upcoming-call reminder SMS: not built, by decision (Kes 2026-10-01) - no reminder logic existed and none is to be added.**
 * Student stories are off until Accelerator stories exist (`video_transcripts.csv` is entirely the retired program).
-* Enrollment model (Kes 2026-10-01): enrollment is ongoing for the SELF-PACED option (start any time, free start at myfreeaiclass.com); the Open House is for people who want LIVE classes. `offer_facts` and the email prompt say so; the email follows the Settings schedule block for Open House / class-start dates.
+* Enrollment model (Kes 2026-10-01): enrollment is ongoing for the SELF-PACED option (start any time, free start at https://training.colaberry.com/start-free); the Open House is for people who want LIVE classes. `offer_facts` and the email prompt say so; the email follows the Settings schedule block for Open House / class-start dates.
 * Texts Synthflow or GHL-native automations send do not pass this generator or gate - out of scope by decision (Kes 2026-10-01).
 * Dead code: `vm_content_generator` / `services/ai.generate_voicemail_content` have no callers.
 

@@ -32,7 +32,7 @@ def test_free_as_a_claim_is_flagged(text):
     "feel   free to call us",                   # extra spaces collapse
     "FEEL FREE to ask",
     "Use your free time wisely",
-    "Visit www.myfreeaiclass.com",              # the domain is not the word
+    "Visit https://training.colaberry.com/start-free",              # the domain is not the word
     "freedom and carefree days",
     "$0 to start. No card needed. Membership from $149/mo.",
 ])
@@ -80,7 +80,7 @@ def test_free_is_a_hard_term_never_left_to_the_decline_judge():
 # ── Cora's own generated text must follow the same rule ──────────────────────────────────────────────────────────
 
 def test_offer_facts_state_the_approved_wording_and_never_the_word_free_as_a_claim():
-    facts = offer.DEFAULT_OFFER_FACTS.replace("{free_url}", "www.myfreeaiclass.com")
+    facts = offer.DEFAULT_OFFER_FACTS.replace("{free_url}", "https://training.colaberry.com/start-free")
     assert "$0" in facts and "no card needed" in facts and "$149/mo" in facts
     allowed = re.sub(r"Never use the word 'free'.*?instead\.", "", facts, flags=re.S)       # the sentence that forbids it
     assert "free" not in offer.forbidden_hits(allowed, TERMS)
@@ -89,7 +89,7 @@ def test_offer_facts_state_the_approved_wording_and_never_the_word_free_as_a_cla
 def test_followup_prompt_and_schedule_block_do_not_tell_the_model_to_say_free():
     from app.core.schedule_context import build_schedule_block
 
-    block = build_schedule_block(None, None, None, "www.myfreeaiclass.com")
+    block = build_schedule_block(None, None, None, "https://training.colaberry.com/start-free")
     assert "$0" in block and "free" not in offer.forbidden_hits(block, TERMS)
     src = Path("app/prompts/families/vm_followup_generator.py").read_text(encoding="utf-8")
     assert "the free start link" not in src and "start free" not in re.sub(r'\(not "free account".*?"start free"\)', "", src)
@@ -98,3 +98,25 @@ def test_followup_prompt_and_schedule_block_do_not_tell_the_model_to_say_free():
 def test_date_correction_messages_use_the_approved_wording():
     src = Path("app/services/wrong_date_monitor.py").read_text(encoding="utf-8")
     assert "for free" not in src and "learning for $0" in src
+
+
+# Approved $0 sign-up link (Kes 2026-10-20): its path contains "free" but must not be flagged.
+@pytest.mark.parametrize("text", [
+    "Start at https://training.colaberry.com/start-free today",
+    "training.colaberry.com/start-free",
+    "Sign up: HTTPS://WWW.TRAINING.COLABERRY.COM/START-FREE.",
+    '<a href="https://training.colaberry.com/start-free?utm_source=email">https://training.colaberry.com/start-free</a>',
+    "Start at https://training.colaberry.com/start-free/ now",
+])
+def test_approved_start_free_link_is_not_flagged(text):
+    assert offer.forbidden_hits(text, TERMS) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Start free at https://training.colaberry.com/start-free",                # the WORD outside the link still hits
+    "https://training.colaberry.com/start-free-trial",                         # different path
+    "https://other.example.com/start-free",                                    # other host
+    "https://evil.com/?r=training.colaberry.com/start-free-x free",
+])
+def test_free_outside_the_approved_link_still_flagged(text):
+    assert "free" in offer.forbidden_hits(text, TERMS), text

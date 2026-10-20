@@ -15,7 +15,7 @@ from app.services import wrong_date_monitor as wdm
 CLASS, OH = "November 12, 2026", "October 29, 2026"
 # The real email of 2026-10-14 17:16 CDT: both dates are right, the rule engine read Nov 12 as the Open House date.
 REAL_OK_EMAIL = (
-    "If you're interested, you can start the self-paced option anytime with $0 to start and no card needed at myfreeaiclass.com. "
+    "If you're interested, you can start the self-paced option anytime with $0 to start and no card needed at https://training.colaberry.com/start-free. "
     "Alternatively, if you prefer live classes, we have an Open House on October 29, 2026, where you can learn more and join "
     "the next session starting on November 12, 2026. You can RSVP here: Open House RSVP.")
 NOW = datetime(2026, 10, 14, 22, 0, tzinfo=timezone.utc)

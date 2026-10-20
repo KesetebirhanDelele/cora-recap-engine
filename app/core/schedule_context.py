@@ -20,7 +20,7 @@ from datetime import date
 
 from app.core.wrong_date_guard import parse_config_date
 
-DEFAULT_FREE_SIGNUP_URL = "www.myfreeaiclass.com"
+DEFAULT_FREE_SIGNUP_URL = "https://training.colaberry.com/start-free"
 NONE_SCHEDULED = "(none scheduled)"
 
 _UNSET_WORDS = {"", "upcoming", "tbd", "tba", "none", "n/a", "null"}

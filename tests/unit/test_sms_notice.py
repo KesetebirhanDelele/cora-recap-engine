@@ -155,7 +155,7 @@ def test_sms_with_a_retired_course_is_redrafted_once_then_accepted(llm):
 
 
 def test_sms_marketing_draft_twice_falls_back_to_a_safe_notice(llm):
-    bad = {"sms_text": "Our class starts Nov 12! RSVP for the Open House at myfreeaiclass.com"}
+    bad = {"sms_text": "Our class starts Nov 12! RSVP for the Open House at https://training.colaberry.com/start-free"}
     llm.scripts = [bad, bad]
     out = generate_vm_sms(_ctx(name="Sam"), NS())
     assert out.startswith("Hi Sam, it's Cora from Colaberry. I tried calling about the AI Systems Architect Accelerator")

@@ -555,7 +555,7 @@ export default function SettingsClient() {
           </div>
           <div>
             <label style={LABEL}>Next class start</label>
-            <p style={SECTION_CAPTION}>e.g. &quot;November 12, 2026&quot; (include the year). Cleared automatically the day after it passes; blank = no class scheduled, messages invite leads to start free at www.myfreeaiclass.com.</p>
+            <p style={SECTION_CAPTION}>e.g. &quot;November 12, 2026&quot; (include the year). Cleared automatically the day after it passes; blank = no class scheduled, messages invite leads to start free at https://training.colaberry.com/start-free.</p>
             <input type="text" value={nextClassStart}
               onChange={(e) => setNextClassStart(e.target.value)} style={INPUT} />
           </div>

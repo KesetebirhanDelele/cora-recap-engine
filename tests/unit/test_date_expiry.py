@@ -61,7 +61,7 @@ def test_clears_only_dates_that_have_passed(session, settings):
     assert email.call_count == 1
     assert email.call_args.kwargs["alert_type"] == "date_setting_expired"
     assert "November 12, 2026" in email.call_args.kwargs["message"]
-    assert "www.myfreeaiclass.com" in email.call_args.kwargs["message"]
+    assert "https://training.colaberry.com/start-free" in email.call_args.kwargs["message"]
     assert session.execute(text(
         "SELECT COUNT(*) FROM audit_log WHERE action='config_expired' AND entity_id='next_class_start'")).scalar() == 1
     assert session.execute(text(
@@ -124,7 +124,7 @@ def test_correction_text_when_nothing_scheduled(session, settings):
     _set(session, "next_open_house_date", "")
     txt = wdm.build_correction_text(session, settings)
     assert "don't have a class or Open House scheduled" in txt
-    assert "www.myfreeaiclass.com" in txt
+    assert "https://training.colaberry.com/start-free" in txt
     assert "RSVP" not in txt and "2026" not in txt
 
 
@@ -132,7 +132,7 @@ def test_correction_text_when_only_open_house_expired(session, settings):
     _set(session, "next_open_house_date", "")
     txt = wdm.build_correction_text(session, settings)
     assert "November 12, 2026" in txt and "no Open House scheduled" in txt
-    assert "RSVP" not in txt and "www.myfreeaiclass.com" in txt
+    assert "RSVP" not in txt and "https://training.colaberry.com/start-free" in txt
 
 
 # ── scan after expiry: only messages sent AFTER the clear are wrong ──────────
@@ -150,7 +150,7 @@ def test_scan_after_expiry_ignores_messages_sent_before_the_clear(session, setti
 def test_scan_after_expiry_does_not_flag_free_signup_message(session, settings):
     _set(session, "next_class_start", "")
     _set(session, "next_open_house_date", "")
-    _add_msg(session, "Start learning for free at www.myfreeaiclass.com. Text STOP to stop alerts",
+    _add_msg(session, "Start learning for free at https://training.colaberry.com/start-free. Text STOP to stop alerts",
              age_h=-0.01)
     n, _ = _scan(session, settings)
     assert n == 0

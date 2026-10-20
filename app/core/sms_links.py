@@ -2,10 +2,10 @@
 SMS link policy - pure, no I/O (spec/33).
 
 Decision (Kes, 2026-10-01): NO link of any kind goes out in an SMS - not even Colaberry's own
-myfreeaiclass.com. A follow-up written as an SMS that carries any link is delivered by EMAIL instead.
+https://training.colaberry.com/start-free. A follow-up written as an SMS that carries any link is delivered by EMAIL instead.
 
 The allow-list is therefore EMPTY by default. app_config `sms_allowed_link_domains` (comma-separated)
-can re-allow specific domains later (for example "myfreeaiclass.com" once the A2P registration is
+can re-allow specific domains later (for example "training.colaberry.com" once the A2P registration is
 confirmed to allow embedded links) without a deploy.
 Email addresses are not links. Detection covers http(s):// URLs, www. hosts, and bare domains on
 common TLDs (so "colaberry.com" and "bit.ly/x" are caught).

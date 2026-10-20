@@ -40,7 +40,7 @@ Status key: OK = matches the voice prompts; GAP = disagrees or unverified; ? = n
 | 11b | **GHL Conversation AI agent "Cora" prompt** (AI Agents > Conversation AI > Agents List; Auto-Pilot on Instagram, Facebook, WhatsApp, live chat, SMS; last edited Dec 2, 2025) | GHL only; not in the repo | Kes | **GAP found 2026-10-02:** prompt described the retired Data Analytics program (50% scholarship / $1,000 tuition, Climb Credit, 71% employment rate, TWC, SQL/Python). Its knowledge base was updated Oct 1 but the prompt wins in opening replies. Replacement written (`docs/ghl-conversation-ai-cora-prompt.md`) and **applied in GHL by Kes (reported 2026-10-03)**; follow-up: daily check of its outgoing text for retired terms for a week, decide channel scope, detach the Feb 2026 knowledge base. |
 | 12 | Synthflow agents (Cold, Warm/New, Inbound): live configuration in Synthflow, not the repo files | Synthflow | Kes | ? Kes reports updated; no automated confirmation |
 | 13 | GHL email templates, workflows, SMS templates, campaign automations | GHL | Kes | ? Out of scope for rewriting; must be listed and checked once |
-| 14 | Eventbrite Open House page, myfreeaiclass.com, training.colaberry.com | External | Kes | ? Link targets and wording not checked |
+| 14 | Eventbrite Open House page, https://training.colaberry.com/start-free, training.colaberry.com | External | Kes | ? Link targets and wording not checked |
 
 ## 4. Decisions needed (Phase 1 blockers)
 | ID | Question | Why it matters |
@@ -53,7 +53,7 @@ Status key: OK = matches the voice prompts; GAP = disagrees or unverified; ? = n
 
 ### Answers (Kes, 2026-10-05; wording follows Ali's 2026-10-04 ruling: never "free" as a standalone claim, use "$0 to start", "No card needed", "Membership from $149/mo")
 - **D1 - answered: yes, but only when the lead asks.** Follow-ups state prices ($149 a month billed annually, $199 month-to-month) when the lead asks about cost; they are not volunteered. Voice, email and the GHL assistant must give the same answer.
-- **D2 - answered:** the main aim is to get the lead started at $0 through the myfreeaiclass.com link. When the lead asks how to learn, offer the two options: self-paced, or the Open House for live classes. Voice, email and the assistant describe both paths the same way. (Open: the domain name itself contains "free"; Ali's TWC ruling covers advertising wording, check with him whether the URL needs a different treatment.)
+- **D2 - answered:** the main aim is to get the lead started at $0 through the https://training.colaberry.com/start-free link. When the lead asks how to learn, offer the two options: self-paced, or the Open House for live classes. Voice, email and the assistant describe both paths the same way. (Open: the domain name itself contains "free"; Ali's TWC ruling covers advertising wording, check with him whether the URL needs a different treatment.)
 - **D3 - answered: yes.** A lead who says "ready to enroll" gets the training.colaberry.com link in follow-ups, as voice does. Texts may therefore carry that link; the sms/email gates and forbidden terms stay as they are.
 - **D4 - answered: yes, Nov 12 is a real class start.** Keep the setting.
 - **D5 - still open** (needs Kes's review of which GHL snippets and knowledge bases are in use; the Oct 4 incident adds the three workflows to this list).

@@ -3,7 +3,7 @@ Date expiry (spec/32).
 
 Once the next-class-start / next-open-house date has PASSED, clear the dashboard
 setting (set it to "") so no past date is ever told to a lead again. Prompts
-then switch to inviting the lead to start free at myfreeaiclass.com
+then switch to inviting the lead to start free at https://training.colaberry.com/start-free
 (app/core/schedule_context.py) and the Wrong Date Monitor flags any dated
 class / open-house mention sent after the clear.
 
@@ -85,7 +85,7 @@ def _notify(settings: Any, key: str, label: str, value: str, now: datetime) -> N
 
     message = (
         f"The {label} ({value}) has passed and was cleared automatically. Messages now invite "
-        "leads to start learning for free at www.myfreeaiclass.com instead of mentioning a date. "
+        "leads to start learning for free at https://training.colaberry.com/start-free instead of mentioning a date. "
         "Set the next date in dashboard Settings when one is scheduled."
     )
     try:

@@ -299,7 +299,7 @@ def test_doubt_or_offer_never_clears(verdict):
 
 def test_a_decline_that_also_says_start_free_stays_flagged_and_never_reaches_the_judge():
     """TWC wording rule (Ali 2026-10-04): 'free' is a claim, not a course name - the decline judge cannot clear it."""
-    events, calls = _run("We no longer enroll in the Data Analytics bootcamp, but you can start free at myfreeaiclass.com.",
+    events, calls = _run("We no longer enroll in the Data Analytics bootcamp, but you can start free at https://training.colaberry.com/start-free.",
                          verdict=cj.DECLINES)
     assert calls == [] and len(events) == 1 and "free" in events[0]["detail"]["terms"]
 
