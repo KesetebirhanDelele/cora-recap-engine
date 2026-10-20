@@ -223,6 +223,15 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
     except Exception as exc:
         session.rollback()
         logger.error("alerting: delivery sync failed: %s", exc)
+    # Voice-call audit (spec/35): what GHL's AI Receptionist / Voice AI agents said on calls. Own try so a failure here
+    # (it raises its own ghl_voice_audit_error alert) never stops the other checks.
+    try:
+        from app.services.voice_audit import audit_voice_calls
+        audit_voice_calls(session, settings, now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: voice audit failed: %s", exc)
     try:
         from app.services import optout as _optout_svc
         from app.services.channel_health import mark_no_address

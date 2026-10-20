@@ -438,6 +438,19 @@ def _lead_line(settings: Any, contact_id: str) -> str:
         return f"contact {contact_id}"
 
 
+def _flag_line(settings: Any, f: Any) -> str:
+    """One alert line for a content flag, ending with WHERE it came from so whoever gets the alert fixes the right system.
+    Voice flags (GHL Voice AI agents such as the AI Receptionist) say what the agent said; texts / emails keep GHL's source."""
+    ext, cid, channel, error, source, at, detail = f[0], f[1], f[2], f[3], f[4], f[5], (f[6] or {})
+    who = _lead_line(settings, cid) if cid else f"unknown caller {detail.get('from_number') or ''}".strip()
+    if channel == "voice":
+        origin = detail.get("origin") or "GHL Voice AI agent (voice call)"
+        return (f"- {who}: {origin} at {at:%Y-%m-%d %H:%M} UTC; found: {error}; call id {ext}; the agent said: "
+                f"\"{(detail.get('snippet') or '')[:160]}\" [origin: {origin} - fix its prompt / knowledge base in GHL Voice AI]")
+    return (f"- {who}: {channel} sent by {source} at {at:%Y-%m-%d %H:%M} UTC; found: {error}; message id {ext} "
+            f"[origin: GHL {channel} with source '{source}' - for 'app', the Conversation AI bot or a person in the GHL app]")
+
+
 def run_content_flag_check(session: Session, settings: Any, now: datetime | None = None) -> int:
     """One alert (email to alert_email_to, system-alert headers) per batch of NEW content flags, naming each lead.
     A flag is reported once: its message id is written into the alert, so acknowledging or resolving an alert never
@@ -448,7 +461,7 @@ def run_content_flag_check(session: Session, settings: Any, now: datetime | None
 
     now = now or datetime.now(tz=timezone.utc)
     flags = session.execute(text("""
-        SELECT external_id, contact_id, channel, error, source, event_at FROM channel_events
+        SELECT external_id, contact_id, channel, error, source, event_at, detail FROM channel_events
         WHERE kind = 'content_flag' AND event_at >= :s ORDER BY event_at"""), {"s": now - timedelta(hours=24)}).fetchall()
     total = len(flags)
     reported = " ".join(r[0] or "" for r in session.execute(
@@ -457,10 +470,10 @@ def run_content_flag_check(session: Session, settings: Any, now: datetime | None
     active = session.execute(
         text("SELECT id FROM alert_events WHERE alert_type = :t AND status = 'active' LIMIT 1"), {"t": CONTENT_ALERT}).fetchone()
     if new:
-        lines = [f"- {_lead_line(settings, f[1])}: {f[2]} sent by {f[4]} at {f[5]:%Y-%m-%d %H:%M} UTC; found: {f[3]}; message id {f[0]}"
-                 for f in new[:10]]
-        msg = (f"{len(new)} new outbound message(s) named a retired course, made an employment claim, or answered an "
-               f"opt-out ({total} in the last 24 h):\n" + "\n".join(lines))
+        lines = [_flag_line(settings, f) for f in new[:10]]
+        msg = (f"{len(new)} new outbound message(s) or AI voice-call line(s) named a retired course, made an employment claim, "
+               f"used the banned word 'free', or answered an opt-out ({total} in the last 24 h). Each line ends with its "
+               f"origin - fix it in that system:\n" + "\n".join(lines))
         aid = str(uuid.uuid4())
         session.add(AlertEvent(id=aid, alert_type=CONTENT_ALERT, severity="warning", status="active", message=msg,
                                email_sent_at=now, last_seen_at=now, created_at=now))

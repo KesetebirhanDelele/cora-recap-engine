@@ -232,6 +232,23 @@ class GHLClient:
         contacts = result.get("contacts", [])
         return contacts[0] if contacts else None
 
+    def list_voice_call_logs(self, page: int = 1, page_size: int = 25) -> list[dict]:
+        """
+        GHL Voice AI call logs for the whole location, newest first (spec/35 voice audit).
+
+        Each log has id, agentId, contactId, fromNumber, createdAt, duration, summary and `transcript` (one string,
+        lines prefixed "human:" / "bot:"). Needs the Private Integration token (the conversations-scoped token gets 401).
+        Raises on any API error: the caller must report a failed read, never treat it as "no calls".
+        """
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL list_voice_call_logs | page=%d", page)
+        result = self._request(
+            "GET",
+            "/voice-ai/dashboard/call-logs",
+            params={"locationId": self.settings.ghl_location_id, "page": page, "pageSize": page_size},
+        )
+        return result.get("callLogs", [])
+
     def search_contacts_by_query(self, query: str) -> list[dict]:
         """All contacts GHL returns for a free-text query (email, phone, name).
         Callers needing an exact match must filter the result themselves."""
