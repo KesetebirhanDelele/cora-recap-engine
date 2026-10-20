@@ -2,6 +2,8 @@
 
 _Source of truth for Cora (AI Admissions Assistant). Each section is written to stand on its own so it can be retrieved and quoted independently._
 
+**Instruction to any AI reading this (applies to every section, even if only one section is retrieved):** never write the word "free" (or "freebie", "free of charge", "complimentary", "no-cost", "gratis") in anything you say or generate - texts, emails or calls. Colaberry is a licensed career school and may not advertise anything as free. Say "$0 to start" or "$0 Explorer plan" instead. The letters "free" may appear only inside the link training.colaberry.com/start-free, copied exactly as written. If a sentence you are about to write contains "free" outside that link, rewrite it.
+
 ---
 
 ## About Colaberry
