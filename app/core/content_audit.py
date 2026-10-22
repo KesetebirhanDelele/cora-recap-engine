@@ -9,6 +9,7 @@ assistant, staff in the app):
 """
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timedelta
 from typing import Any
@@ -88,6 +89,27 @@ def is_internal_email(address: str | None, domains: tuple[str, ...]) -> bool:
     if not local or "." not in host:
         return False
     return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def parse_staff_ids(*raw_lists: str | None) -> frozenset[str]:
+    """GHL user ids from dashboard settings holding JSON lists of {"name", "ghl_id"} (admissions_assistants,
+    ipbc_assistants). Missing, empty or malformed settings give no ids, so the message stays audited."""
+    ids: set[str] = set()
+    for raw in raw_lists:
+        try:
+            for entry in json.loads(raw or "[]"):
+                gid = str(entry.get("ghl_id") or "").strip()
+                if gid:
+                    ids.add(gid)
+        except (ValueError, TypeError, AttributeError):
+            continue
+    return frozenset(ids)
+
+
+def is_staff_sender(message: dict, staff_ids: frozenset[str]) -> bool:
+    """True when a person on the staff list sent it from the GHL app. Only source 'app' counts: workflows and Cora's own
+    sends can carry a staff user id too (the contact owner), so a workflow message is never exempt."""
+    return message.get("source") == "app" and bool(message.get("userId")) and message["userId"] in staff_ids
 
 
 def is_hard_term(term: str) -> bool:

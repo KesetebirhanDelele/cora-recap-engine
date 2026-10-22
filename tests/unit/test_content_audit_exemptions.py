@@ -1,6 +1,7 @@
 """Content audit exemptions: the LLM decline-vs-offer judge, company-name strip and footer strip (spec/35). No DB, no real LLM."""
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -88,7 +89,8 @@ def test_judge_caches_a_verdict_per_message():
 
 # ── _flag_content wiring ─────────────────────────────────────────────────────
 
-def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1", channel="sms", contact_email=None, ok_events=None):
+def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1", channel="sms", contact_email=None, ok_events=None,
+         extra=None):
     """Run _flag_content with the judge, the event writer and the GHL contact lookup stubbed.
     Returns (flag_events_written, judge_calls). Messages the judge clears are recorded as kind 'content_ok'
     rows, collected in `ok_events` (not in the flag events)."""
@@ -100,14 +102,14 @@ def _run(body, verdict=None, budget=None, config=None, conv=None, mid="m1", chan
         return verdict or cj.UNCLEAR
 
     def write(*a, **kw):
-        (ok_events if kw.get("kind") == "content_ok" else events).append(kw)
+        (ok_events if kw.get("kind") in ("content_ok", "staff_seen") else events).append(kw)
 
     cfg = {"offer_forbidden_terms": None, **(config or {})}
     with patch.object(ds, "_upsert_event", write), \
             patch.object(ds, "_contact_email", lambda settings, cid: contact_email), \
             patch("app.services.content_judge.judge", fake_judge), \
             patch("app.core.app_config.get_config_value", lambda key, s, st, default=None: cfg.get(key, default)):
-        ds._flag_content(None, SimpleNamespace(), {"id": mid, "body": body, "source": "app"}, channel, "c1", NOW, NOW,
+        ds._flag_content(None, SimpleNamespace(), {"id": mid, "body": body, "source": "app", **(extra or {})}, channel, "c1", NOW, NOW,
                          conv_msgs=conv, llm_budget=budget)
     return events, calls
 
@@ -413,3 +415,61 @@ def test_contact_email_helper_failure_returns_none_and_is_not_cached(monkeypatch
     monkeypatch.setattr("app.adapters.ghl.GHLClient", Boom)
     assert ds._contact_email(SimpleNamespace(), "cidY") is None
     assert "cidY" not in ds._CONTACT_EMAIL_CACHE
+
+
+# ── texts / emails typed by a person on the staff list are not alerted for "free" or course names (Ali 2026-10-22) ──
+
+ROSE = "0swBv9tBNeXeYXPYFBSx"
+STAFF_CFG = {"admissions_assistants": json.dumps([{"name": "Roselen Flores", "ghl_id": ROSE}]),
+             "ipbc_assistants": json.dumps([{"name": "Taiwo", "ghl_id": "93bhNRgb5pzSoHmaSimH"}])}
+FREE_TEXT = "We noticed you started exploring our free AI resources and wanted to check in."
+
+
+def test_staff_text_with_free_is_recorded_not_flagged():
+    seen = []
+    events, calls = _run(FREE_TEXT, config=STAFF_CFG, extra={"userId": ROSE}, ok_events=seen)
+    assert events == [] and calls == []
+    assert [e["kind"] for e in seen] == ["staff_seen"] and seen[0]["detail"]["terms"] == ["free"]
+    assert len(seen[0]["kind"]) <= 12                      # channel_events.kind is varchar(12)
+
+
+def test_second_staff_list_is_honoured():
+    events, _ = _run(FREE_TEXT, config=STAFF_CFG, extra={"userId": "93bhNRgb5pzSoHmaSimH"})
+    assert events == []
+
+
+def test_staff_text_naming_the_old_course_is_not_flagged_and_skips_the_judge():
+    events, calls = _run("Your Data Analytics class continues Monday.", config=STAFF_CFG, extra={"userId": ROSE})
+    assert events == [] and calls == []
+
+
+def test_staff_employment_claim_is_still_flagged():
+    events, _ = _run("Our job placement rate is high and it is free.", config=STAFF_CFG, extra={"userId": ROSE})
+    assert [e["kind"] for e in events] == ["content_flag"]
+    assert "free" not in events[0]["detail"]["terms"] and "job placement" in events[0]["detail"]["terms"]
+
+
+def test_same_text_from_an_unknown_user_is_flagged():
+    events, _ = _run(FREE_TEXT, config=STAFF_CFG, extra={"userId": "someoneElse123"})
+    assert len(events) == 1 and events[0]["detail"]["terms"] == ["free"]
+
+
+def test_no_user_id_is_flagged():
+    events, _ = _run(FREE_TEXT, config=STAFF_CFG)
+    assert len(events) == 1
+
+
+def test_workflow_source_is_never_exempt_even_with_a_staff_user_id():
+    events, _ = _run(FREE_TEXT, config=STAFF_CFG, extra={"userId": ROSE, "source": "workflow"})
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("cfg", [{}, {"admissions_assistants": "", "ipbc_assistants": "not json"},
+                                 {"admissions_assistants": "[]"}, {"admissions_assistants": '[{"name": "x"}]'}])
+def test_missing_or_malformed_staff_settings_keep_everything_audited(cfg):
+    events, _ = _run(FREE_TEXT, config=cfg, extra={"userId": ROSE})
+    assert len(events) == 1
+
+
+def test_parse_staff_ids():
+    assert ca.parse_staff_ids(STAFF_CFG["admissions_assistants"], None, "[1]", STAFF_CFG["ipbc_assistants"]) ==         frozenset({ROSE, "93bhNRgb5pzSoHmaSimH"})

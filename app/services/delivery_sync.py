@@ -258,6 +258,18 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
         scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
         hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
         verdict = None
+        if hits and ca.is_staff_sender(m, ca.parse_staff_ids(cfg("admissions_assistants", None), cfg("ipbc_assistants", None))):
+            # a person on the staff list wrote it (Ali 2026-10-22): "free" and course names are recorded, never alerted;
+            # an employment / placement claim is still flagged
+            exempt = [h for h in hits if not ca.is_employment_term(h)]
+            hits = [h for h in hits if ca.is_employment_term(h)]
+            if exempt:
+                _upsert_event(session, kind="staff_seen", channel=channel, contact_id=cid, external_id=m["id"],
+                              status_raw=None, outcome=None, error=None, event_at=at, now=now,
+                              source=str(m.get("source") or "?")[:30],
+                              detail={"terms": exempt, "user_id": m.get("userId"), "snippet": (body or "")[:160]})
+            if not hits:
+                return
         if hits and channel == "email" and ca.is_internal_email(
                 _contact_email(settings, cid) if settings is not None else None,
                 ca.parse_internal_domains(cfg("audit_internal_email_domains", None))):
