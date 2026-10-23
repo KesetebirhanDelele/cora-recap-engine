@@ -226,7 +226,9 @@ def snapshot(session: Session, settings: Any, now: datetime | None = None) -> di
     worst = max((x["level"] for x in out), key=lambda lv: order[lv], default=ch.GREEN)
     st = _state(session)
     th = thresholds(session, settings)
+    from app.services import sms_guard
     return {"channels": out, "replies": replies(session, now), "worst": worst,
+            "sms_guard": sms_guard.status(session, settings, now),
             "silence_hours": th.silence_hours, "confirm_minutes": th.confirm_minutes,
             "sync": {"last_run_at": st.get("last_run_at"), "last_error": st.get("last_error"),
                      "backfill_done": bool(st.get("backfill_done"))}}

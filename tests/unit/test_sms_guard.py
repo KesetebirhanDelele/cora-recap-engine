@@ -89,3 +89,42 @@ def test_switch_off_disables_the_guard(env):
     assert G.evaluate(env.s, NS(), NOW) == "off"
     env.cfg["sms_guard_state"] = "paused"
     assert G.is_paused(env.s, NS()) is None
+
+
+# ── dashboard status (Delivery Health banner) ─────────────────────────────────
+
+def _app_config(env, updated_at):
+    env.s.execute(text("CREATE TABLE app_config (key TEXT, updated_at TIMESTAMP)"))
+    env.s.execute(text("INSERT INTO app_config (key, updated_at) VALUES ('sms_guard_state', :t)"), {"t": updated_at})
+
+
+def test_status_explains_a_pause_with_numbers_and_when_it_can_end(env):
+    env.load(3, 42, hours_ago=2)                                   # 3 opt-outs on 42 texts = 7.1 %
+    env.cfg["sms_guard_state"] = "paused"
+    _app_config(env, NOW - timedelta(hours=1))
+    st = G.status(env.s, NS(), NOW)
+    assert st["paused"] is True and st["optouts"] == 3 and st["delivered"] == 42 and st["pct"] == 7.1
+    assert "paused" in st["reason"] and "7.1%" in st["reason"] and "2%" in st["reason"]
+    assert "1.5%" in st["resumes_when"] and "50" in st["resumes_when"]
+    assert st["paused_since"] == (NOW - timedelta(hours=1)).isoformat()
+    assert st["next_optout_leaves_at"] == (NOW - timedelta(hours=2) + timedelta(hours=24)).isoformat() + "+00:00" \
+        or st["next_optout_leaves_at"].startswith((NOW - timedelta(hours=2) + timedelta(hours=24)).isoformat()[:19])
+
+
+def test_status_when_running_has_no_pause_reason(env):
+    env.load(0, 80)
+    _app_config(env, NOW)
+    st = G.status(env.s, NS(), NOW)
+    assert st["paused"] is False and st["reason"] is None and st["paused_since"] is None and st["next_optout_leaves_at"] is None
+
+
+def test_status_off_when_the_guard_is_disabled(env):
+    env.cfg["sms_guard_enabled"] = "false"
+    env.cfg["sms_guard_state"] = "paused"
+    _app_config(env, NOW)
+    assert G.status(env.s, NS(), NOW)["paused"] is False
+
+
+def test_status_never_raises_if_it_cannot_read_the_state(env):
+    st = G.status(env.s, NS(), NOW)                                # no app_config table in this fixture
+    assert st["paused"] is False and "error" in st

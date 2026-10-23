@@ -538,8 +538,16 @@ export interface DeliveryChannel {
   muted: string | null; trend: { day: string; sent: number; delivered: number }[];
 }
 
+export interface SmsGuardStatus {
+  enabled: boolean | null; paused: boolean; optouts?: number; delivered?: number; pct?: number;
+  pause_pct?: number; resume_pct?: number; min_sample?: number; resume_max_optouts?: number;
+  reason?: string | null; resumes_when?: string; paused_since?: string | null; next_optout_leaves_at?: string | null;
+  error?: string;
+}
+
 export interface DeliveryHealthResponse {
   channels: DeliveryChannel[];
+  sms_guard?: SmsGuardStatus;
   replies: { last_24h: number; last_at: string | null; by_channel: Record<string, number> };
   worst: "green" | "amber" | "red" | "grey"; silence_hours: number; confirm_minutes: number;
   sync: { last_run_at: string | null; last_error: string | null; backfill_done: boolean };

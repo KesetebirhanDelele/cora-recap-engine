@@ -103,3 +103,46 @@ def evaluate(session: Session, settings: Any, now: datetime | None = None) -> st
         logger.info("sms_guard: RESUMED Cora follow-up texts | %s (resume line %g%%)", stats, resume_pct)
         return "resumed"
     return "paused" if paused else "ok"
+
+
+def status(session: Session, settings: Any, now: datetime | None = None) -> dict[str, Any]:
+    """Read-only snapshot for the dashboard (Delivery Health): is Cora's follow-up text paused, and why. Never raises.
+
+    `reason` is plain English; `resumes_when` states the exact resume rule; `next_optout_leaves_at` is when the oldest opt-out
+    counted today leaves the 24 h window (the earliest moment the rate can fall without new texts)."""
+    now = now or datetime.now(tz=timezone.utc)
+    try:
+        on = enabled(session, settings)
+        pause_pct = _float(session, settings, "sms_guard_pause_pct", DEFAULT_PAUSE_PCT)
+        resume_pct = _float(session, settings, "sms_guard_resume_pct", DEFAULT_RESUME_PCT)
+        min_sample = int(_float(session, settings, "sms_guard_min_sample", DEFAULT_MIN_SAMPLE))
+        resume_max = int(_float(session, settings, "sms_guard_resume_max_optouts", DEFAULT_RESUME_MAX_OPTOUTS))
+        optouts, sent, pct = rate(session, now)
+        paused = on and _cfg(session, settings, STATE_KEY, "ok").strip().lower() == "paused"
+        since = session.execute(text("SELECT MAX(updated_at) FROM app_config WHERE key = :k"), {"k": STATE_KEY}).scalar()
+        oldest = session.execute(text(
+            "SELECT MIN(created_at) FROM optout_actions WHERE source = 'sms_reply' AND kind = 'dnd' AND status = 'applied' "
+            "AND created_at >= :s"), {"s": now - timedelta(hours=WINDOW_HOURS)}).scalar()
+        if isinstance(oldest, str):
+            oldest = datetime.fromisoformat(oldest)
+        if oldest is not None and oldest.tzinfo is None:
+            oldest = oldest.replace(tzinfo=timezone.utc)
+        if isinstance(since, str):
+            since = datetime.fromisoformat(since)
+        reason = None
+        if paused:
+            reason = (f"Cora's follow-up texts are paused: {optouts} opt-out(s) by text reply on {sent} texts delivered in the last "
+                      f"{WINDOW_HOURS} h = {pct:.1f}% (pause line {pause_pct:g}%).")
+        return {
+            "enabled": on, "paused": bool(paused), "optouts": optouts, "delivered": sent, "pct": round(pct, 1),
+            "pause_pct": pause_pct, "resume_pct": resume_pct, "min_sample": min_sample, "resume_max_optouts": resume_max,
+            "reason": reason,
+            "resumes_when": (f"Resumes automatically when the opt-out rate drops below {resume_pct:g}%, or when fewer than "
+                             f"{min_sample} texts were delivered and at most {resume_max} opt-out(s) remain in the {WINDOW_HOURS} h window."),
+            "paused_since": since.isoformat() if paused and since else None,
+            "next_optout_leaves_at": (oldest + timedelta(hours=WINDOW_HOURS)).isoformat() if oldest else None,
+        }
+    except Exception as exc:
+        logger.warning("sms_guard: status read failed: %s", exc)
+        return {"enabled": None, "paused": False, "error": str(exc)[:200]}
+

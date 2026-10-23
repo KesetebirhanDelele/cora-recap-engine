@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   fetchDeliveryDetail, fetchDeliveryHealth,
-  type DeliveryChannel, type DeliveryDetailResponse, type DeliveryHealthResponse,
+  type DeliveryChannel, type DeliveryDetailResponse, type DeliveryHealthResponse, type SmsGuardStatus,
 } from "@/lib/api";
 
 const CARD: React.CSSProperties = {
@@ -36,6 +36,32 @@ function Trend({ ch }: { ch: DeliveryChannel }) {
   );
 }
 
+function SmsGuardBanner({ g }: { g: SmsGuardStatus }) {
+  if (g.error) return <div style={{ ...CARD, color: "#d97706" }}>SMS opt-out guard status could not be read: {g.error}</div>;
+  if (g.enabled === false) return <div style={{ ...CARD, color: "#64748b" }}>SMS opt-out guard is switched off.</div>;
+  const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : "");
+  const stats = `${g.optouts ?? 0} opt-out(s) on ${g.delivered ?? 0} texts delivered in the last 24 h = ${g.pct ?? 0}% (pause at ${g.pause_pct}%, resume below ${g.resume_pct}%)`;
+  if (!g.paused) {
+    return <div style={{ ...CARD, borderLeft: `4px solid ${DOT.green}` }}>
+      <strong>SMS opt-out guard: running.</strong> Cora's follow-up texts are on. <span style={{ color: "#64748b" }}>{stats}.</span>
+    </div>;
+  }
+  return (
+    <div style={{ ...CARD, borderLeft: `4px solid ${DOT.red}`, background: "#fef2f2" }}>
+      <strong style={{ color: DOT.red }}>Cora's follow-up texts are PAUSED by the opt-out guard.</strong>
+      <div style={{ marginTop: 4, fontSize: "0.9rem" }}>{stats}.</div>
+      {g.paused_since && <div style={{ fontSize: "0.85rem", color: "#64748b" }}>Paused since {when(g.paused_since)}.</div>}
+      <div style={{ marginTop: 4, fontSize: "0.85rem" }}>{g.resumes_when}</div>
+      {g.next_optout_leaves_at && (
+        <div style={{ fontSize: "0.85rem" }}>The oldest counted opt-out leaves the 24 h window at {when(g.next_optout_leaves_at)}.</div>
+      )}
+      <div style={{ marginTop: 4, fontSize: "0.8rem", color: "#64748b" }}>
+        Texts sent by staff or GHL workflows are not stopped by this guard. Emails and calls are not affected.
+      </div>
+    </div>
+  );
+}
+
 export default function DeliveryHealthClient() {
   const [d, setD] = useState<DeliveryHealthResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -59,6 +85,7 @@ export default function DeliveryHealthClient() {
 
   return (
     <div style={{ display: "grid", gap: "1rem" }}>
+      {d.sms_guard && <SmsGuardBanner g={d.sms_guard} />}
       <div style={CARD}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.9rem" }}>
