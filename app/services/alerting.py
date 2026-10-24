@@ -255,6 +255,13 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         session.rollback()
         logger.error("alerting: content flag check failed: %s", exc)
     try:
+        from app.services.transfer_alert import run_transfer_failure_check
+        run_transfer_failure_check(session, settings, now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: failed-transfer check failed: %s", exc)
+    try:
         from app.services import sms_guard
         sms_guard.evaluate(session, settings, now)
         session.commit()

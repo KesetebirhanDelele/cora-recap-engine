@@ -41,6 +41,19 @@ logger = logging.getLogger(__name__)
 # Executed-actions parser (used to reinforce intent detection)
 # ---------------------------------------------------------------------------
 
+_TRANSFER_FAIL_WORDS = ("fail", "error", "timeout", "timed-out", "blocked", "busy", "no-answer", "unavailable", "rejected")
+
+
+def _transfer_status_failed(status: str, failed_reason: str) -> bool:
+    """True when a Synthflow transfer action did not connect. Real values seen in production (2026-10-23):
+    status "transfer-success" (failed_reason ""), and status "transfer-failed-connection-error" with failed_reason
+    "transfer_blocked_by_carrier" or "transfer_outside_availability". A non-empty failed_reason alone also counts."""
+    st = (status or "").lower()
+    if (failed_reason or "").strip():
+        return True
+    return any(w in st for w in _TRANSFER_FAIL_WORDS)
+
+
 def _extract_executed_actions(executed_actions: list | dict | None) -> dict:
     """
     Parse Synthflow executed_actions into structured signal flags.
@@ -53,7 +66,10 @@ def _extract_executed_actions(executed_actions: list | dict | None) -> dict:
     Returns:
       {
         "transfer_attempted": bool,
-        "transfer_failed":    bool,
+        "transfer_failed":    bool,   # a transfer action failed (see _transfer_status_failed)
+        "transfer_succeeded": bool,   # a transfer action connected (a later retry can succeed after a failure)
+        "transfer_target":    str,    # action name of the last failed transfer, e.g. "admissions_transfer_roselen"
+        "transfer_reason":    str,    # its failed_reason, e.g. "transfer_blocked_by_carrier"
         "booking_success":    bool,
         "booking_failed":     bool,
       }
@@ -61,6 +77,9 @@ def _extract_executed_actions(executed_actions: list | dict | None) -> dict:
     flags = {
         "transfer_attempted": False,
         "transfer_failed":    False,
+        "transfer_succeeded": False,
+        "transfer_target":    "",
+        "transfer_reason":    "",
         "booking_success":    False,
         "booking_failed":     False,
     }
@@ -85,22 +104,29 @@ def _extract_executed_actions(executed_actions: list | dict | None) -> dict:
 
         # Status may be a top-level field or embedded in a JSON return_value string.
         status = ""
+        failed_reason = ""
         raw_return = action.get("return_value")
         if isinstance(raw_return, str):
             try:
                 rv = json.loads(raw_return)
                 status = (rv.get("status") or "").lower()
+                failed_reason = str(rv.get("failed_reason") or "")
             except (json.JSONDecodeError, AttributeError, ValueError):
                 pass
         elif isinstance(raw_return, dict):
             status = (raw_return.get("status") or "").lower()
+            failed_reason = str(raw_return.get("failed_reason") or "")
         if not status:
             status = (action.get("status") or action.get("result") or "").lower()
 
         if any(kw in action_type for kw in ("transfer", "handoff", "live_agent")):
             flags["transfer_attempted"] = True
-            if status in ("failed", "error", "timeout"):
+            if _transfer_status_failed(status, failed_reason):
                 flags["transfer_failed"] = True
+                flags["transfer_target"] = str(action.get("name") or action_type)
+                flags["transfer_reason"] = failed_reason or status
+            else:
+                flags["transfer_succeeded"] = True
 
         if any(kw in action_type for kw in ("booking", "schedule", "appointment", "calendar")):
             if status in ("success", "completed", "confirmed"):
@@ -430,6 +456,14 @@ def detect_intent(
     # regardless of transcript length.
     ea_flags = _extract_executed_actions(executed_actions)
     if ea_flags["transfer_attempted"]:
+        if ea_flags["transfer_failed"] and not ea_flags["transfer_succeeded"]:
+            # The caller asked for a human and the transfer did NOT connect (2026-10-23: carrier-blocked, outside hours).
+            # Not a live handoff: no "a human took over" assumption; a staff callback task is raised after the call.
+            logger.info("live_call_detected: transfer FAILED via executed_actions | target=%s reason=%s",
+                        ea_flags["transfer_target"], ea_flags["transfer_reason"])
+            return {"intent": "human_transfer_request", "confidence": 0.95,
+                    "entities": {"datetime": None, "channel": None, "transfer_attempted": False, "transfer_failed": True,
+                                 "transfer_target": ea_flags["transfer_target"], "transfer_reason": ea_flags["transfer_reason"]}}
         logger.info("live_call_detected: transfer_attempted via executed_actions")
         return {"intent": "human_transfer_request", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "transfer_attempted": True}}
 

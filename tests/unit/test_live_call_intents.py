@@ -138,7 +138,8 @@ def test_extract_ea_synthflow_dict_booking_failed():
 
 def test_extract_ea_empty():
     assert _extract_executed_actions(None) == {
-        "transfer_attempted": False, "transfer_failed": False,
+        "transfer_attempted": False, "transfer_failed": False, "transfer_succeeded": False,
+        "transfer_target": "", "transfer_reason": "",
         "booking_success": False, "booking_failed": False,
     }
 

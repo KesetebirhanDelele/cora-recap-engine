@@ -233,6 +233,30 @@ def create_crm_task(job_id: str) -> None:
                 effective_contact_id, analysis.lead_classification, analysis.ai_campaign,
             )
 
+            # ── Failed-transfer recovery (spec/39) ───────────────────────────────
+            # A caller asked for a human, no transfer connected and no callback was booked: a staff task is due NOW even when
+            # the AI analysis decided no task was needed (2026-10-23: five requests, no task, lead parked as "human_transfer").
+            from app.core import transfer_recovery as _tr
+
+            _ea = (call_event.raw_payload_json or {}).get("executed_actions")
+            if not analysis.create_task and _tr.needs_callback(call_event.detected_intent, _ea):
+                import dataclasses
+
+                from app.core import ai_message_generator as _amg
+
+                _kind = _tr.target_kind(_ea)
+                _assignee = {"ipbc": _amg._load_ipbc_ghl_id, "support": _amg._load_support_ghl_id}.get(
+                    _kind, _amg._load_admissions_ghl_id)(session, settings)
+                _task = _tr.build_task(call_event.lead_name or "", contact_phone, _ea)
+                analysis = dataclasses.replace(
+                    analysis, create_task=True, task_title=_task["title"], task_description=_task["description"],
+                    task_due_date=_task["due_date"], assign_to=_assignee,
+                )
+                logger.warning(
+                    "create_crm_task: human requested, transfer not connected - callback task forced | "
+                    "call_event_id=%s kind=%s", call_event_id, _kind,
+                )
+
             # ── Fetch GHL contact (read — always live, used for field ID resolution) ──
             from app.adapters.ghl import GHLClient
 

@@ -298,7 +298,8 @@ def _handle_human_transfer_request(session, contact_id, phone, entities, setting
 
     If booking was already confirmed (via executed_actions), cancel all pending jobs
     and set status='human_transfer'.
-    If booking did NOT happen, schedule a follow-up call in 2 hours, up to
+    If the transfer FAILED (entities["transfer_failed"]), no AI redial is scheduled at all and pending redials are cancelled.
+    If booking did NOT happen (and no failed-transfer signal), schedule a follow-up call in 2 hours, up to
     HUMAN_TRANSFER_RETRY_CAP times. Past the cap, stop retrying (mark cold)
     instead of looping indefinitely — this path previously had no cap at all;
     production data showed contacts accumulating dozens of these retries
@@ -323,6 +324,17 @@ def _handle_human_transfer_request(session, contact_id, phone, entities, setting
         logger.info(
             "transfer_requested: transfer confirmed, no follow-up scheduled | contact_id=%s",
             contact_id,
+        )
+        return
+
+    if entities.get("transfer_failed"):
+        # The caller asked for a person and the transfer did not connect (spec/39). The right recovery is a callback booked
+        # INSIDE the call (voice prompt Section 0) or a staff callback task after it (crm_jobs.create_crm_task) - never another
+        # call from the AI (Kes 2026-10-23). No redial is scheduled, and any redial already waiting for this lead is cancelled.
+        cancelled = _cancel_pending_redials(session, contact_id)
+        logger.info(
+            "transfer_failed: no AI redial scheduled, %d pending redial(s) cancelled | contact_id=%s reason=%s",
+            cancelled, contact_id, entities.get("transfer_reason"),
         )
         return
 
@@ -579,6 +591,26 @@ def _write_ghl_campaign_off(contact_id: str, settings: Any, reason: str) -> None
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
+
+def _cancel_pending_redials(session: Session, contact_id: str) -> int:
+    """Cancel only the still-pending launch_outbound_call jobs of one contact (not its other jobs, not a call already running).
+    Returns the number cancelled."""
+    from sqlalchemy import update
+
+    from app.models.scheduled_job import ScheduledJob
+
+    result = session.execute(
+        update(ScheduledJob)
+        .where(
+            ScheduledJob.payload_json["contact_id"].as_string() == contact_id,
+            ScheduledJob.job_type == "launch_outbound_call",
+            ScheduledJob.status == "pending",
+        )
+        .values(status="cancelled", updated_at=datetime.now(tz=timezone.utc))
+    )
+    session.flush()
+    return result.rowcount
+
 
 def _cancel_contact_jobs(
     session: Session, contact_id: str, exclude_job_id: str
