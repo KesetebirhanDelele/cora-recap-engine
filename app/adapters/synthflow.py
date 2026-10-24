@@ -285,10 +285,14 @@ class SynthflowClient:
         campaign_name: str = "New_Lead",
         metadata: dict | None = None,
         *,
+        availability_note: str = "",
         _retry_delay: float = 1.0,
     ) -> dict:
         """
         Trigger Synthflow's "Make Call" workflow for an outbound call.
+
+        availability_note: optional "LIVE STATUS" block (who can take a live transfer right now, app/core/staff_availability.py)
+        placed at the very top of the injected prompt for this call only. Empty = the stored prompt unchanged.
 
         Selects the webhook URL based on campaign_name:
           Cold Lead  → SYNTHFLOW_LAUNCH_WORKFLOW_URL_Cold
@@ -303,7 +307,7 @@ class SynthflowClient:
             "phone": phone,
             "name": lead_name,
             "campaign_name": campaign_name,
-            "prompt": _load_campaign_prompt(campaign_name),
+            "prompt": (availability_note or "") + _load_campaign_prompt(campaign_name),
         }
         if metadata:
             payload["metadata"] = metadata

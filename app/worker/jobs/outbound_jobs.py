@@ -345,6 +345,25 @@ def _has_spam_likely_tag(contact_id: str, settings) -> bool:
         return False
 
 
+
+def _availability_note(session, settings) -> str:
+    """"LIVE STATUS" block for this call's prompt: who can take a live transfer right now (spec/39). Never raises - on any
+    problem the call goes out with the stored prompt unchanged rather than not at all."""
+    try:
+        from app.core.app_config import get_str
+        from app.core.staff_availability import availability_block
+
+        return availability_block(
+            datetime.now(tz=timezone.utc),
+            get_str("admissions_assistants", session, settings, ""),
+            get_str("ipbc_assistants", session, settings, ""),
+            get_str("support_staff_roster", session, settings, ""),
+        )
+    except Exception as exc:
+        logger.warning("launch_outbound_call_job: availability note skipped: %s", exc)
+        return ""
+
+
 def launch_outbound_call_job(job_id: str) -> None:
     """
     Worker job: invoke Synthflow Make Call workflow.
@@ -627,6 +646,7 @@ def launch_outbound_call_job(job_id: str) -> None:
                 phone=phone,
                 lead_name=lead_name,
                 campaign_name=campaign_name,
+                availability_note=_availability_note(session, settings),
                 metadata={
                     "correlation_id": correlation_id,
                     "job_id": job_id,

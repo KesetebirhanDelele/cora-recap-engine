@@ -70,3 +70,35 @@ unknown outcomes unchanged, one alert naming the caller, never twice for a call 
 connected transfers silent, callback-booked flag, 24 h window, self-resolve.
 `tests/unit/test_transfer_recovery.py` (25): real production status strings, failure-then-success, intent entities, the needs-callback
 matrix, target routing, task text, injected prompt content, and `create_crm_task` forcing / not forcing a task.
+
+## Addendum 2026-10-24 - never attempt a transfer when nobody is on shift (Kes)
+- `transfer_outside_availability` appeared 47 times in production: the prompts state office hours but give the agent no clock, so it
+  attempted the transfer, the Synthflow action refused, and the caller got a failure line.
+- `app/core/staff_availability.py` (pure): who is on shift right now, and when the next shift starts. Admissions and Payments / IPBC =
+  Mon-Fri 9AM-5PM Central (first name from `admissions_assistants` / `ipbc_assistants`); Support = `support_staff_roster` (overnight
+  shifts and Saturday supported). Central time with daylight saving ("CST" in the prompts means Central).
+- `availability_block()` builds a "LIVE STATUS" block (current time, per team AVAILABLE NOW / NOT available now + next availability, and the
+  rule: not available -> do not transfer, book a callback). `outbound_jobs._availability_note` computes it per call (never raises; on any
+  problem the call goes out unchanged) and `SynthflowClient.launch_new_lead_call(availability_note=...)` puts it at the very top of the
+  injected prompt.
+- Prompt Section 0 step 1 now reads "check availability first, then try the transfer once" (outbound: use LIVE STATUS; inbound: static
+  office hours, since Synthflow cannot inject a clock into the inbound agent).
+- Alert: an `transfer_outside_availability` failure is not alerted when the agent booked a callback on the call; a carrier block always is.
+
+## Checked 2026-10-24: Cold Lead AND New Lead calls both use the injected prompt
+`call_events.model_id` shows ALL outbound calls of the last 30 days (7,348 Cold Lead, 305 New Lead) were handled by one Synthflow assistant,
+"Cora - Outbound Admissions Agent - ColdL" (`95fd0659...`), whose saved prompt is just `{prompt}`. The two "New L" assistants in Synthflow
+hold old static prompts but are not used. (An earlier note here said New Lead calls probably ignore the injected prompt: that was wrong,
+inferred from the stored prompts without checking which assistant handled the calls.)
+
+## Inbound agent update script
+`execution/update_synthflow_inbound_prompt.py` (run inside the worker container so the API key is available; never printed):
+`--list` (id, name, prompt size; flags the `{prompt}` outbound shape), default dry run (current vs new size + diff summary), `--apply`
+(backup file, sends only `agent.prompt`, reads back, checks the prompt and that no other agent setting changed), `--restore FILE`.
+Refuses an assistant whose stored prompt is `{prompt}` and the id in SYNTHFLOW_MODEL_ID (not set in production). Inbound agent:
+"Cora - Inbound Admissions Agent" (f98454c1-2cd4-476c-b6f2-c5c425689e61). The Synthflow docs do not say how a nested partial update
+behaves, so the verification step is part of the script. Tests: `test_update_inbound_prompt_script.py` (13), `test_staff_availability.py` (16).
+
+The inbound doc is kept equal to the LIVE inbound prompt except for the hard-rule block (re-synced 2026-10-24: the live agent says "at no cost";
+the doc had drifted back to "free" in 7 places, and a blind `--apply` would have reintroduced it). The doc also drops the one "Free Explorer plan"
+left in the live Pricing section. A unit test fails if "free" appears in the inbound prose outside the /start-free link.

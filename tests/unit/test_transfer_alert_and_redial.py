@@ -157,3 +157,18 @@ def test_the_active_alert_resolves_itself_when_no_failed_transfer_is_left(sessio
     session.flush()
     session.expire_all()
     assert session.scalars(select(AlertEvent)).first().status == "resolved"
+
+
+def test_outside_availability_with_a_booked_callback_is_not_alerted_but_without_one_it_is(session):
+    _call(session, "ok-1", {**OUTSIDE, **BOOKED})
+    total, sent = _check(session)
+    assert total == 0 and sent == []
+    _call(session, "bad-1", OUTSIDE)
+    total, sent = _check(session)
+    assert total == 1 and "bad-1" in sent[0]["message"]
+
+
+def test_a_carrier_block_is_alerted_even_when_a_callback_was_booked(session):
+    _call(session, "call-1", {**BLOCKED, **BOOKED})
+    total, sent = _check(session)
+    assert total == 1 and "callback booked on the call: yes" in sent[0]["message"]

@@ -46,6 +46,8 @@ def failed_transfers(rows: list[Any]) -> list[dict[str, Any]]:
         f = _extract_executed_actions(ea)
         if not f["transfer_failed"] or f["transfer_succeeded"]:
             continue
+        if f["transfer_reason"] == "transfer_outside_availability" and f["booking_success"]:
+            continue                                  # the agent did the right thing: nobody on shift, callback booked
         out.append({
             "call_id": call_id, "name": (lead_name or "").strip() or "unknown caller",
             "phone": payload.get("phone_number_to") or payload.get("phone_number") or payload.get("phone") or contact_id or "",
