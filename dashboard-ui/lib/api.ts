@@ -561,6 +561,23 @@ export async function fetchDeliveryHealth(): Promise<DeliveryHealthResponse> {
   return get<DeliveryHealthResponse>("/dashboard/delivery-health");
 }
 
+export interface SignupCounts {
+  signups: number; with_email: number; with_phone: number; with_both: number; with_campaign: number; utm_fb: number; utm_ig: number;
+}
+export interface SignupDay { day: string; explorer: SignupCounts; open_house: SignupCounts }
+export interface SignupAllTime extends SignupCounts { email_pct: number; phone_pct: number; campaign_pct: number }
+export interface SignupCumulativeSeg { total: number; with_email: number; with_phone: number }
+export interface SignupIntakeResponse {
+  days: SignupDay[];
+  alltime: { explorer: SignupAllTime; open_house: SignupAllTime };
+  cumulative: ({ day: string; explorer?: SignupCumulativeSeg; open_house?: SignupCumulativeSeg })[];
+  first_tracked_day: string | null; last_refreshed: string | null; timezone: string;
+}
+
+export async function fetchSignupIntake(days = 30): Promise<SignupIntakeResponse> {
+  return get<SignupIntakeResponse>(`/dashboard/signup-intake?days=${days}`);
+}
+
 export async function fetchDeliveryDetail(channel: string): Promise<DeliveryDetailResponse> {
   return get<DeliveryDetailResponse>(`/dashboard/delivery-health/${channel}`);
 }

@@ -984,6 +984,14 @@ def get_delivery_health(session: Session = Depends(get_db)) -> dict[str, Any]:
     return channel_health.snapshot(session, get_settings())
 
 
+@router.get("/signup-intake")
+def get_signup_intake(days: int = Query(30, ge=1, le=180), session: Session = Depends(get_db)) -> dict[str, Any]:
+    """Refactored sign-ups that landed in GHL, per Central day: Explorer vs Open House, with email / phone / both (spec/40)."""
+    from app.services import signup_intake
+
+    return signup_intake.get_trend(session, days)
+
+
 @router.get("/delivery-health/{channel}")
 def get_delivery_health_detail(
     channel: str = Path(..., pattern="^(email|sms|call)$"), session: Session = Depends(get_db),

@@ -28,6 +28,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
       { href: "/campaign-overview",   title: "Scheduled Actions",   icon: "📅", description: "Upcoming scheduled actions by date window.", category: "analytics" },
       { href: "/staff-call-quality",  title: "Staff Call Quality",  icon: "🎧", description: "Sales-rep & support-staff calls, transcribed & scored.", category: "analytics" },
       { href: "/ai-cold-lead-tagging", title: "AI Cold Lead Tagging", icon: "🏷️", description: "Daily tagging of stale leads — activity & backlog.", category: "analytics" },
+      { href: "/signup-intake",       title: "Sign-up Intake",      icon: "🧲", description: "New sign-ups per day (Explorer vs Open House) and how many have an email or a phone.", category: "analytics" },
     ],
   },
   {

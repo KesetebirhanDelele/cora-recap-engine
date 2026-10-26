@@ -77,6 +77,7 @@ _JOB_QUEUE_ATTRS: dict[str, str] = {
     "auto_webhook_recovery":      "rq_default_queue",
     "staff_call_quality_scan":    "rq_quality_queue",
     "ai_cold_lead_tagging_scan":  "rq_quality_queue",
+    "signup_intake_sync":         "rq_default_queue",
 }
 
 # Per-job-type RQ work-horse timeout override, in seconds. Omitted job types
@@ -92,6 +93,7 @@ _JOB_TIMEOUT_SECONDS: dict[str, int] = {
     # batch_cap per cycle) can run well past RQ's 180s default — same
     # failure mode as staff_call_quality_scan above (spec/29, spec/31).
     "ai_cold_lead_tagging_scan": 1800,
+    "signup_intake_sync": 600,
 }
 
 # Maps WORKER_ROLE value → list of settings attributes for the queues to listen on.
@@ -211,6 +213,7 @@ def get_job_registry() -> dict[str, object]:
     from app.worker.jobs.slot_rebalancer import rebalance_call_slots_job
     from app.worker.jobs.staff_call_quality_jobs import staff_call_quality_scan_job
     from app.worker.jobs.ai_cold_lead_tagging_jobs import ai_cold_lead_tagging_scan_job
+    from app.worker.jobs.signup_intake_jobs import signup_intake_sync_job
     from app.worker.jobs.voicemail_jobs import process_voicemail_tier
     from app.worker.jobs.webhook_recovery_jobs import auto_webhook_recovery_job
 
@@ -246,6 +249,8 @@ def get_job_registry() -> dict[str, object]:
         "staff_call_quality_scan": staff_call_quality_scan_job,
         # AI cold lead tagging — daily batch job (spec/31)
         "ai_cold_lead_tagging_scan": ai_cold_lead_tagging_scan_job,
+        # Refactored sign-up intake summary - hourly (spec/40)
+        "signup_intake_sync": signup_intake_sync_job,
     }
 
 
@@ -333,6 +338,14 @@ def run() -> None:
             logger.info("AI cold lead tagging scanner ensured on startup")
         except Exception as exc:
             logger.warning("Could not ensure AI cold lead tagging scanner on startup: %s", exc)
+
+        # Ensure the hourly sign-up intake sync is scheduled on startup (spec/40).
+        try:
+            from app.worker.jobs.signup_intake_jobs import start_signup_intake_sync
+            start_signup_intake_sync()
+            logger.info("Sign-up intake sync ensured on startup")
+        except Exception as exc:
+            logger.warning("Could not ensure sign-up intake sync on startup: %s", exc)
 
     try:
         import redis
