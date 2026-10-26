@@ -41,6 +41,30 @@ logger = logging.getLogger(__name__)
 # Executed-actions parser (used to reinforce intent detection)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Carrier / phone-system recordings (spec/41)
+# ---------------------------------------------------------------------------
+# On a dead or blocked number the "human" in the transcript is a recording ("We could not complete your call. Please try again.",
+# "This number is not in service. Please try again later."). The words "try again" used to match call_later_no_time, which scheduled
+# a callback every 2 hours, exempt from the daily cap and with no retry count: one number was dialled 15 times in 3 days.
+CARRIER_PHRASES: tuple[str, ...] = (
+    "not in service", "could not complete your call", "call could not be completed", "call cannot be completed",
+    "call can't be completed", "has been disconnected", "no longer in service", "not a working number",
+    "not a valid number", "number you have dialed", "number you have called", "number you dialed", "number you called",
+    "check the number and try again",
+)
+_CARRIER_MAX_HUMAN_CHARS = 220          # a recording is short; a real conversation is not
+
+
+def is_carrier_message(transcript: str | None) -> bool:
+    """True when what the 'human' said is a carrier / phone-system recording and nothing else (no real conversation)."""
+    lines = [ln.split(":", 1)[1].strip().lower() for ln in (transcript or "").splitlines() if ln.strip().lower().startswith("human:")]
+    human = " ".join(lines)
+    if not human or len(human) > _CARRIER_MAX_HUMAN_CHARS:
+        return False
+    return any(ph in human for ph in CARRIER_PHRASES)
+
+
 _TRANSFER_FAIL_WORDS = ("fail", "error", "timeout", "timed-out", "blocked", "busy", "no-answer", "unavailable", "rejected")
 
 
@@ -474,6 +498,11 @@ def detect_intent(
     if ea_flags["booking_failed"] and not ea_flags["booking_success"]:
         logger.info("failed_booking_detected: booking_failed via executed_actions")
         return {"intent": "failed_booking", "confidence": 0.95, "entities": {"datetime": None, "channel": None}}
+
+    # ── 1b. Carrier / phone-system recording — NOT a person, never a callback request (spec/41) ──
+    if is_carrier_message(stripped):
+        logger.info("carrier_message_detected: the 'human' was a carrier / phone-system recording")
+        return {"intent": "carrier_message", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "carrier_message": True}}
 
     # ── 2. Low-confidence audio — checked BEFORE patterns ────────────────────
     if len(stripped) < _LOW_CONFIDENCE_MIN_CHARS:

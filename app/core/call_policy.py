@@ -11,11 +11,12 @@ from zoneinfo import ZoneInfo
 
 DEFAULT_MAX_CALLS_PER_DAY = 2
 
-# `intent_reason` values written by app/core/intent_actions.py when the LEAD asked to be
-# called (exact-time callback, "call me later", or asked for a human/transfer). These
-# calls are exempt from the daily cap and are never moved by the slot rebalancer.
+# `intent_reason` values written by app/core/intent_actions.py when the LEAD asked to be called (an exact-time callback, a
+# plain callback request, or asked for a human / transfer). These calls are exempt from the daily cap and are never moved by the
+# slot rebalancer. "call_later_no_time" is NOT in this set (spec/41): it has no time the lead chose, it was triggered by words
+# like "try again" (including carrier recordings), and it must obey the daily cap.
 CALLBACK_INTENT_REASONS = frozenset(
-    {"callback_request", "callback_with_time", "call_later_no_time", "transfer_requested"}
+    {"callback_request", "callback_with_time", "transfer_requested"}
 )
 
 

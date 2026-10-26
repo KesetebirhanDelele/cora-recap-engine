@@ -306,6 +306,10 @@ export interface VoiceTimeSeriesPoint {
   booked_appts: number;
   booking_rate: number;
   unique_contacts: number;
+  new_contacts?: number;      // leads whose first call ever fell in this week (all agents)
+  cold_new?: number;
+  inbound_new?: number;
+  new_lead_new?: number;
   calls_per_day: number;
   avg_call_duration_sec: number;
   cold_stats?: CampaignWeekStats;

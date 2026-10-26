@@ -6,6 +6,7 @@
  *   KPI                  │  Tooltip KPI Value
  *   ─────────────────────┤────────────────────
  *   Unique Contacts      │  nnn
+ *   New contacts (first call) │  nnn
  *   Reached              │  nnn
  *   Booked Appts         │  nnn
  *   Calls Per Day        │  nnn
@@ -16,7 +17,7 @@
  *   Voicemail            │  nn%
  *   Failed Call Rate     │  nn%
  *   ─────────────────────┼────────────────────
- *   Call Type
+ *   Calls by type (not leads)
  *   ● Cold Lead          │  nnn
  *   ● Inbound            │  nnn
  *   ● New Lead           │  nnn
@@ -169,6 +170,14 @@ export default function TooltipKpiTable({ point, label, focusSeries }: Props) {
             <td style={TDR}>{v("unique_contacts", "unique_contacts", "int")}</td>
           </tr>
           <tr>
+            <td style={TDL} title="Leads whose first call ever was this week (the other contacts were first called earlier)">New contacts (first call)</td>
+            <td style={TDR}>
+              {(focusSeries
+                ? (point[`${focusSeries}_new` as keyof VoiceTimeSeriesPoint] as number | undefined)
+                : point.new_contacts) ?? "—"}
+            </td>
+          </tr>
+          <tr>
             <td style={TDL}>Reached</td>
             <td style={TDR}>{reached != null ? reached.toLocaleString() : "—"}</td>
           </tr>
@@ -223,7 +232,7 @@ export default function TooltipKpiTable({ point, label, focusSeries }: Props) {
           marginBottom: "0.2rem",
         }}
       >
-        Call Type
+        Calls by type (not leads)
       </div>
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <tbody>

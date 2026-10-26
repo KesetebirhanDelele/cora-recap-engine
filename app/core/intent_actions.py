@@ -31,6 +31,10 @@ CALLBACK_FALLBACK_MINUTES: int = 120    # 2 h default when no time was extracted
 NURTURE_DELAY_DAYS: int = 7             # days before nurture outbound call
 FAILED_BOOKING_RETRY_CAP: int = 2       # max retries before giving up (mark cold)
 HUMAN_TRANSFER_RETRY_CAP: int = 2       # max retries before giving up (mark cold)
+CALL_LATER_RETRY_CAP: int = 3           # "call me later" callbacks per lead inside CALL_LATER_WINDOW_DAYS (spec/41)
+CALL_LATER_WINDOW_DAYS: int = 14
+CARRIER_MESSAGE_STRIKES: int = 2        # calls answered by a carrier recording (30 days) before the number is marked invalid
+CARRIER_MESSAGE_WINDOW_DAYS: int = 30
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +117,52 @@ def _handle_callback_with_time(session, contact_id, phone, entities, settings) -
 
 
 def _handle_call_later_no_time(session, contact_id, phone, entities, settings) -> None:
-    """Schedule a callback at fallback delay (same as callback_request)."""
+    """Schedule a callback at fallback delay (same as callback_request), at most CALL_LATER_RETRY_CAP times per
+    CALL_LATER_WINDOW_DAYS. Past the cap the lead is marked cold and nothing more is scheduled: this path used to have no
+    count and no daily cap (spec/41: one number was dialled 15 times in 3 days)."""
+    from sqlalchemy import select
+
+    from app.models.lead_state import LeadState
+
+    since = datetime.now(tz=timezone.utc) - timedelta(days=CALL_LATER_WINDOW_DAYS)
+    prior = _count_retries_by_reason(session, contact_id, "call_later_no_time", since=since)
+    if prior >= CALL_LATER_RETRY_CAP:
+        lead = session.scalars(select(LeadState).where(LeadState.contact_id == contact_id)).first()
+        logger.info("call_later_no_time: cap reached (%d/%d in %d days) - no further callback | contact_id=%s",
+                    prior, CALL_LATER_RETRY_CAP, CALL_LATER_WINDOW_DAYS, contact_id)
+        if lead is not None:
+            _mark_cold_no_retry(session, lead, log_prefix="call_later_cap_reached")
+        return
     run_at = datetime.now(tz=timezone.utc) + timedelta(minutes=CALLBACK_FALLBACK_MINUTES)
     _schedule_outbound_call(session, contact_id, phone, run_at, settings,
                             reason="call_later_no_time")
+
+
+def _count_carrier_message_calls(session: Session, contact_id: str, phone: str) -> int:
+    """Calls to this lead in the last CARRIER_MESSAGE_WINDOW_DAYS whose transcript is a carrier / phone-system recording."""
+    from sqlalchemy import text
+
+    from app.core.intent_detection import CARRIER_PHRASES
+
+    clauses = " OR ".join(f"LOWER(transcript) LIKE :p{i}" for i in range(len(CARRIER_PHRASES)))
+    params = {f"p{i}": f"%{ph}%" for i, ph in enumerate(CARRIER_PHRASES)}
+    params.update(c=contact_id or "", ph=phone or "", since=datetime.now(tz=timezone.utc) - timedelta(days=CARRIER_MESSAGE_WINDOW_DAYS))
+    return int(session.execute(text(
+        f"SELECT COUNT(*) FROM call_events WHERE direction = 'outbound' AND (contact_id = :c OR contact_id = :ph) "
+        f"AND COALESCE(call_started_at, created_at) >= :since AND ({clauses})"), params).scalar() or 0)
+
+
+def _handle_carrier_message(session, contact_id, phone, entities, settings) -> None:
+    """The 'person' who answered was a carrier / phone-system recording ("not in service", "could not complete your call").
+    No callback is scheduled from this call and any redial already waiting is cancelled. The second such call inside
+    CARRIER_MESSAGE_WINDOW_DAYS marks the number invalid (same as a wrong number); the first only logs, since one failed
+    connection can be temporary. (spec/41)"""
+    cancelled = _cancel_pending_redials(session, contact_id)
+    strikes = _count_carrier_message_calls(session, contact_id, phone)
+    logger.info("carrier_message: no callback | contact_id=%s strikes=%d/%d redials_cancelled=%d",
+                contact_id, strikes, CARRIER_MESSAGE_STRIKES, cancelled)
+    if strikes >= CARRIER_MESSAGE_STRIKES:
+        _handle_wrong_number(session, contact_id, phone, entities, settings)
 
 
 _NO_NURTURE_RETRY_CAMPAIGNS = frozenset({"cold lead", "inbound"})
@@ -153,6 +199,7 @@ def _handle_interested_not_now(session, contact_id, phone, entities, settings) -
     like _handle_partial_engagement instead: mark cold, no retry, stop.
     """
     from sqlalchemy import select
+
     from app.models.lead_state import LeadState
 
     lead = session.scalars(
@@ -187,6 +234,7 @@ def _handle_uncertain(session, contact_id, phone, entities, settings) -> None:
     than a fully disinterested lead.
     """
     from sqlalchemy import select
+
     from app.models.lead_state import LeadState
 
     lead = session.scalars(
@@ -305,10 +353,12 @@ def _handle_human_transfer_request(session, contact_id, phone, entities, setting
     production data showed contacts accumulating dozens of these retries
     (see PROGRESS.md 2026-08-24).
     """
-    from app.core.lifecycle import transition_lead_state
-    from sqlalchemy import select
-    from app.models.lead_state import LeadState
     from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from app.core.lifecycle import transition_lead_state
+    from app.models.lead_state import LeadState
 
     transfer_confirmed = entities.get("transfer_attempted", False)
 
@@ -384,7 +434,7 @@ def _mark_cold_no_retry(session, lead, *, log_prefix: str) -> None:
     )
 
 
-def _count_retries_by_reason(session: Session, contact_id: str, reason: str) -> int:
+def _count_retries_by_reason(session: Session, contact_id: str, reason: str, since: datetime | None = None) -> int:
     """
     Count how many launch_outbound_call jobs tagged with the given
     intent_reason have been scheduled for this contact (excluding cancelled).
@@ -392,6 +442,7 @@ def _count_retries_by_reason(session: Session, contact_id: str, reason: str) -> 
     Used to enforce FAILED_BOOKING_RETRY_CAP / HUMAN_TRANSFER_RETRY_CAP.
     """
     from sqlalchemy import func, select
+
     from app.models.scheduled_job import ScheduledJob
 
     result = session.execute(
@@ -400,6 +451,7 @@ def _count_retries_by_reason(session: Session, contact_id: str, reason: str) -> 
             ScheduledJob.job_type == "launch_outbound_call",
             ScheduledJob.payload_json["intent_reason"].as_string() == reason,
             ScheduledJob.status != "cancelled",
+            *([ScheduledJob.created_at >= since] if since is not None else []),
         )
     )
     return result.scalar() or 0
@@ -416,6 +468,7 @@ def _handle_partial_engagement(session, contact_id, phone, entities, settings) -
     cold and stops; nothing reschedules automatically.
     """
     from sqlalchemy import select
+
     from app.models.lead_state import LeadState
 
     lead = session.scalars(
@@ -441,7 +494,9 @@ def _handle_failed_booking(session, contact_id, phone, entities, settings) -> No
     accumulating dozens of these retries (see PROGRESS.md 2026-08-24).
     """
     from datetime import timedelta
+
     from sqlalchemy import select
+
     from app.models.lead_state import LeadState
 
     prior_count = _count_retries_by_reason(session, contact_id, "booking_retry")
@@ -490,6 +545,7 @@ def _handle_low_confidence_audio(session, contact_id, phone, entities, settings)
     warranted, is a human decision or a fresh external GHL trigger.
     """
     from sqlalchemy import select
+
     from app.models.lead_state import LeadState
 
     lead = session.scalars(
@@ -539,6 +595,7 @@ _HANDLERS: dict[str, Any] = {
     "failed_booking":           _handle_failed_booking,
     "interested_not_now":       _handle_interested_not_now,
     "call_later_no_time":       _handle_call_later_no_time,
+    "carrier_message":          _handle_carrier_message,
     "uncertain":                _handle_uncertain,
     "partial_engagement":       _handle_partial_engagement,
     "request_sms":              _handle_request_sms,

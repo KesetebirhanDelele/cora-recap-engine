@@ -778,6 +778,28 @@ def get_voice_performance(
         wk = r[0].date().isoformat() if hasattr(r[0], "date") else str(r[0])[:10]
         week_unique[wk] = int(r[1]) if r[1] else 0
 
+    # New contacts per week (spec/41): leads whose FIRST call ever fell in that week, attributed to the agent that made it. The
+    # chart's call counts include every redial; "Unique Contacts" includes people first called months ago. Rows with an impossible
+    # timestamp (before 2000, a corrupt start time) are ignored when finding a lead's first call.
+    new_rows = session.execute(text(f"""
+        SELECT date_trunc('week', f.t) AS week_start, f.voice_agent, COUNT(*) AS n
+        FROM (
+            SELECT DISTINCT ON ({_UNIQUE_PHONE})
+                   {_UNIQUE_PHONE} AS ph, COALESCE(ce.call_started_at, ce.created_at) AS t, ce.voice_agent AS voice_agent
+            FROM call_events ce
+            WHERE NOT ce.report_excluded
+              AND {_UNIQUE_PHONE} IS NOT NULL
+              AND COALESCE(ce.call_started_at, ce.created_at) > TIMESTAMPTZ '2000-01-01'
+            ORDER BY {_UNIQUE_PHONE}, COALESCE(ce.call_started_at, ce.created_at) ASC
+        ) f
+        WHERE f.t >= date_trunc('week', CAST(:from_dt AS timestamptz)) AND f.t <= :to_dt
+        GROUP BY date_trunc('week', f.t), f.voice_agent
+    """), {"from_dt": from_dt, "to_dt": to_dt}).fetchall()
+    new_contacts: dict[tuple[str, str], int] = {}
+    for r in new_rows:
+        wk = r[0].date().isoformat() if hasattr(r[0], "date") else str(r[0])[:10]
+        new_contacts[(wk, (r[1] or "").lower())] = int(r[2] or 0)
+
     # Pivot by week — keyed by voice_agent value
     weeks: dict[str, dict[str, Any]] = {}
     for r in ts_rows:
@@ -876,6 +898,10 @@ def get_voice_performance(
             "booked_appts": w["booked"],
             "booking_rate": round(w["booked"] / u * 100, 1) if u else 0.0,
             "unique_contacts": u,
+            "new_contacts": sum(n for (k_wk, _a), n in new_contacts.items() if k_wk == wk_date),
+            "cold_new": new_contacts.get((wk_date, "coldlead"), 0),
+            "inbound_new": new_contacts.get((wk_date, "inbound"), 0),
+            "new_lead_new": new_contacts.get((wk_date, "newlead"), 0),
             "calls_per_day": round(t / 7, 1),
             "avg_call_duration_sec": round(w["dur_sum"] / w["dur_count"], 1) if w["dur_count"] else 0.0,
             # Per-campaign breakdowns — consumed by tooltip when hovering a bar segment
