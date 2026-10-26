@@ -7,6 +7,7 @@ leads). This finds every lead_state row with do_not_call or invalid set, looks t
 already No:
 
   dry run (default): prints counts and the list (phone, reason, current value). Writes nothing.
+  --limit N        : stop after N contacts that need fixing (stage the rollout: 10 first, check GHL, then the rest). Most recent first.
   --apply          : writes AI Campaign = No through the same code the handlers now use (live-mode flags, phone verified against the
                      GHL contact), then READS EACH CONTACT BACK from GHL and reports any that did not take.
 
@@ -46,13 +47,14 @@ def candidates(session: Any, days: int | None) -> list[tuple[str, str]]:
 
     from app.models.lead_state import LeadState
 
-    q = select(LeadState.contact_id, LeadState.do_not_call, LeadState.invalid).where(or_(LeadState.do_not_call.is_(True), LeadState.invalid.is_(True)))
+    q = select(LeadState.contact_id, LeadState.do_not_call, LeadState.invalid).where(or_(LeadState.do_not_call.is_(True), LeadState.invalid.is_(True)))         .order_by(LeadState.updated_at.desc())
     if days:
         q = q.where(LeadState.updated_at >= datetime.now(tz=timezone.utc) - timedelta(days=days))
     return [(cid, "do_not_call" if dnc else "invalid") for cid, dnc, _inv in session.execute(q).all() if cid]
 
 
-def run(session: Any, settings: Any, ghl: Any, flags: Any, apply: bool = False, days: int | None = None, out=print) -> dict[str, int]:
+def run(session: Any, settings: Any, ghl: Any, flags: Any, apply: bool = False, days: int | None = None, out=print,
+        limit: int | None = None) -> dict[str, int]:
     from app.core import intent_actions as ia
     from app.worker.jobs.crm_jobs import _resolve_to_field_ids
 
@@ -78,6 +80,9 @@ def run(session: Any, settings: Any, ghl: Any, flags: Any, apply: bool = False, 
             already_no += 1
         else:
             todo.append((cid, reason, ghl_id, current))
+            if limit and len(todo) >= limit:
+                out(f"(stopped scanning after {limit} contacts that need fixing: --limit)")
+                break
     out(f"leads marked do-not-call / invalid in Cora: {len(seen)}")
     out(f"  already AI Campaign = No in GHL: {already_no}")
     out(f"  to set to No: {len(todo)}  (by reason {dict(Counter(r for _c, r, _g, _v in todo))}; current values {dict(Counter(v for *_x, v in todo))})")
@@ -114,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--apply", action="store_true", help="really write (default is a dry run)")
     ap.add_argument("--days", type=int, default=None, help="only leads updated in the last N days (default: all)")
+    ap.add_argument("--limit", type=int, default=None, help="stop after N contacts that need fixing (staged rollout)")
     args = ap.parse_args(argv)
 
     from app.adapters.ghl import GHLClient
@@ -127,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply and not flags.ghl_writes_enabled:
             print("STOP: GHL writes are in shadow mode in the dashboard (System Controls); nothing would be written.")
             return 2
-        run(session, settings, GHLClient(settings=settings), flags, args.apply, args.days)
+        run(session, settings, GHLClient(settings=settings), flags, args.apply, args.days, limit=args.limit)
     return 0
 
 

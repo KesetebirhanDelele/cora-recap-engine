@@ -201,3 +201,12 @@ def test_backfill_field_value_reader():
     assert BF.field_value({"customFields": [{"id": FIELD, "value": ["No"]}]}, FIELD) == "No"
     assert BF.field_value({"customFields": [{"id": FIELD, "value": "Yes"}]}, FIELD) == "Yes"
     assert BF.field_value({"customFields": []}, FIELD) == "None"
+
+
+def test_backfill_limit_stops_after_n_contacts_and_leaves_the_rest_for_the_next_run(session):
+    seed(session)
+    ghl = ghl_for_backfill()
+    res = BF.run(session, SETTINGS, ghl, LIVE, True, None, lambda *_: None, limit=1)
+    assert res["to_fix"] == 1 and res["written"] == 1 and len(ghl.updates) == 1
+    rest = BF.run(session, SETTINGS, ghl, LIVE, True, None, lambda *_: None)          # the next run (no limit) finishes the job, skipping the done one
+    assert rest["written"] == 1 and len(ghl.updates) == 2
