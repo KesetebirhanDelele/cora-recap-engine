@@ -190,3 +190,13 @@ def test_cleanup_apply_relabels_cancels_and_marks_only_the_repeat_offender_inval
     assert leads["+15551111"].invalid is True and not leads["+15552222"].invalid
     real = session.scalars(select(CallEvent).where(CallEvent.transcript == REAL_LATER)).one()
     assert real.detected_intent == "call_later_no_time"                                 # the real callback request is untouched
+
+
+def test_cleanup_judges_invalid_on_the_30_day_rule_but_relabels_the_full_window(session):
+    add_lead(session, "+15553333")
+    add_call(session, "+15553333", NOT_IN_SERVICE, days_ago=45, intent="call_later_no_time")      # outside the 30-day strike window
+    add_call(session, "+15553333", COULD_NOT, days_ago=1, intent="call_later_no_time")            # inside: only ONE strike
+    with patch.object(ia, "_write_ghl_campaign_off"):
+        res = FIX.run(session, None, 60, apply=True, out=lambda *_: None)
+    assert res["relabelled"] == 2 and res["marked_invalid"] == 0                                    # both relabelled, number NOT invalidated
+    assert not session.scalars(select(LeadState).where(LeadState.contact_id == "+15553333")).one().invalid

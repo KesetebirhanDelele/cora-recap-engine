@@ -7,7 +7,8 @@ repairs what is already in the database:
 
   1. relabels those calls: call_events.detected_intent  call_later_no_time -> carrier_message
   2. cancels any still-pending call_later_no_time redial of those contacts
-  3. marks a number invalid (lead_state, same as a wrong number) when it has CARRIER_MESSAGE_STRIKES or more such calls inside the window
+  3. marks a number invalid (lead_state, same as a wrong number) when it has CARRIER_MESSAGE_STRIKES or more such calls inside the
+     live rule's window (CARRIER_MESSAGE_WINDOW_DAYS = 30), even though step 1 looks back further (--days, default 60)
 
 Dry run by default: prints counts only (no phone numbers or names). Nothing is written without --apply.
 
@@ -50,10 +51,17 @@ def run(session: Any, settings: Any, days: int = 60, apply: bool = False, out=pr
     per_contact = Counter(c.contact_id for c in calls if c.contact_id)
     relabel = [c for c in calls if c.detected_intent == "call_later_no_time"]
     strikes = ia.CARRIER_MESSAGE_STRIKES
-    dead = sorted(cid for cid, n in per_contact.items() if n >= strikes)
+    recent_since = datetime.now(tz=timezone.utc) - timedelta(days=ia.CARRIER_MESSAGE_WINDOW_DAYS)
+
+    def _when(c: Any) -> datetime:
+        t = c.call_started_at or c.created_at
+        return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+    recent = Counter(c.contact_id for c in calls if c.contact_id and _when(c) >= recent_since)
+    dead = sorted(cid for cid, n in recent.items() if n >= strikes)
     out(f"carrier-recording calls in the last {days} days: {len(calls)} to {len(per_contact)} contacts")
     out(f"  mislabelled call_later_no_time (to relabel carrier_message): {len(relabel)}")
-    out(f"  contacts with {strikes}+ such calls (to mark invalid): {len(dead)}")
+    out(f"  contacts with {strikes}+ such calls in the last {ia.CARRIER_MESSAGE_WINDOW_DAYS} days (to mark invalid): {len(dead)}")
     out(f"  heaviest contacts (calls): {[n for _c, n in per_contact.most_common(5)]}")
     result = {"calls": len(calls), "contacts": len(per_contact), "relabelled": 0, "redials_cancelled": 0, "marked_invalid": 0}
     if not apply:
