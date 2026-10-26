@@ -326,7 +326,7 @@ def _handle_not_interested(session, contact_id, phone, entities, settings) -> No
     logger.info(
         "handle_intent: lead closed (not_interested) | contact_id=%s", contact_id
     )
-    _write_ghl_campaign_off(contact_id, settings, "not_interested")
+    _write_ghl_campaign_off(contact_id, settings, "not_interested", session)
 
 
 def _handle_do_not_call(session, contact_id, phone, entities, settings) -> None:
@@ -335,7 +335,7 @@ def _handle_do_not_call(session, contact_id, phone, entities, settings) -> None:
     logger.info(
         "handle_intent: do_not_call flag set | contact_id=%s", contact_id
     )
-    _write_ghl_campaign_off(contact_id, settings, "do_not_call")
+    _write_ghl_campaign_off(contact_id, settings, "do_not_call", session)
 
 
 def _handle_wrong_number(session, contact_id, phone, entities, settings) -> None:
@@ -344,7 +344,7 @@ def _handle_wrong_number(session, contact_id, phone, entities, settings) -> None
     logger.info(
         "handle_intent: wrong_number — lead marked invalid | contact_id=%s", contact_id
     )
-    _write_ghl_campaign_off(contact_id, settings, "wrong_number")
+    _write_ghl_campaign_off(contact_id, settings, "wrong_number", session)
 
 
 def _handle_human_transfer_request(session, contact_id, phone, entities, settings) -> None:
@@ -623,34 +623,66 @@ def _ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _write_ghl_campaign_off(contact_id: str, settings: Any, reason: str) -> None:
-    """
-    Write AI Campaign=No to GHL (shadow-gated) to stop GHL automations.
+def _digits(value: str | None) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
 
-    Called when a lead opts out (do_not_call), says not_interested, or is wrong_number.
-    Non-fatal — GHL write failure must not affect the lead_state update that already ran.
+
+def resolve_ghl_contact_id(ghl: Any, contact_id: str) -> str | None:
+    """The GHL contact id for a Cora contact id. A real GHL id is returned as is. A phone-number id (many leads are keyed by phone) is
+    looked up in GHL and accepted ONLY when the found contact's phone number really matches, so a near-match from GHL's text search
+    can never receive a write meant for someone else."""
+    if not contact_id:
+        return None
+    if not contact_id.replace("+", "").replace("-", "").replace(" ", "").isdigit():
+        return contact_id                                           # not a phone number: already a GHL id
+    found = ghl.search_contact_by_phone(contact_id)
+    found = (found or {}).get("contact", found) or {}
+    if found.get("id") and _digits(found.get("phone"))[-10:] == _digits(contact_id)[-10:]:
+        return found["id"]
+    return None
+
+
+def set_ai_campaign_no(ghl: Any, contact_id: str, settings: Any, flags: Any, reason: str) -> bool:
+    """Write AI Campaign=No for one contact through `ghl`. True only when GHL really accepted the write (not shadow, a matching contact,
+    a resolvable field). `flags` are the dashboard's live-mode flags (None = fall back to the env setting, i.e. shadow in production)."""
+    from app.worker.jobs.crm_jobs import _resolve_to_field_ids
+
+    ghl_id = resolve_ghl_contact_id(ghl, contact_id)
+    if not ghl_id:
+        logger.warning("set_ai_campaign_no: no matching GHL contact, nothing written | reason=%s", reason)
+        return False
+    label = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
+    resolved = _resolve_to_field_ids(ghl, {label: "No"})
+    if not resolved:
+        logger.warning("set_ai_campaign_no: field %r not found in GHL, nothing written | reason=%s", label, reason)
+        return False
+    result = ghl.update_contact_fields(contact_id=ghl_id, field_updates=resolved, mode_flags=flags)
+    if isinstance(result, dict) and result.get("shadow"):
+        logger.warning("set_ai_campaign_no: shadow mode - AI Campaign=No NOT written | reason=%s", reason)
+        return False
+    logger.info("set_ai_campaign_no: AI Campaign=No written | reason=%s", reason)
+    return True
+
+
+def _write_ghl_campaign_off(contact_id: str, settings: Any, reason: str, session: Any = None) -> bool:
+    """
+    Write AI Campaign=No to GHL to stop GHL automations. Called when a lead opts out (do_not_call), says not_interested, or is a wrong
+    number (or, since spec/41, answers with carrier recordings twice).
+
+    Returns True only when GHL really accepted the write. It uses the dashboard's live-mode flags (`session` required): before 2026-10-26
+    it called the writer without them, which fell back to the env setting (shadow), so the field was never written for these leads, and a
+    phone-number contact id cannot be updated by id at all (spec/43). Non-fatal: a failure never undoes the lead_state update that already
+    ran, but it is logged at WARNING, never silently.
     """
     try:
         from app.adapters.ghl import GHLClient
-        from app.worker.jobs.crm_jobs import _resolve_to_field_ids
-        ghl = GHLClient(settings=settings)
-        ai_campaign_label = getattr(settings, "ghl_field_ai_campaign", None) or "AI Campaign"
-        resolved = _resolve_to_field_ids(ghl, {ai_campaign_label: "No"})
-        if resolved:
-            ghl.update_contact_fields(
-                contact_id=contact_id,
-                field_updates=resolved,
-            )
-        logger.info(
-            "_write_ghl_campaign_off: AI Campaign=No written | contact_id=%s reason=%s",
-            contact_id, reason,
-        )
+        from app.core.mode_flags import get_mode_flags
+
+        flags = get_mode_flags(session, settings) if session is not None else None
+        return set_ai_campaign_no(GHLClient(settings=settings), contact_id, settings, flags, reason)
     except Exception as exc:
-        logger.warning(
-            "_write_ghl_campaign_off: GHL write failed (non-fatal) | "
-            "contact_id=%s reason=%s: %s",
-            contact_id, reason, exc,
-        )
+        logger.warning("_write_ghl_campaign_off: GHL write failed (non-fatal) | reason=%s: %s", reason, exc)
+        return False
 
 
 # ---------------------------------------------------------------------------
