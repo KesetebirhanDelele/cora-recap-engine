@@ -84,6 +84,13 @@ def handle_intent(
 # Per-intent handlers
 # ---------------------------------------------------------------------------
 
+def _handle_booked(session, contact_id, phone, entities, settings) -> None:
+    """A booking succeeded on the call, so an appointment already exists. Nothing is scheduled: the old behaviour (reported as
+    callback_with_time) queued an AI redial 2 hours later for someone who had just booked. handle_intent has already cancelled the
+    lead's other pending jobs; the escalation guard keeps AI calls off until a rep resolves the lead (spec/42)."""
+    logger.info("handle_intent: booked - appointment exists, no redial scheduled | contact_id=%s", contact_id)
+
+
 def _handle_callback_request(session, contact_id, phone, entities, settings) -> None:
     """Schedule a callback at now + CALLBACK_FALLBACK_MINUTES."""
     run_at = datetime.now(tz=timezone.utc) + timedelta(minutes=CALLBACK_FALLBACK_MINUTES)
@@ -591,6 +598,7 @@ _HANDLERS: dict[str, Any] = {
     "human_transfer_request":   _handle_human_transfer_request,
     "re_engaged":               _handle_re_engaged,
     "callback_with_time":       _handle_callback_with_time,
+    "booked":                   _handle_booked,
     "callback_request":         _handle_callback_request,
     "failed_booking":           _handle_failed_booking,
     "interested_not_now":       _handle_interested_not_now,
@@ -784,17 +792,22 @@ def _schedule_outbound_call(
         )
         return
 
+    # The lead's own campaign travels with the job. Without it the launcher defaulted to "New_Lead", so a Cold Lead contact's callback
+    # was launched and labelled as a New Lead call (spec/42: 133 jobs in 30 days).
+    from app.models.lead_state import LeadState
+
+    lead = session.scalars(select(LeadState).where(LeadState.contact_id == contact_id)).first()
+    payload: dict[str, Any] = {"contact_id": contact_id, "phone_number": phone, "intent_reason": reason}
+    if lead is not None and lead.campaign_name:
+        payload["campaign_name"] = lead.campaign_name
+
     schedule_job(
         session=session,
         job_type="launch_outbound_call",
         entity_type="lead",
         entity_id=contact_id,
         run_at=run_at,
-        payload={
-            "contact_id": contact_id,
-            "phone_number": phone,
-            "intent_reason": reason,
-        },
+        payload=payload,
     )
     logger.info(
         "_schedule_outbound_call | contact_id=%s reason=%s run_at=%s",

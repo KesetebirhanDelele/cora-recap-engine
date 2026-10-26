@@ -346,6 +346,18 @@ def _has_spam_likely_tag(contact_id: str, settings) -> bool:
 
 
 
+def _lead_campaign_name(session, contact_id: str) -> str | None:
+    """The lead's own campaign from lead_state, for jobs queued without one (older callbacks); None when unknown. Never raises."""
+    try:
+        from sqlalchemy import select
+
+        from app.models.lead_state import LeadState
+
+        return session.scalars(select(LeadState.campaign_name).where(LeadState.contact_id == contact_id)).first() or None
+    except Exception:
+        return None
+
+
 def _availability_note(session, settings) -> str:
     """"LIVE STATUS" block for this call's prompt: who can take a live transfer right now (spec/39). Never raises - on any
     problem the call goes out with the stored prompt unchanged rather than not at all."""
@@ -424,7 +436,7 @@ def launch_outbound_call_job(job_id: str) -> None:
         payload = job.payload_json or {}
         phone = payload.get("phone_number", "")
         lead_name = payload.get("lead_name", "")
-        campaign_name = payload.get("campaign_name", "New_Lead")
+        campaign_name = payload.get("campaign_name") or _lead_campaign_name(session, payload.get("contact_id") or phone) or "New_Lead"
         correlation_id = payload.get("correlation_id", job_id)
         contact_id = payload.get("contact_id") or phone
 

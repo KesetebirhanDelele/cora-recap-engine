@@ -1518,7 +1518,7 @@ def get_card_metrics(session: Session) -> dict[str, Any]:
     #     STAFF_CALL_QUALITY_SCAN_ENABLED is turned on, since that table is
     #     empty until then).
     _URGENT_LEAD_INTENTS = (
-        "'enrolled','callback_request','callback_with_time',"
+        "'enrolled','callback_request','callback_with_time','booked',"
         "'re_engaged','human_transfer_request'"
     )
     _urgent_scan_start = now - timedelta(days=30)
@@ -1680,6 +1680,7 @@ _INTENT_SCORES: dict[str, int] = {
     "enrolled":               95,
     "callback_request":       90,
     "callback_with_time":     88,
+    "booked":                 88,
     "re_engaged":             85,
     "human_transfer_request": 80,
     "failed_booking":         70,

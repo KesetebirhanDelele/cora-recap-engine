@@ -65,6 +65,32 @@ def is_carrier_message(transcript: str | None) -> bool:
     return any(ph in human for ph in CARRIER_PHRASES)
 
 
+# ---------------------------------------------------------------------------
+# What the PERSON said, and answering-machine greetings (spec/42)
+# ---------------------------------------------------------------------------
+# Callback patterns used to run over the whole transcript, including the bot's own lines and voicemail greetings ("leave a message and
+# we will call you back"), so a machine or the bot could "ask" for a callback. They now read only the lines the person spoke.
+_CALLBACK_FAMILY = frozenset({"callback_with_time", "callback_request", "call_later_no_time"})
+_VOICEMAIL_GREETING = re.compile(
+    r"leave\s+(a|your)\s+(message|name)|after\s+the\s+(tone|beep)|mailbox|voice\s*mail|can'?t\s+come\s+to\s+the\s+phone|"
+    r"cannot\s+come\s+to\s+the\s+phone|record\s+your\s+(message|name)|messaging\s+service|not\s+available\s+(right\s+now|to\s+take)|"
+    r"unavailable\s+to\s+take\s+your\s+call|(press|dial)\s+\d", re.IGNORECASE)
+_VOICEMAIL_MAX_HUMAN_CHARS = 300
+
+
+def human_text(transcript: str | None) -> str | None:
+    """Only the lines the person spoke, or None when the transcript has no speaker labels (plain text: keep matching everything)."""
+    lines = [ln.split(":", 1)[1].strip() for ln in (transcript or "").splitlines() if ln.strip().lower().startswith("human:")]
+    has_labels = any(ln.strip().lower().startswith(("human:", "bot:")) for ln in (transcript or "").splitlines())
+    return " ".join(lines) if has_labels else None
+
+
+def is_voicemail_greeting(text: str | None) -> bool:
+    """True when what the 'person' said is an answering-machine greeting (short, and a voicemail phrase)."""
+    t = (text or "").strip()
+    return bool(t) and len(t) <= _VOICEMAIL_MAX_HUMAN_CHARS and bool(_VOICEMAIL_GREETING.search(t))
+
+
 _TRANSFER_FAIL_WORDS = ("fail", "error", "timeout", "timed-out", "blocked", "busy", "no-answer", "unavailable", "rejected")
 
 
@@ -492,8 +518,10 @@ def detect_intent(
         return {"intent": "human_transfer_request", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "transfer_attempted": True}}
 
     if ea_flags["booking_success"]:
-        logger.info("booking_success_detected: callback_with_time via executed_actions")
-        return {"intent": "callback_with_time", "confidence": 0.95, "entities": {"datetime": None, "channel": None}}
+        # An appointment already exists in the calendar. It used to be reported as callback_with_time, which scheduled an AI redial
+        # for someone who had just booked (spec/42). It keeps the same urgency everywhere else (sales queue, guard, alerts).
+        logger.info("booking_success_detected: booked via executed_actions")
+        return {"intent": "booked", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "booked": True}}
 
     if ea_flags["booking_failed"] and not ea_flags["booking_success"]:
         logger.info("failed_booking_detected: booking_failed via executed_actions")
@@ -503,6 +531,12 @@ def detect_intent(
     if is_carrier_message(stripped):
         logger.info("carrier_message_detected: the 'human' was a carrier / phone-system recording")
         return {"intent": "carrier_message", "confidence": 0.95, "entities": {"datetime": None, "channel": None, "carrier_message": True}}
+
+    # ── 1c. Answering-machine greeting — no person, so no intent at all (spec/42) ──
+    human_norm_text = human_text(stripped)
+    if human_norm_text is not None and is_voicemail_greeting(human_norm_text):
+        logger.info("voicemail_greeting_detected: the 'human' was an answering machine - no intent")
+        return None
 
     # ── 2. Low-confidence audio — checked BEFORE patterns ────────────────────
     if len(stripped) < _LOW_CONFIDENCE_MIN_CHARS:
@@ -522,9 +556,11 @@ def detect_intent(
             return {"intent": "low_confidence_audio", "confidence": 0.8, "entities": {"datetime": None, "channel": None}}
 
     # ── 3. Pattern-based intent matching ─────────────────────────────────────
+    human_norm = human_norm_text.lower() if human_norm_text is not None else None
     for intent, patterns in _COMPILED:
+        target = human_norm if (human_norm is not None and intent in _CALLBACK_FAMILY) else normalized
         for pattern in patterns:
-            if pattern.search(normalized):
+            if pattern.search(target):
                 entities: dict[str, Any] = {"datetime": None, "channel": None}
 
                 if intent == "callback_with_time":

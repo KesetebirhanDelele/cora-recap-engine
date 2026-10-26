@@ -39,6 +39,7 @@ _URGENT_INTENTS = frozenset({
     "human_transfer_request",
     "callback_request",
     "callback_with_time",
+    "booked",
     "enrolled",
 })
 _URGENT_INTENTS_SQL = ",".join(f"'{intent}'" for intent in sorted(_URGENT_INTENTS))

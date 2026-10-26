@@ -1077,7 +1077,7 @@ def _evaluate_new_exceptions(session: Session, settings: Any, now: datetime) -> 
 # duplicating the recency math in SQL for an edge case. Revisit if that gap
 # turns out to matter in practice.
 _SALES_QUEUE_URGENT_INTENTS = frozenset({
-    "enrolled", "callback_request", "callback_with_time",
+    "enrolled", "callback_request", "callback_with_time", "booked",
     "re_engaged", "human_transfer_request",
 })
 _SALES_QUEUE_URGENT_INTENTS_SQL = ",".join(f"'{i}'" for i in sorted(_SALES_QUEUE_URGENT_INTENTS))

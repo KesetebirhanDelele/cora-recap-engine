@@ -51,6 +51,7 @@ const INTENT_COLORS: Record<string, string> = {
   re_engaged:             "#2563eb",
   callback_request:       "#7c3aed",
   callback_with_time:     "#7c3aed",
+  booked:                 "#0d9488",
   interested_not_now:     "#0891b2",
   not_interested:         "#ea580c",
   do_not_call:            "#dc2626",

@@ -178,8 +178,8 @@ def test_failed_booking_via_executed_actions():
     assert result["intent"] == "failed_booking"
 
 
-def test_booking_success_via_executed_actions_returns_callback_with_time():
-    """Confirmed GHL booking must produce callback_with_time regardless of transcript."""
+def test_booking_success_via_executed_actions_returns_booked():
+    """Confirmed GHL booking must produce the booked intent regardless of transcript (it used to be reported as callback_with_time)."""
     result = detect_intent(
         "You're all set! Your Admissions call is booked for Tuesday, May fifth at eleven AM central time.",
         executed_actions={
@@ -190,7 +190,7 @@ def test_booking_success_via_executed_actions_returns_callback_with_time():
         },
     )
     assert result is not None
-    assert result["intent"] == "callback_with_time"
+    assert result["intent"] == "booked"
     assert result["confidence"] == 0.95
 
 
@@ -210,7 +210,7 @@ def test_booking_success_beats_do_not_call_in_transcript():
     # booking_success is checked AFTER transfer_attempted but BEFORE transcript patterns
     # The current priority: transfer_attempted → booking_success → booking_failed → transcript patterns
     assert result is not None
-    assert result["intent"] == "callback_with_time"
+    assert result["intent"] == "booked"
 
 
 def test_low_confidence_short_transcript():
