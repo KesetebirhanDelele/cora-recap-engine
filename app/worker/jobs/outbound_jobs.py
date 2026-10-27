@@ -370,6 +370,7 @@ def _availability_note(session, settings) -> str:
             get_str("admissions_assistants", session, settings, ""),
             get_str("ipbc_assistants", session, settings, ""),
             get_str("support_staff_roster", session, settings, ""),
+            callback_only=get_str("transfer_callback_only_teams", session, settings, "admissions,support"),
         )
     except Exception as exc:
         logger.warning("launch_outbound_call_job: availability note skipped: %s", exc)

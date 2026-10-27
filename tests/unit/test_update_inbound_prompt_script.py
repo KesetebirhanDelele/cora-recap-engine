@@ -121,7 +121,7 @@ def test_http_error_from_synthflow_raises_without_leaking_the_key(tmp_path):
 def test_build_prompt_starts_at_the_first_section_and_has_the_failed_transfer_rule():
     p = M.build_prompt()
     assert p.startswith("## 1.1 ROLE & CONTEXT") and "Engineering note" not in p and "Call Type:" not in p
-    assert "## 1.2 HARD RULE" in p and "Check office hours first" in p
+    assert "## 1.2 HARD RULE" in p and "Live transfer is only for Payments / IPBC" in p
 
 
 def test_the_inbound_doc_never_reintroduces_the_banned_word_in_prose():
