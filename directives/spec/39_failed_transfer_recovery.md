@@ -42,6 +42,7 @@ running and the contact's other jobs are untouched). The correct recovery is a c
 staff task above. An unconfirmed request with no failed-transfer signal keeps the old 2-hour redial (cap `HUMAN_TRANSFER_RETRY_CAP`).
 
 ## Alert: `call_transfer_failed` (`app/services/transfer_alert.py`, run each alert cycle)
+**Update 2026-10-27 (Kes): a failed transfer on a call where a callback was booked NEVER alerts, whatever the reason** (carrier block, no answer, off shift, destination unavailable). Only failures with NO booked callback alert; the "CALL BACK NOW" task covers those. Earlier text below that says otherwise is superseded.
 One warning email (same recipients as the other system alerts) per batch of NEW failed transfers: caller name and phone, campaign,
 time, who was asked for (admissions / ipbc / support and the action name), the reason with a plain-English hint
 (`transfer_blocked_by_carrier` = carrier / telephony; `transfer_outside_availability` = staff window closed; `transfer_failed` = no

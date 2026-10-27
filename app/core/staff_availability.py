@@ -96,7 +96,7 @@ def _team_line(label: str, entries: list[dict[str, Any]], now: datetime, tz: str
     return f"- {label}: NOT available now."
 
 
-DEFAULT_CALLBACK_ONLY = "admissions,support"       # Synthflow cannot transfer a live call to numbers outside the US (Kes 2026-10-26)
+DEFAULT_CALLBACK_ONLY = ""                          # none: every team is live-transferable while on shift (Kes 2026-10-27; was "admissions,support" on 10-26)
 
 
 def parse_callback_only(value: str | None) -> frozenset[str]:

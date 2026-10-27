@@ -122,27 +122,28 @@ def test_a_broken_availability_helper_never_stops_a_call():
         assert outbound_jobs._availability_note(MagicMock(), MagicMock()) == ""
 
 
-# -- Admissions and Support are callback-only by default (Synthflow cannot transfer to numbers outside the US) ----------------------------
-def test_by_default_admissions_and_support_are_callback_only_and_payments_keeps_live_transfer():
+# -- Every team is live-transferable while on shift by default (Kes 2026-10-27); callback-only stays available as a setting ---------------------
+def test_by_default_every_team_reports_real_availability_and_none_is_callback_only():
     b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER)                      # no callback_only argument = the default
-    assert "NO live transfer (callback only)" in line(b, "Admissions") and "NO live transfer (callback only)" in line(b, "Support")
-    assert "AVAILABLE NOW (Taiwo)" in line(b, "Payments")
-    assert "AVAILABLE NOW" not in line(b, "Admissions") and "AVAILABLE NOW" not in line(b, "Support")
+    assert "AVAILABLE NOW (Roselen)" in line(b, "Admissions") and "AVAILABLE NOW (Taiwo)" in line(b, "Payments")
+    assert "callback only" not in b
+    assert "NOT available now" in line(b, "Support")                                   # Friday 12:46 PM: between the Balakrishna and Farhat shifts
+    assert "AVAILABLE NOW (Farhat" in line(sa.availability_block(FRI_EVENING, ADMISSIONS, IPBC, ROSTER), "Support")
 
 
 def test_callback_only_lines_say_when_the_team_can_call_back_but_never_offer_a_transfer():
-    assert "can call back now" in line(sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER), "Admissions")
-    night = sa.availability_block(FRI_NIGHT, ADMISSIONS, IPBC, ROSTER)
+    assert "can call back now" in line(sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER, callback_only="admissions,support"), "Admissions")
+    night = sa.availability_block(FRI_NIGHT, ADMISSIONS, IPBC, ROSTER, callback_only="admissions,support")
     assert "from Monday 9:00 AM Central" in line(night, "Admissions") and "transfer" not in line(night, "Admissions").replace("NO live transfer", "")
 
 
-@pytest.mark.parametrize("value,want", [(None, {"admissions", "support"}), ("", set()), ("support", {"support"}), (" Admissions , IPBC ", {"admissions", "ipbc"})])
+@pytest.mark.parametrize("value,want", [(None, set()), ("", set()), ("support", {"support"}), (" Admissions , IPBC ", {"admissions", "ipbc"})])
 def test_callback_only_setting_parsing(value, want):
     assert sa.parse_callback_only(value) == frozenset(want)
 
 
-def test_the_setting_can_turn_a_team_back_into_a_live_transfer_team():
-    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER, callback_only="support")     # Ali re-enables Admissions transfers
+def test_the_setting_can_still_make_a_team_callback_only():
+    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER, callback_only="support")     # e.g. if a team's line stops working
     assert "AVAILABLE NOW (Roselen)" in line(b, "Admissions") and "NO live transfer" in line(b, "Support")
 
 
@@ -155,8 +156,12 @@ def test_the_outbound_prompts_never_offer_the_caller_the_choice_to_stay_with_the
     from app.adapters.synthflow import _load_campaign_prompt
     for c in ("Cold Lead", "New Lead"):
         p = _load_campaign_prompt(c)
-        assert "Live transfer is only for Payments / IPBC" in p and 'Never say** "try again later"' in p and "keep talking to me" in p
-        assert "NO live transfer: book a callback with Admissions" in p and "NO live transfer: book a callback with Support" in p
+        assert "Check the schedule before every transfer" in p and 'Never say** "try again later"' in p and "keep talking to me" in p
+        assert "Admissions: Roselen, Monday to Friday, 9AM to 5PM" in p and "Farhat, Monday to Friday, 2PM to 10PM" in p
+        assert "do NOT attempt a transfer" in p and "try the transfer once and let step 2" in p       # off shift -> callback; unsure -> try once
+        assert "or the person is outside their hours" in p                                           # a refusal counts as a failed transfer
+        assert "live transfer to Roselen" in p and "whichever of Balakrishna, Farhat or Balamurali" in p
+        assert "NO live transfer" not in p and "NEVER attempt a live transfer" not in p
 
 
 # -- Balamurali Kasula's live transfer works, so he is the one exception on the callback-only Support team (Kes 2026-10-26) ---------------------
@@ -164,14 +169,14 @@ FRI_EVENING = datetime(2026, 10, 24, 1, 0, tzinfo=UTC)         # Friday 8:00 PM 
 
 
 def test_a_named_person_on_a_callback_only_team_can_take_a_live_transfer_while_on_shift():
-    b = sa.availability_block(FRI_EVENING, ADMISSIONS, IPBC, ROSTER)                 # defaults: support callback-only, live person = balamurali
+    b = sa.availability_block(FRI_EVENING, ADMISSIONS, IPBC, ROSTER, callback_only="admissions,support")     # live person defaults to balamurali
     assert "live transfer ONLY to Balamurali" in line(b, "Support") and "callback only" in line(b, "Support")
     assert "Farhat" not in line(b, "Support")                                          # the others on shift stay callback-only
     assert "NO live transfer" in line(b, "Admissions")                                  # Admissions has no exception
 
 
 def test_when_that_person_is_off_shift_support_is_callback_only_again():
-    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER)                      # Friday 12:46 PM Central: Balamurali not yet on shift
+    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER, callback_only="admissions,support")   # Friday 12:46 PM Central: Balamurali not yet on shift
     assert "NO live transfer (callback only)" in line(b, "Support") and "Balamurali" not in line(b, "Support")
 
 

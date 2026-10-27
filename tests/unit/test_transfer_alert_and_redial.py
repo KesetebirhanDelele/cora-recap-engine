@@ -136,12 +136,6 @@ def test_connected_transfers_and_other_calls_raise_nothing(session):
     assert total == 0 and sent == []
 
 
-def test_the_alert_says_when_the_agent_did_book_a_callback(session):
-    _call(session, "call-1", {**BLOCKED, **BOOKED})
-    _, sent = _check(session)
-    assert "callback booked on the call: yes" in sent[0]["message"]
-
-
 def test_calls_older_than_24_hours_are_ignored(session):
     _call(session, "old-1", BLOCKED, minutes_ago=60 * 25)
     total, sent = _check(session)
@@ -168,7 +162,10 @@ def test_outside_availability_with_a_booked_callback_is_not_alerted_but_without_
     assert total == 1 and "bad-1" in sent[0]["message"]
 
 
-def test_a_carrier_block_is_alerted_even_when_a_callback_was_booked(session):
+def test_a_carrier_block_with_a_booked_callback_is_not_alerted_but_without_one_it_is(session):
     _call(session, "call-1", {**BLOCKED, **BOOKED})
     total, sent = _check(session)
-    assert total == 1 and "callback booked on the call: yes" in sent[0]["message"]
+    assert total == 0 and sent == []                                            # the caller is covered: no alert for ANY failure reason
+    _call(session, "call-2", BLOCKED)
+    total, sent = _check(session)
+    assert total == 1 and "callback booked on the call: NO" in sent[0]["message"] and "call-2" in sent[0]["message"]
