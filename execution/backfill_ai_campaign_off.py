@@ -39,13 +39,20 @@ def field_value(contact: dict[str, Any], field_id: str | None) -> str:
     return "None" if v in (None, "", []) else str(v)
 
 
-def candidates(session: Any, days: int | None) -> list[tuple[str, str]]:
-    """(contact_id, reason) for every lead Cora marked do-not-call or invalid (optionally only updated in the last `days`)."""
+def candidates(session: Any, days: int | None, finalized: bool = False) -> list[tuple[str, str]]:
+    """(contact_id, reason) for every lead Cora marked do-not-call or invalid (optionally only updated in the last `days`). With `finalized`, the leads whose
+    campaign ended instead (ai_campaign_value = 3): their end-of-campaign "AI Campaign = No" never reached GHL either (spec/45)."""
     from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import or_, select
 
     from app.models.lead_state import LeadState
+
+    if finalized:
+        q = select(LeadState.contact_id).where(LeadState.ai_campaign_value == "3").order_by(LeadState.updated_at.desc())
+        if days:
+            q = q.where(LeadState.updated_at >= datetime.now(tz=timezone.utc) - timedelta(days=days))
+        return [(cid, "finalized") for (cid,) in session.execute(q).all() if cid]
 
     q = select(LeadState.contact_id, LeadState.do_not_call, LeadState.invalid).where(or_(LeadState.do_not_call.is_(True), LeadState.invalid.is_(True)))         .order_by(LeadState.updated_at.desc())
     if days:
@@ -54,7 +61,7 @@ def candidates(session: Any, days: int | None) -> list[tuple[str, str]]:
 
 
 def run(session: Any, settings: Any, ghl: Any, flags: Any, apply: bool = False, days: int | None = None, out=print,
-        limit: int | None = None) -> dict[str, int]:
+        limit: int | None = None, finalized: bool = False) -> dict[str, int]:
     from app.core import intent_actions as ia
     from app.worker.jobs.crm_jobs import _resolve_to_field_ids
 
@@ -63,7 +70,7 @@ def run(session: Any, settings: Any, ghl: Any, flags: Any, apply: bool = False, 
     if not field_id:
         out(f"STOP: the GHL field {label!r} could not be found; nothing to do.")
         return {"leads": 0, "to_fix": 0, "written": 0, "verified": 0, "failed": 0, "unmatched": 0}
-    leads = candidates(session, days)
+    leads = candidates(session, days, finalized)
     seen: set[str] = set()
     todo: list[tuple[str, str, str, str]] = []          # contact_id, reason, ghl_id, current value
     already_no = unmatched = 0
@@ -83,7 +90,7 @@ def run(session: Any, settings: Any, ghl: Any, flags: Any, apply: bool = False, 
             if limit and len(todo) >= limit:
                 out(f"(stopped scanning after {limit} contacts that need fixing: --limit)")
                 break
-    out(f"leads marked do-not-call / invalid in Cora: {len(seen)}")
+    out(f"leads {'finalized (campaign ended)' if finalized else 'marked do-not-call / invalid'} in Cora: {len(seen)}")
     out(f"  already AI Campaign = No in GHL: {already_no}")
     out(f"  to set to No: {len(todo)}  (by reason {dict(Counter(r for _c, r, _g, _v in todo))}; current values {dict(Counter(v for *_x, v in todo))})")
     out(f"  no matching GHL contact (never written): {unmatched}")
@@ -120,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--apply", action="store_true", help="really write (default is a dry run)")
     ap.add_argument("--days", type=int, default=None, help="only leads updated in the last N days (default: all)")
     ap.add_argument("--limit", type=int, default=None, help="stop after N contacts that need fixing (staged rollout)")
+    ap.add_argument("--finalized", action="store_true", help="the leads whose campaign ENDED (finalization write) instead of the opted-out / invalid ones")
     args = ap.parse_args(argv)
 
     from app.adapters.ghl import GHLClient
@@ -133,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.apply and not flags.ghl_writes_enabled:
             print("STOP: GHL writes are in shadow mode in the dashboard (System Controls); nothing would be written.")
             return 2
-        run(session, settings, GHLClient(settings=settings), flags, args.apply, args.days, limit=args.limit)
+        run(session, settings, GHLClient(settings=settings), flags, args.apply, args.days, limit=args.limit, finalized=args.finalized)
     return 0
 
 

@@ -910,18 +910,17 @@ def send_student_summary(job_id: str) -> None:
             contact_id = call_event.contact_id if call_event else None
 
             from app.adapters.ghl import GHLClient
+            from app.core.ghl_write import write_label_fields
+            from app.core.mode_flags import get_mode_flags
 
             ghl = GHLClient(settings=settings)
             field_label = settings.ghl_field_student_summary or "Student Summary"
-            result = ghl.update_contact_fields(
-                contact_id=contact_id or "unknown",
-                field_updates={field_label: summary.student_summary},
-            )
+            if not write_label_fields(ghl, contact_id or "", {field_label: summary.student_summary}, settings,
+                                      get_mode_flags(session, settings), "student_summary"):
+                # It used to log "delivered" and record the audit even for a shadow write, and it sent the field label instead of the field id (spec/45)
+                raise RuntimeError("student summary NOT written to GHL (shadow mode, no matching contact, or the GHL field is missing)")
 
-            logger.info(
-                "send_student_summary: delivered | call_event_id=%s contact_id=%s shadow=%s",
-                call_event_id, contact_id, result.get("shadow", False),
-            )
+            logger.info("send_student_summary: written to GHL | call_event_id=%s", call_event_id)
 
             _record_summary_audit(session, call_event_id, call_id, contact_id)
             complete_job(session, job)

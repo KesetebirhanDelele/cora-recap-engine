@@ -237,14 +237,14 @@ class TestHandleEnrolled:
         session.refresh(lead)
         assert not lead.do_not_call
 
-    def test_calls_ghl_ai_campaign_no(self, session):
-        """GHL write must set AI Campaign = 'No' to stop campaign activity."""
+    def test_writes_ai_campaign_no_through_the_live_flag_helper(self, session):
+        """The GHL write sets AI Campaign = No through the live-flag helper (it used to run in shadow mode; spec/45)."""
+        from app.core.intent_actions import _handle_enrolled
         lead = _make_lead(session)
-        mock_cls = self._run(session, lead)
-        mock_cls.return_value.update_contact_fields.assert_called_once_with(
-            contact_id=lead.contact_id,
-            field_updates={"AI Campaign": "No"},
-        )
+        settings = _mock_settings()
+        with patch("app.core.intent_actions._write_ghl_campaign_off") as w:
+            _handle_enrolled(session=session, contact_id=lead.contact_id, phone=lead.normalized_phone, entities={}, settings=settings)
+        w.assert_called_once_with(lead.contact_id, settings, "enrolled", session)
 
     def test_ghl_failure_is_non_fatal(self, session):
         """GHL write failure must not raise — enrollment state is already saved."""

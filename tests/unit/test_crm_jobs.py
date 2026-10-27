@@ -349,11 +349,8 @@ def test_send_student_summary_consent_yes_writes_and_audits(session):
     ghl_updates = []
     with (
         patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
-        patch("app.adapters.ghl.GHLClient.update_contact_fields",
-              side_effect=lambda contact_id, field_updates:
-                  ghl_updates.append(field_updates) or
-                  {"shadow": True, "operation": "update_contact_fields",
-                   "contact_id": contact_id, "payload": {}}),
+        patch("app.core.ghl_write.write_label_fields",
+              side_effect=lambda ghl, cid, updates, settings, flags, reason: ghl_updates.append(updates) or True),
     ):
         mock_sess.return_value.__enter__ = lambda _: session
         mock_sess.return_value.__exit__ = MagicMock(return_value=False)
@@ -371,6 +368,26 @@ def test_send_student_summary_consent_yes_writes_and_audits(session):
     ).first()
     assert audit is not None
     assert audit.context_json["call_event_id"] == call_event.id
+
+
+def test_send_student_summary_that_is_not_really_written_is_a_failure_not_a_delivery(session):
+    """A shadow / unmatched / missing-field write used to be logged as 'delivered' and audited. It must fail the job and leave no delivery audit (spec/45)."""
+    call_event = _make_call_event(session, call_id="call-sum-shadow")
+    _make_summary(session, call_event.id, consent="YES")
+    job = _make_job(session, "send_student_summary", {"call_id": call_event.call_id, "call_event_id": call_event.id})
+    with (
+        patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
+        patch("app.core.ghl_write.write_label_fields", return_value=False),
+    ):
+        mock_sess.return_value.__enter__ = lambda _: session
+        mock_sess.return_value.__exit__ = MagicMock(return_value=False)
+        from app.worker.jobs.crm_jobs import send_student_summary
+        with pytest.raises(RuntimeError, match="NOT written to GHL"):
+            send_student_summary(job.id)                      # re-raised after the failure is recorded, so the queue sees it
+
+    assert session.get(ScheduledJob, job.id).status == "failed"
+    from sqlalchemy import select
+    assert session.scalars(select(AuditLog).where(AuditLog.action == "student_summary_delivered")).first() is None
 
 
 def test_send_student_summary_consent_no_skips(session):

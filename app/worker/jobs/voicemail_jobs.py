@@ -298,35 +298,21 @@ def _advance_tier(session, lead, next_tier: str) -> None:
 
 def _finalize_campaign(session, lead, settings) -> None:
     """
-    Execute finalization writes when final VM tier is reached.
+    Execute the finalization write when the final VM tier is reached (Path 3): AI Campaign -> "No" (stop outbound AI outreach in GHL).
 
-    Path 3 — After last VM attempt:
-      Mark as Lead → "Yes" (confirmed lead record even if not converting)
-      AI Campaign  → "No"  (stop outbound AI outreach)
-    Both writes are shadow-gated.
+    Before 2026-10-27 this wrote through the shadow-mode path (no live flags), so 2,647 finalized leads still said AI Campaign = Yes in GHL (spec/45).
+    It now uses the dashboard's live flags and matches the contact in GHL. "Mark as Lead = Yes" is NOT written here any more: the post-call analysis
+    already sets it per lead, and forcing Yes on every finalized lead would overwrite that and could start GHL workflows that were never live.
     """
     from app.adapters.ghl import GHLClient
+    from app.core.ghl_write import write_label_fields
+    from app.core.mode_flags import get_mode_flags
 
-    logger.info(
-        "voicemail finalization | contact_id=%s shadow=%s",
-        lead.contact_id, not settings.ghl_writes_enabled,
-    )
-    ghl = GHLClient(settings=settings)
-
-    # Build with label keys, then resolve → UUIDs before live write.
-    from app.worker.jobs.crm_jobs import _resolve_to_field_ids
-    label_updates: dict[str, str] = {}
-    if settings.ghl_field_mark_as_lead:
-        label_updates[settings.ghl_field_mark_as_lead] = "Yes"
+    flags = get_mode_flags(session, settings)
+    logger.info("voicemail finalization | contact_id=%s live_writes=%s", lead.contact_id, flags.ghl_writes_enabled)
     ai_campaign_label = settings.ghl_field_ai_campaign or "AI Campaign"
-    label_updates[ai_campaign_label] = "No"
-
-    field_updates = _resolve_to_field_ids(ghl, label_updates)
-    if field_updates:
-        ghl.update_contact_fields(
-            contact_id=lead.contact_id,
-            field_updates=field_updates,
-        )
+    if not write_label_fields(GHLClient(settings=settings), lead.contact_id, {ai_campaign_label: "No"}, settings, flags, "finalize"):
+        logger.warning("voicemail finalization: AI Campaign=No NOT written to GHL | contact_id=%s", lead.contact_id)
 
 
 def _make_default_queue(settings):

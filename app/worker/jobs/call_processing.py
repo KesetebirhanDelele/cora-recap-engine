@@ -139,6 +139,14 @@ def normalize_synthflow_outcome(payload: dict[str, Any]) -> str:
     return call_status
 
 
+def _sane(dt: datetime | None) -> datetime | None:
+    """A call time outside 2000-2100 is a parsing mistake, not a call: return None (the row then falls back to created_at) instead of year 1793."""
+    if dt is not None and not (2000 <= dt.year <= 2100):
+        logger.warning("_parse_datetime: implausible date %s ignored", dt.isoformat())
+        return None
+    return dt
+
+
 def _parse_datetime(value: Any) -> datetime | None:
     """
     Parse an ISO string or epoch int/float into a UTC datetime, or return None.
@@ -154,19 +162,28 @@ def _parse_datetime(value: Any) -> datetime | None:
         # Detect millisecond epoch: values larger than year ~5138 in seconds
         if value > 1e11:
             value = value / 1000.0
-        return datetime.fromtimestamp(value, tz=timezone.utc)
-    # String value: try ISO format first, then numeric epoch
+        try:
+            return _sane(datetime.fromtimestamp(value, tz=timezone.utc))
+        except (OverflowError, OSError, ValueError):           # a number outside the platform's date range is not a call time
+            return None
+    # String value. A long all-digit string is an epoch (Synthflow sends 13-digit milliseconds as a STRING sometimes). It must be tried FIRST:
+    # Python's fromisoformat reads "1793061552134" as a compact date (year 1793) and those calls vanished from the reports (spec/45, 238 rows).
     s = str(value).strip()
+    if s.replace(".", "", 1).isdigit() and len(s.split(".")[0]) >= 9:
+        numeric = float(s)
+        if numeric > 1e11:
+            numeric /= 1000.0
+        return _sane(datetime.fromtimestamp(numeric, tz=timezone.utc))
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return _sane(dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
     except (ValueError, TypeError):
         pass
     try:
         numeric = float(s)
         if numeric > 1e11:
             numeric /= 1000.0
-        return datetime.fromtimestamp(numeric, tz=timezone.utc)
+        return _sane(datetime.fromtimestamp(numeric, tz=timezone.utc))
     except (ValueError, TypeError):
         return None
 

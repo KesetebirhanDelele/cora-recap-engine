@@ -342,14 +342,11 @@ def _finalize_lead(session: Session, contact_id: str, settings: Any) -> bool:
         logger.warning("force_finalize: version conflict on lead | contact_id=%s", contact_id)
         return False
 
-    # GHL finalization write (shadow-gated)
-    from app.adapters.ghl import GHLClient
+    # GHL finalization write: live flags, matched contact, field id (it used to send the field LABEL in shadow mode; spec/45)
+    from app.core.intent_actions import _write_ghl_campaign_off
 
-    ghl = GHLClient(settings=settings)
-    ai_field = settings.ghl_field_ai_campaign or "AI Campaign"
-    ghl.update_contact_fields(contact_id=contact_id, field_updates={ai_field: "No"})
-    logger.info("force_finalize: lead finalized | contact_id=%s shadow=%s",
-                contact_id, not settings.ghl_writes_enabled)
+    written = _write_ghl_campaign_off(contact_id, settings, "force_finalize", session)
+    logger.info("force_finalize: lead finalized | contact_id=%s ghl_written=%s", contact_id, written)
     return True
 
 
