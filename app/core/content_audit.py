@@ -106,6 +106,25 @@ def parse_staff_ids(*raw_lists: str | None) -> frozenset[str]:
     return frozenset(ids)
 
 
+# GHL user ids of staff who are not on the dashboard lists: Roselen (admissions) and Taiwo (IPBC / payments), the same ids the task assignment
+# falls back to. `audit_staff_user_ids` (comma list, dashboard config) adds more; an empty value removes these defaults.
+DEFAULT_STAFF_USER_IDS = "0swBv9tBNeXeYXPYFBSx,93bhNRgb5pzSoHmaSimH"
+# The GHL user id the Conversation AI and the workflows post under. It is also a real person on the support roster, and GHL stamps nothing
+# else on a message that tells an AI text from a typed one (checked 2026-10-26: same keys, same source "app"), so this id is NEVER treated as
+# staff even when it is on a staff list: that person's own texts are audited like the AI's.
+DEFAULT_AI_USER_IDS = "yIhCTptvoNLixaWkLcRd"
+
+
+def staff_user_ids(admissions_raw: str | None, ipbc_raw: str | None, roster_raw: str | None,
+                   extra_csv: str | None = DEFAULT_STAFF_USER_IDS, ai_csv: str | None = DEFAULT_AI_USER_IDS) -> frozenset[str]:
+    """Every GHL user id whose texts / emails are exempt from the "free" and course-name audit: the admissions, IPBC and support-roster
+    lists, plus `extra_csv`, minus the ids the AI posts under (`ai_csv`). A missing or malformed list contributes nothing (fail closed)."""
+    ids = set(parse_staff_ids(admissions_raw, ipbc_raw, roster_raw))
+    ids |= {i.strip() for i in (extra_csv or "").split(",") if i.strip()}
+    ids -= {i.strip() for i in (ai_csv or "").split(",") if i.strip()}
+    return frozenset(ids)
+
+
 def is_staff_sender(message: dict, staff_ids: frozenset[str]) -> bool:
     """True when a person on the staff list sent it from the GHL app. Only source 'app' counts: workflows and Cora's own
     sends can carry a staff user id too (the contact owner), so a workflow message is never exempt."""

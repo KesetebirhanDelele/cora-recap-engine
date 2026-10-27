@@ -203,6 +203,10 @@ def run_call_analysis(job_id: str) -> None:
                     duration_seconds=dur,
                 )
 
+                if intent_result is not None and intent_result.get("intent") == "carrier_message" and call_event is not None:
+                    # A carrier / phone-system recording is not a conversation: keep it out of the reports (spec/44, Kes 2026-10-26).
+                    call_event.report_excluded = True
+
                 if intent_result is not None:
                     live_lead = _resolve_lead_state(session, contact_id, call_event)
                     # If phone-fallback matched a different row, use its contact_id

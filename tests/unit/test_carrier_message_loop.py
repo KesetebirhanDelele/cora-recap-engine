@@ -200,3 +200,18 @@ def test_cleanup_judges_invalid_on_the_30_day_rule_but_relabels_the_full_window(
         res = FIX.run(session, None, 60, apply=True, out=lambda *_: None)
     assert res["relabelled"] == 2 and res["marked_invalid"] == 0                                    # both relabelled, number NOT invalidated
     assert not session.scalars(select(LeadState).where(LeadState.contact_id == "+15553333")).one().invalid
+
+
+def test_cleanup_keeps_carrier_calls_out_of_the_reports_and_leaves_real_calls_in(session):
+    seed_loop(session)
+    lines = []
+    FIX.run(session, None, 60, apply=False, out=lines.append)
+    assert any("to keep out of the reports" in ln and "4" in ln for ln in lines)
+    assert all(c.report_excluded is False for c in session.scalars(select(CallEvent)).all())          # dry run changes nothing
+    with patch.object(ia, "_write_ghl_campaign_off"):
+        res = FIX.run(session, None, 60, apply=True, out=lambda *_: None)
+    assert res["excluded"] == 4
+    by_text = {c.transcript: c.report_excluded for c in session.scalars(select(CallEvent)).all()}
+    assert by_text[COULD_NOT] is True and by_text[NOT_IN_SERVICE] is True and by_text[REAL_LATER] is False
+    again = FIX.run(session, None, 60, apply=True, out=lambda *_: None)
+    assert again["excluded"] == 0                                                                    # idempotent

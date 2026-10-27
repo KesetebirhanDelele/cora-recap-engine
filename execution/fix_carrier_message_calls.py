@@ -7,7 +7,8 @@ repairs what is already in the database:
 
   1. relabels those calls: call_events.detected_intent  call_later_no_time -> carrier_message
   2. cancels any still-pending call_later_no_time redial of those contacts
-  3. marks a number invalid (lead_state, same as a wrong number) when it has CARRIER_MESSAGE_STRIKES or more such calls inside the
+  3. keeps those calls out of the reports (call_events.report_excluded = true), as new ones now are automatically (spec/44)
+  4. marks a number invalid (lead_state, same as a wrong number) when it has CARRIER_MESSAGE_STRIKES or more such calls inside the
      live rule's window (CARRIER_MESSAGE_WINDOW_DAYS = 30), even though step 1 looks back further (--days, default 60)
 
 Dry run by default: prints counts only (no phone numbers or names). Nothing is written without --apply.
@@ -61,15 +62,20 @@ def run(session: Any, settings: Any, days: int = 60, apply: bool = False, out=pr
     dead = sorted(cid for cid, n in recent.items() if n >= strikes)
     out(f"carrier-recording calls in the last {days} days: {len(calls)} to {len(per_contact)} contacts")
     out(f"  mislabelled call_later_no_time (to relabel carrier_message): {len(relabel)}")
+    to_exclude = [c for c in calls if not c.report_excluded]
+    out(f"  to keep out of the reports (report_excluded): {len(to_exclude)} (already excluded: {len(calls) - len(to_exclude)})")
     out(f"  contacts with {strikes}+ such calls in the last {ia.CARRIER_MESSAGE_WINDOW_DAYS} days (to mark invalid): {len(dead)}")
     out(f"  heaviest contacts (calls): {[n for _c, n in per_contact.most_common(5)]}")
-    result = {"calls": len(calls), "contacts": len(per_contact), "relabelled": 0, "redials_cancelled": 0, "marked_invalid": 0}
+    result = {"calls": len(calls), "contacts": len(per_contact), "relabelled": 0, "excluded": 0, "redials_cancelled": 0, "marked_invalid": 0}
     if not apply:
         out("DRY RUN - nothing was changed. Re-run with --apply.")
         return result
     for c in relabel:
         c.detected_intent = "carrier_message"
         result["relabelled"] += 1
+    for c in to_exclude:
+        c.report_excluded = True
+        result["excluded"] += 1
     for cid in per_contact:
         result["redials_cancelled"] += ia._cancel_pending_redials(session, cid)
     for cid in dead:

@@ -258,7 +258,8 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
         scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
         hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
         verdict = None
-        if hits and ca.is_staff_sender(m, ca.parse_staff_ids(cfg("admissions_assistants", None), cfg("ipbc_assistants", None))):
+        if hits and ca.is_staff_sender(m, ca.staff_user_ids(cfg("admissions_assistants", None), cfg("ipbc_assistants", None), cfg("support_staff_roster", None),
+                                                       cfg("audit_staff_user_ids", ca.DEFAULT_STAFF_USER_IDS), cfg("audit_ai_user_ids", ca.DEFAULT_AI_USER_IDS))):
             # a person on the staff list wrote it (Ali 2026-10-22): "free" and course names are recorded, never alerted;
             # an employment / placement claim is still flagged
             exempt = [h for h in hits if not ca.is_employment_term(h)]

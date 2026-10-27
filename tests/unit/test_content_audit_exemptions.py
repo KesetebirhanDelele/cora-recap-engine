@@ -466,10 +466,61 @@ def test_workflow_source_is_never_exempt_even_with_a_staff_user_id():
 
 @pytest.mark.parametrize("cfg", [{}, {"admissions_assistants": "", "ipbc_assistants": "not json"},
                                  {"admissions_assistants": "[]"}, {"admissions_assistants": '[{"name": "x"}]'}])
-def test_missing_or_malformed_staff_settings_keep_everything_audited(cfg):
-    events, _ = _run(FREE_TEXT, config=cfg, extra={"userId": ROSE})
+def test_missing_or_malformed_staff_settings_never_exempt_an_unknown_user(cfg):
+    """A broken list contributes nothing (fail closed); only ids that are actually configured, or the defaults, are exempt."""
+    events, _ = _run(FREE_TEXT, config=cfg, extra={"userId": "UNKNOWNUSER999"})
+    assert len(events) == 1
+
+
+def test_clearing_the_default_staff_ids_removes_the_default_exemption():
+    events, _ = _run(FREE_TEXT, config={"audit_staff_user_ids": ""}, extra={"userId": ROSE})
     assert len(events) == 1
 
 
 def test_parse_staff_ids():
     assert ca.parse_staff_ids(STAFF_CFG["admissions_assistants"], None, "[1]", STAFF_CFG["ipbc_assistants"]) ==         frozenset({ROSE, "93bhNRgb5pzSoHmaSimH"})
+
+
+# -- ALL staff are exempt for "free" and course names (Kes 2026-10-26) ------------------------------------------------------------------
+ROSTER_CFG = {"support_staff_roster": json.dumps([{"name": "Farhat Beig", "ghl_id": "RBa4nlSSiWeu4CoGFVyl", "days": [0], "shift_start": "14:00", "shift_end": "22:00"},
+                                                  {"name": "Balakrishna K", "ghl_id": "yIhCTptvoNLixaWkLcRd", "days": [0], "shift_start": "04:30", "shift_end": "12:30"}])}
+AI_ID = "yIhCTptvoNLixaWkLcRd"
+
+
+def test_support_roster_staff_are_exempt_too():
+    events, _ = _run(FREE_TEXT, config=ROSTER_CFG, extra={"userId": "RBa4nlSSiWeu4CoGFVyl"})
+    assert events == []
+
+
+def test_the_default_staff_ids_cover_roselen_and_taiwo_even_when_the_dashboard_lists_are_empty():
+    for uid in ("0swBv9tBNeXeYXPYFBSx", "93bhNRgb5pzSoHmaSimH"):
+        assert _run(FREE_TEXT, config={}, extra={"userId": uid})[0] == []
+
+
+def test_the_user_id_the_conversation_ai_posts_under_is_never_exempt_even_when_it_is_on_the_support_roster():
+    events, _ = _run(FREE_TEXT, config=ROSTER_CFG, extra={"userId": AI_ID})
+    assert len(events) == 1 and events[0]["detail"]["terms"] == ["free"]
+
+
+def test_extra_staff_ids_can_be_added_in_config_and_the_ai_id_can_be_changed():
+    assert _run(FREE_TEXT, config={"audit_staff_user_ids": "NEWSTAFF123"}, extra={"userId": "NEWSTAFF123"})[0] == []
+    ai_cfg = {"audit_ai_user_ids": "93bhNRgb5pzSoHmaSimH"}                                  # if the AI were ever re-assigned to that user
+    assert len(_run(FREE_TEXT, config=ai_cfg, extra={"userId": "93bhNRgb5pzSoHmaSimH"})[0]) == 1
+
+
+def test_staff_discussing_the_old_course_with_a_student_is_not_flagged_but_an_employment_claim_still_is():
+    events, calls = _run("Your Data Analytics bootcamp class continues Monday, and it is free for current students.", config={}, extra={"userId": "93bhNRgb5pzSoHmaSimH"})
+    assert events == [] and calls == []
+    events, _ = _run("Our job placement rate is high.", config={}, extra={"userId": "93bhNRgb5pzSoHmaSimH"})
+    assert len(events) == 1
+
+
+def test_a_workflow_text_with_a_staff_user_id_is_still_audited():
+    events, _ = _run(FREE_TEXT, config={}, extra={"userId": "93bhNRgb5pzSoHmaSimH", "source": "workflow"})
+    assert len(events) == 1
+
+
+def test_staff_user_ids_helper():
+    got = ca.staff_user_ids('[{"ghl_id": "A"}]', '[{"ghl_id": "B"}]', '[{"ghl_id": "C"}, {"ghl_id": "yIhCTptvoNLixaWkLcRd"}]', "D, E", "E,yIhCTptvoNLixaWkLcRd")
+    assert got == frozenset({"A", "B", "C", "D"})                                            # E removed as an AI id, the AI id never added
+    assert ca.staff_user_ids(None, "not json", "[]", "", "") == frozenset()
