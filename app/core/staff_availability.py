@@ -96,22 +96,42 @@ def _team_line(label: str, entries: list[dict[str, Any]], now: datetime, tz: str
     return f"- {label}: NOT available now."
 
 
+DEFAULT_CALLBACK_ONLY = "admissions,support"       # Synthflow cannot transfer a live call to numbers outside the US (Kes 2026-10-26)
+
+
+def parse_callback_only(value: str | None) -> frozenset[str]:
+    """Teams that must never get a live transfer (callback only): 'admissions', 'ipbc', 'support'. None -> the default; '' -> none."""
+    raw = DEFAULT_CALLBACK_ONLY if value is None else value
+    return frozenset(t.strip().lower() for t in raw.split(",") if t.strip())
+
+
+def _callback_line(label: str, entries: list[dict[str, Any]], now: datetime, tz: str) -> str:
+    """A team that is callback-only: say when it is staffed, but never offer a live transfer."""
+    active, nxt = status(entries, now, tz) if entries else ([], None)
+    when = "now" if active else (f"from {_when(nxt[1], now.astimezone(ZoneInfo(tz)))}" if nxt else "during office hours")
+    return f"- {label}: NO live transfer (callback only). The team can call back {when}: book the callback."
+
+
 def availability_block(now: datetime, admissions_raw: str | None, ipbc_raw: str | None, roster_raw: str | None,
-                       tz: str = TIMEZONE) -> str:
+                       tz: str = TIMEZONE, callback_only: str | None = None) -> str:
     """The text put at the very top of an outbound call prompt. Contains no secrets and no URLs."""
     zone = ZoneInfo(tz)
     local = now.astimezone(zone)
     clock = f"{local.strftime('%A')} {local.strftime('%I:%M %p').lstrip('0')} Central"
+    cb = parse_callback_only(callback_only)
+    teams = (("admissions", "Admissions", parse_people(admissions_raw, "Roselen")),
+             ("ipbc", "Payments / IPBC", parse_people(ipbc_raw, "Taiwo")),
+             ("support", "Support", parse_roster(roster_raw)))
+    lines = [_callback_line(label, entries, now, tz) if key in cb else _team_line(label, entries, now, tz) for key, label, entries in teams]
     return "\n".join([
         "## LIVE STATUS - computed when this call started; trust it over any other assumption about the time",
         f"Current time: {clock}.",
-        _team_line("Admissions", parse_people(admissions_raw, "Roselen"), now, tz),
-        _team_line("Payments / IPBC", parse_people(ipbc_raw, "Taiwo"), now, tz),
-        _team_line("Support", parse_roster(roster_raw), now, tz),
+        *lines,
         "",
-        "Before ANY transfer, find the team the caller needs above. If it says NOT available now, do NOT attempt a transfer: say "
-        "\"Our team isn't available right now - they're back [the time shown above]. Let me book you a callback for then.\" and "
-        "book it with the booking tool. If it says AVAILABLE NOW, try the transfer once. The failed-transfer rule below still applies.",
+        "Before ANY transfer, find the team the caller needs above. A team marked \"NO live transfer\" must NEVER be transferred to: say "
+        "\"Let me set up a time for our team to call you back - what day and time works best for you?\" and book it with the booking tool. "
+        "For a team marked NOT available now, do the same. Only try a transfer (once) to a team marked AVAILABLE NOW. The failed-transfer "
+        "rule below still applies. Never ask the caller whether they would rather keep talking to you.",
         "",
         "---",
         "",

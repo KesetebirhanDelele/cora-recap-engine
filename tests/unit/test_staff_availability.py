@@ -25,8 +25,8 @@ SAT_NOON = datetime(2026, 10, 24, 17, 0, tzinfo=UTC)           # Saturday 12:00 
 SUN_NOON = datetime(2026, 10, 25, 17, 0, tzinfo=UTC)
 
 
-def block(now):
-    return sa.availability_block(now, ADMISSIONS, IPBC, ROSTER)
+def block(now, callback_only=""):
+    return sa.availability_block(now, ADMISSIONS, IPBC, ROSTER, callback_only=callback_only)
 
 
 def line(text, label):
@@ -71,20 +71,20 @@ def test_saturday_support_shift_is_available():
 
 def test_daylight_saving_uses_central_time_not_a_fixed_offset():
     # 2026-12-01 15:00 UTC = 9:00 AM CST (UTC-6): Admissions open. In October (CDT) the same UTC hour is 10 AM.
-    assert "AVAILABLE NOW" in line(sa.availability_block(datetime(2026, 12, 1, 15, 0, tzinfo=UTC), ADMISSIONS, IPBC, ROSTER), "Admissions")
-    assert "NOT available now" in line(sa.availability_block(datetime(2026, 12, 1, 14, 59, tzinfo=UTC), ADMISSIONS, IPBC, ROSTER), "Admissions")
+    assert "AVAILABLE NOW" in line(sa.availability_block(datetime(2026, 12, 1, 15, 0, tzinfo=UTC), ADMISSIONS, IPBC, ROSTER, callback_only=""), "Admissions")
+    assert "NOT available now" in line(sa.availability_block(datetime(2026, 12, 1, 14, 59, tzinfo=UTC), ADMISSIONS, IPBC, ROSTER, callback_only=""), "Admissions")
 
 
 @pytest.mark.parametrize("admissions,ipbc,roster", [(None, None, None), ("", "not json", "[]"), ("[]", "[{}]", '[{"name": "x"}]')])
 def test_missing_or_malformed_settings_still_produce_a_usable_block(admissions, ipbc, roster):
-    b = sa.availability_block(FRI_NOON, admissions, ipbc, roster)
+    b = sa.availability_block(FRI_NOON, admissions, ipbc, roster, callback_only="")
     assert "AVAILABLE NOW (Roselen)" in line(b, "Admissions") and "AVAILABLE NOW (Taiwo)" in line(b, "Payments")
     assert "schedule unknown" in line(b, "Support")
 
 
 def test_block_tells_the_agent_not_to_transfer_when_unavailable_and_has_no_banned_word_or_link():
     b = block(FRI_NIGHT)
-    assert "do NOT attempt a transfer" in b and "book it with the booking tool" in b
+    assert "NEVER be transferred to" in b and "book it with the booking tool" in b and "keep talking to you" in b
     low = b.lower()
     assert "free" not in low and "http" not in low and ".com" not in low
 
@@ -120,3 +120,40 @@ def test_a_broken_availability_helper_never_stops_a_call():
     from app.worker.jobs import outbound_jobs
     with patch("app.core.app_config.get_str", side_effect=RuntimeError("db down")):
         assert outbound_jobs._availability_note(MagicMock(), MagicMock()) == ""
+
+
+# -- Admissions and Support are callback-only by default (Synthflow cannot transfer to numbers outside the US) ----------------------------
+def test_by_default_admissions_and_support_are_callback_only_and_payments_keeps_live_transfer():
+    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER)                      # no callback_only argument = the default
+    assert "NO live transfer (callback only)" in line(b, "Admissions") and "NO live transfer (callback only)" in line(b, "Support")
+    assert "AVAILABLE NOW (Taiwo)" in line(b, "Payments")
+    assert "AVAILABLE NOW" not in line(b, "Admissions") and "AVAILABLE NOW" not in line(b, "Support")
+
+
+def test_callback_only_lines_say_when_the_team_can_call_back_but_never_offer_a_transfer():
+    assert "can call back now" in line(sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER), "Admissions")
+    night = sa.availability_block(FRI_NIGHT, ADMISSIONS, IPBC, ROSTER)
+    assert "from Monday 9:00 AM Central" in line(night, "Admissions") and "transfer" not in line(night, "Admissions").replace("NO live transfer", "")
+
+
+@pytest.mark.parametrize("value,want", [(None, {"admissions", "support"}), ("", set()), ("support", {"support"}), (" Admissions , IPBC ", {"admissions", "ipbc"})])
+def test_callback_only_setting_parsing(value, want):
+    assert sa.parse_callback_only(value) == frozenset(want)
+
+
+def test_the_setting_can_turn_a_team_back_into_a_live_transfer_team():
+    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER, callback_only="support")     # Ali re-enables Admissions transfers
+    assert "AVAILABLE NOW (Roselen)" in line(b, "Admissions") and "NO live transfer" in line(b, "Support")
+
+
+def test_the_block_never_asks_the_caller_to_keep_talking_to_the_agent():
+    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER)
+    assert "Never ask the caller whether they would rather keep talking to you" in b
+
+
+def test_the_outbound_prompts_never_offer_the_caller_the_choice_to_stay_with_the_agent():
+    from app.adapters.synthflow import _load_campaign_prompt
+    for c in ("Cold Lead", "New Lead"):
+        p = _load_campaign_prompt(c)
+        assert "Live transfer is only for Payments / IPBC" in p and 'Never say** "try again later"' in p and "keep talking to me" in p
+        assert "NO live transfer: book a callback with Admissions" in p and "NO live transfer: book a callback with Support" in p
