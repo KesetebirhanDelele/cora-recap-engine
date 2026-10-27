@@ -2921,3 +2921,6 @@ Read this first in the next session. Production-tracking branch = `feat/ghl-call
 
 ## 2026-10-26 - Balamurali live-transfer exception added to spec 45 bundle
 Support is callback-only except Balamurali Kasula (his number transfers live): setting `transfer_live_people` (default `balamurali`), LIVE STATUS line + cold/warm/inbound prompts updated, 4 new tests. Inbound Synthflow prompt must be re-pasted by Kes. Suite: 2109 pass, same 7 unrelated failures.
+
+## 2026-10-27 - Spec 45 bundle merged and deployed; data scripts applied
+Merged `fix/ghl-live-writes-dates-transfer-rule` into `feat/ghl-call-conversation-sync` (c395e87), Hetzner rebuilt, services Up, no tracebacks. Applied (dry run first each): carrier/dead-number exclusion (121 calls, 14 contacts, 6 marked invalid); call-date repair (238 rows); finalized-lead backfill AI Campaign = No (10 staged + 2,577 more, all verified by read-back, 0 failed; 72 already No, 2 with no GHL contact); DND drain found 0 leads to check (not investigated why, expected ~238). Still Kes: re-paste inbound prompt in Synthflow, GHL Student Summary SMS workflow, resolve 3 call_transfer_failed alerts.
