@@ -2918,3 +2918,6 @@ Read this first in the next session. Production-tracking branch = `feat/ghl-call
 - Built: `app/core/ghl_write.py` + fixes to finalization / enrolled / dashboard force-finalize / student summary (spec/45 table); `_parse_datetime` epoch-string fix + `execution/repair_call_dates.py`; recording rule (Section 0 item 7) in cold, warm and inbound prompts; `backfill_ai_campaign_off.py --finalized`; `execution/drain_dnd_reconcile.py`. Student Summary field created in GHL by Kes (matches the code); a GHL workflow to text it is still needed.
 - DND finding: GHL DND is applied for 806 of 1,048 do-not-call leads, 3 await review, 238 never checked (135 older than 60 days) because the reconcile job handles ~4 leads an hour; the drain only reads GHL and queues review rows, it never turns DND on.
 - Tests: 2101 pass; 7 unrelated failures remain (2 redis missing locally, 1 date-hardcoded, 2 stale ghl_adapter task payload tests, 2 stale inbound-call mock tests); the stale enrolled test was fixed.
+
+## 2026-10-26 - Balamurali live-transfer exception added to spec 45 bundle
+Support is callback-only except Balamurali Kasula (his number transfers live): setting `transfer_live_people` (default `balamurali`), LIVE STATUS line + cold/warm/inbound prompts updated, 4 new tests. Inbound Synthflow prompt must be re-pasted by Kes. Suite: 2109 pass, same 7 unrelated failures.

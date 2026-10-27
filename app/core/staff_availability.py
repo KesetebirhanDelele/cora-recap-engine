@@ -105,24 +105,38 @@ def parse_callback_only(value: str | None) -> frozenset[str]:
     return frozenset(t.strip().lower() for t in raw.split(",") if t.strip())
 
 
-def _callback_line(label: str, entries: list[dict[str, Any]], now: datetime, tz: str) -> str:
-    """A team that is callback-only: say when it is staffed, but never offer a live transfer."""
+DEFAULT_LIVE_PEOPLE = "balamurali"                  # a person on a callback-only team whose number works for live transfer (Kes 2026-10-26)
+
+
+def parse_live_people(value: str | None) -> frozenset[str]:
+    """First names (lower case) who can take a live transfer even though their team is callback-only. None -> the default; '' -> nobody."""
+    raw = DEFAULT_LIVE_PEOPLE if value is None else value
+    return frozenset(t.strip().lower() for t in raw.split(",") if t.strip())
+
+
+def _callback_line(label: str, entries: list[dict[str, Any]], now: datetime, tz: str, live_people: frozenset[str] = frozenset()) -> str:
+    """A team that is callback-only: say when it is staffed, but never offer a live transfer, except to a named person whose number works and who is on shift."""
     active, nxt = status(entries, now, tz) if entries else ([], None)
+    live_now = [n for n in active if n.lower() in live_people]
+    if live_now:
+        return (f"- {label}: live transfer ONLY to {', '.join(live_now)} (on shift now, AVAILABLE NOW); anyone else on this team is callback only: "
+                f"book the callback.")
     when = "now" if active else (f"from {_when(nxt[1], now.astimezone(ZoneInfo(tz)))}" if nxt else "during office hours")
     return f"- {label}: NO live transfer (callback only). The team can call back {when}: book the callback."
 
 
 def availability_block(now: datetime, admissions_raw: str | None, ipbc_raw: str | None, roster_raw: str | None,
-                       tz: str = TIMEZONE, callback_only: str | None = None) -> str:
+                       tz: str = TIMEZONE, callback_only: str | None = None, live_people: str | None = None) -> str:
     """The text put at the very top of an outbound call prompt. Contains no secrets and no URLs."""
     zone = ZoneInfo(tz)
     local = now.astimezone(zone)
     clock = f"{local.strftime('%A')} {local.strftime('%I:%M %p').lstrip('0')} Central"
     cb = parse_callback_only(callback_only)
+    live = parse_live_people(live_people)
     teams = (("admissions", "Admissions", parse_people(admissions_raw, "Roselen")),
              ("ipbc", "Payments / IPBC", parse_people(ipbc_raw, "Taiwo")),
              ("support", "Support", parse_roster(roster_raw)))
-    lines = [_callback_line(label, entries, now, tz) if key in cb else _team_line(label, entries, now, tz) for key, label, entries in teams]
+    lines = [_callback_line(label, entries, now, tz, live) if key in cb else _team_line(label, entries, now, tz) for key, label, entries in teams]
     return "\n".join([
         "## LIVE STATUS - computed when this call started; trust it over any other assumption about the time",
         f"Current time: {clock}.",

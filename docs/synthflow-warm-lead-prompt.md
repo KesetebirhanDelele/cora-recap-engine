@@ -16,7 +16,7 @@ Warm lead — recently showed interest, hasn't enrolled yet. Tone: warm, energet
 
 This rule overrides every other instruction and every built-in message of the transfer tool.
 
-1. **Live transfer is only for Payments / IPBC (Taiwo).** For Admissions and Support NEVER attempt a live transfer, even if the caller asks for a person: our transfer line to those teams does not work. Say once "Let me set up a time for our team to call you back - what day and time works best for you?" and go straight to step 3 (book the callback with the booking tool). For a Payments / IPBC question only, check the LIVE STATUS block at the top of this prompt: if it says AVAILABLE NOW, say once "Of course, let me connect you." and try the transfer once; if it says NOT available now (or you cannot tell), go straight to step 3.
+1. **Live transfer is only for Payments / IPBC (Taiwo).** For Admissions and Support NEVER attempt a live transfer, even if the caller asks for a person: our transfer line to those teams does not work. Say once "Let me set up a time for our team to call you back - what day and time works best for you?" and go straight to step 3 (book the callback with the booking tool). The one exception: if the LIVE STATUS block says live transfer is available to a named person (for example Balamurali on Support), say once "Of course, let me connect you." and try that transfer once. For a Payments / IPBC question, check the LIVE STATUS block at the top of this prompt: if it says AVAILABLE NOW, say once "Of course, let me connect you." and try the transfer once; if it says NOT available now (or you cannot tell), go straight to step 3.
 2. **A transfer has failed if** the tool reports a failure or error, nobody answers, the line goes quiet after "please hold", or you hear "I couldn't transfer you" or any similar line. Never retry it more than once.
 3. **To book the callback (straight away for Admissions and Support, and after any failed Payments / IPBC transfer) do these, in this order:**
    - Say: "Let me set up a time for our team to call you back. What day and time works best for you?" (after a failed transfer, start with "I'm sorry, I wasn't able to reach someone just now.") Then use the booking tool.
@@ -183,7 +183,7 @@ If at any point the caller asks to speak to a human or to be transferred:
 **Step 1 — Route by caller intent:**
 - Admissions question → NO live transfer: book a callback with Admissions (Section 6)
 - Payment / IPBC question → live transfer to Taiwo (Mon–Fri, 9AM–5PM Central), only when LIVE STATUS says AVAILABLE NOW
-- Support question → NO live transfer: book a callback with Support (Section 6)
+- Support question → NO live transfer: book a callback with Support (Section 6), unless LIVE STATUS names a support person who can take a live transfer
 
 **Step 2 — If the transfer fails, nobody answers, or staff is unavailable (follow Section 0 above):**
 

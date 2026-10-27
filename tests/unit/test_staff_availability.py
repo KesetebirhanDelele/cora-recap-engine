@@ -157,3 +157,29 @@ def test_the_outbound_prompts_never_offer_the_caller_the_choice_to_stay_with_the
         p = _load_campaign_prompt(c)
         assert "Live transfer is only for Payments / IPBC" in p and 'Never say** "try again later"' in p and "keep talking to me" in p
         assert "NO live transfer: book a callback with Admissions" in p and "NO live transfer: book a callback with Support" in p
+
+
+# -- Balamurali Kasula's live transfer works, so he is the one exception on the callback-only Support team (Kes 2026-10-26) ---------------------
+FRI_EVENING = datetime(2026, 10, 24, 1, 0, tzinfo=UTC)         # Friday 8:00 PM Central: Balamurali (6PM-2AM) and Farhat (2PM-10PM) are on shift
+
+
+def test_a_named_person_on_a_callback_only_team_can_take_a_live_transfer_while_on_shift():
+    b = sa.availability_block(FRI_EVENING, ADMISSIONS, IPBC, ROSTER)                 # defaults: support callback-only, live person = balamurali
+    assert "live transfer ONLY to Balamurali" in line(b, "Support") and "callback only" in line(b, "Support")
+    assert "Farhat" not in line(b, "Support")                                          # the others on shift stay callback-only
+    assert "NO live transfer" in line(b, "Admissions")                                  # Admissions has no exception
+
+
+def test_when_that_person_is_off_shift_support_is_callback_only_again():
+    b = sa.availability_block(FRI_NOON, ADMISSIONS, IPBC, ROSTER)                      # Friday 12:46 PM Central: Balamurali not yet on shift
+    assert "NO live transfer (callback only)" in line(b, "Support") and "Balamurali" not in line(b, "Support")
+
+
+@pytest.mark.parametrize("value,want", [(None, {"balamurali"}), ("", set()), (" Balamurali , Farhat ", {"balamurali", "farhat"})])
+def test_live_people_setting_parsing(value, want):
+    assert sa.parse_live_people(value) == frozenset(want)
+
+
+def test_the_live_person_exception_can_be_removed_by_setting_it_empty():
+    b = sa.availability_block(FRI_EVENING, ADMISSIONS, IPBC, ROSTER, live_people="")
+    assert "live transfer ONLY" not in line(b, "Support")

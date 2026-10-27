@@ -33,6 +33,8 @@ no booking, end the call. Found on the 10-26 20:05 "successful" transfer to Bala
 ## 4. Callback-only for Admissions and Support goes live (spec/44 section 5)
 Merged from `hold/callback-only-teams`. The inbound Synthflow agent's prompt must be re-pasted by hand (the cold / warm prompts are injected per call).
 
+**Exception (Kes 2026-10-26): Balamurali Kasula.** His phone took an in-call transfer today, so Support stays callback-only EXCEPT him. `staff_availability.parse_live_people` (setting `transfer_live_people`, default `balamurali`, empty = nobody): when he is on shift the LIVE STATUS Support line reads "live transfer ONLY to Balamurali ... anyone else on this team is callback only"; off shift it is callback-only. Cold / warm / inbound prompts carry the matching exception. Admissions has none.
+
 ## 5. Do-not-disturb backlog
 GHL DND is applied for 806 of 1,048 do-not-call leads, 3 await operator review, and **238 had never been checked** (135 older than 60 days) because `optout.reconcile_step` handles
 ~4 leads an hour. `execution/drain_dnd_reconcile.py` loops it (20 leads / 60 s per step, 25 minute cap). It only READS GHL and writes `optout_actions` rows: 'ok' where DND is already set,
