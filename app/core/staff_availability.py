@@ -96,7 +96,7 @@ def _team_line(label: str, entries: list[dict[str, Any]], now: datetime, tz: str
     return f"- {label}: NOT available now."
 
 
-DEFAULT_CALLBACK_ONLY = ""                          # none: every team is live-transferable while on shift (Kes 2026-10-27; was "admissions,support" on 10-26)
+DEFAULT_CALLBACK_ONLY = "admissions,support"       # Roselen's and Farhat's in-call transfer actions were removed (Kes 2026-10-27); only the live people below transfer live
 
 
 def parse_callback_only(value: str | None) -> frozenset[str]:
@@ -105,7 +105,7 @@ def parse_callback_only(value: str | None) -> frozenset[str]:
     return frozenset(t.strip().lower() for t in raw.split(",") if t.strip())
 
 
-DEFAULT_LIVE_PEOPLE = "balamurali"                  # a person on a callback-only team whose number works for live transfer (Kes 2026-10-26)
+DEFAULT_LIVE_PEOPLE = "balamurali,balakrishna"      # people on a callback-only team whose number works for live transfer (Kes 2026-10-26 / 10-27)
 
 
 def parse_live_people(value: str | None) -> frozenset[str]:
