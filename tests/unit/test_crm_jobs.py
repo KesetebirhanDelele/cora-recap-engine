@@ -336,58 +336,91 @@ def test_update_ghl_after_vm_message_exception_context_carries_full_payload(sess
 # 6–11: send_student_summary
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_send_student_summary_consent_yes_writes_and_audits(session):
-    """Consent=YES → writes summary field to GHL and records audit log."""
-    call_event = _make_call_event(session, call_id="call-sum-yes")
-    _make_summary(session, call_event.id, consent="YES")
-
-    job = _make_job(session, "send_student_summary", {
-        "call_id": call_event.call_id,
-        "call_event_id": call_event.id,
-    })
-
-    ghl_updates = []
-    with (
-        patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
-        patch("app.core.ghl_write.write_label_fields",
-              side_effect=lambda ghl, cid, updates, settings, flags, reason: ghl_updates.append(updates) or True),
-    ):
+def _run_summary_job(session, job):
+    with patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess:
         mock_sess.return_value.__enter__ = lambda _: session
         mock_sess.return_value.__exit__ = MagicMock(return_value=False)
-
         from app.worker.jobs.crm_jobs import send_student_summary
         send_student_summary(job.id)
 
-    assert len(ghl_updates) == 1
-    job_row = session.get(ScheduledJob, job.id)
-    assert job_row.status == "completed"
 
+def _sms_handoffs(session):
     from sqlalchemy import select
-    audit = session.scalars(
-        select(AuditLog).where(AuditLog.action == "student_summary_delivered")
-    ).first()
-    assert audit is not None
-    assert audit.context_json["call_event_id"] == call_event.id
+    return session.scalars(select(ScheduledJob).where(ScheduledJob.job_type == "update_ghl_after_vm_message")).all()
 
 
-def test_send_student_summary_that_is_not_really_written_is_a_failure_not_a_delivery(session):
-    """A shadow / unmatched / missing-field write used to be logged as 'delivered' and audited. It must fail the job and leave no delivery audit (spec/45)."""
-    call_event = _make_call_event(session, call_id="call-sum-shadow")
+def test_send_student_summary_consent_yes_hands_the_text_to_the_sms_pipeline_and_audits(session):
+    """Consent=YES -> one summary-only SMS hand-off job (the existing Ticket #4 pipeline, spec/48) and an audit row. No separate GHL field is written."""
+    call_event = _make_call_event(session, call_id="call-sum-yes")
     _make_summary(session, call_event.id, consent="YES")
     job = _make_job(session, "send_student_summary", {"call_id": call_event.call_id, "call_event_id": call_event.id})
+
+    _run_summary_job(session, job)
+
+    assert session.get(ScheduledJob, job.id).status == "completed"
+    handoffs = [h for h in _sms_handoffs(session) if (h.payload_json or {}).get("summary_call_event_id") == call_event.id]
+    assert len(handoffs) == 1
+    pl = handoffs[0].payload_json
+    assert pl["channel"] == "sms" and pl["summary_only"] is True and pl["message_body"] and pl["contact_id"] == call_event.contact_id
+    from sqlalchemy import select
+    audit = session.scalars(select(AuditLog).where(AuditLog.action == "student_summary_delivered")).first()
+    assert audit is not None and audit.context_json["call_event_id"] == call_event.id
+
+
+def test_a_rerun_of_send_student_summary_never_texts_the_caller_twice(session):
+    call_event = _make_call_event(session, call_id="call-sum-twice")
+    _make_summary(session, call_event.id, consent="YES")
+    for _ in range(2):
+        _run_summary_job(session, _make_job(session, "send_student_summary", {"call_id": call_event.call_id, "call_event_id": call_event.id}))
+    assert len([h for h in _sms_handoffs(session) if (h.payload_json or {}).get("summary_call_event_id") == call_event.id]) == 1
+
+
+def test_send_student_summary_without_a_contact_id_fails_and_sends_nothing(session):
+    call_event = _make_call_event(session, call_id="call-sum-nocontact")
+    call_event.contact_id = None
+    session.flush()
+    _make_summary(session, call_event.id, consent="YES")
+    job = _make_job(session, "send_student_summary", {"call_id": call_event.call_id, "call_event_id": call_event.id})
+    with pytest.raises(RuntimeError, match="no GHL contact id"):
+        _run_summary_job(session, job)
+    assert session.get(ScheduledJob, job.id).status == "failed"
+    assert [h for h in _sms_handoffs(session) if (h.payload_json or {}).get("summary_call_event_id") == call_event.id] == []
+
+
+def test_a_summary_handoff_writes_only_the_sms_trigger_field_never_mark_as_lead_or_ai_campaign(session):
+    """update_ghl_after_vm_message with summary_only keeps Ticket #4 and drops Mark as Lead / AI Campaign / Message (spec/48)."""
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace as NS
+
+    s = NS(ghl_field_mark_as_lead="F_LEAD", ghl_field_ai_campaign="F_CAMP", ghl_field_message="F_MSG",
+           ghl_field_support_ticket_2="F_T2", ghl_field_support_ticket_4="F_T4")
+    contact = {"contact": {"id": "c1", "phone": "+15555550100", "dnd": False, "tags": []}}
+    job = _make_job(session, "update_ghl_after_vm_message", {
+        "contact_id": "c1", "channel": "sms", "message_body": "Thanks for talking with Cora! Summary: a 12-week course.",
+        "message_subject": "Your call summary", "campaign_name": "", "summary_only": True, "summary_call_event_id": "ce1"})
+    written = []
+    ghl = MagicMock()
+    ghl.get_contact.return_value = contact
+    ghl.update_contact_fields.side_effect = lambda **kw: written.append(kw["field_updates"]) or {"shadow": False}
+    flags = MagicMock(system_paused=False, outbound_campaigns_paused=False, cold_lead_campaign_paused=False, ghl_writes_enabled=False)
     with (
         patch("app.worker.jobs.crm_jobs.get_sync_session") as mock_sess,
-        patch("app.core.ghl_write.write_label_fields", return_value=False),
+        patch("app.worker.jobs.crm_jobs.get_settings", return_value=s),
+        patch("app.adapters.ghl.GHLClient", return_value=ghl),
+        patch("app.core.mode_flags.get_mode_flags", return_value=flags),
+        patch("app.services.optout.cora_block_reason", return_value=None),
+        patch("app.core.campaign_schedule.get_contact_timezone", return_value="America/Chicago"),
+        patch("app.core.sms_gate.next_legal_send_time", return_value=datetime.now(tz=timezone.utc) - timedelta(minutes=1)),
+        patch("app.worker.jobs.crm_jobs._resolve_to_field_ids", side_effect=lambda g, u: dict(u)),
+        patch("app.services.channel_health.record_handoff"),
     ):
         mock_sess.return_value.__enter__ = lambda _: session
         mock_sess.return_value.__exit__ = MagicMock(return_value=False)
-        from app.worker.jobs.crm_jobs import send_student_summary
-        with pytest.raises(RuntimeError, match="NOT written to GHL"):
-            send_student_summary(job.id)                      # re-raised after the failure is recorded, so the queue sees it
+        from app.worker.jobs.crm_jobs import update_ghl_after_vm_message
+        update_ghl_after_vm_message(job.id)
 
-    assert session.get(ScheduledJob, job.id).status == "failed"
-    from sqlalchemy import select
-    assert session.scalars(select(AuditLog).where(AuditLog.action == "student_summary_delivered")).first() is None
+    assert len(written) == 1
+    assert set(written[0]) == {"F_T4"} and "12-week course" in written[0]["F_T4"]
 
 
 def test_send_student_summary_consent_no_skips(session):

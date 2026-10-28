@@ -578,6 +578,15 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                 allowed_link_domains=get_str("sms_allowed_link_domains", session, settings, ""),
             )
             label_updates = plan.updates
+            summary_only = bool(payload.get("summary_only"))
+            if summary_only:
+                # A student summary is not a voicemail follow-up: never set Mark as Lead / AI Campaign = Yes or touch the
+                # follow-up record. Keep only the field(s) that make GHL send it (spec/48).
+                _keep = ({settings.ghl_field_support_ticket_4} if plan.route == "sms"
+                         else {settings.ghl_field_support_ticket_2, settings.ghl_field_message})
+                for _k in list(label_updates):
+                    if _k not in _keep:
+                        label_updates.pop(_k)
             if plan.route == "sms_link_to_email":
                 logger.info(
                     "update_ghl_after_vm_message: SMS carries a link - delivering by EMAIL instead | "
@@ -703,7 +712,7 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                         },
                     )
 
-            if flags.ghl_writes_enabled:
+            if flags.ghl_writes_enabled and not summary_only:
                 _mark_outbound_status(session, [payload.get("contact_id", ""), contact_id], channel,
                                       "sent" if _handed_off else "skipped")
                 if not _handed_off:
@@ -742,6 +751,9 @@ def update_ghl_after_vm_message(job_id: str) -> None:
                     "message_body": message_body,
                     "message_subject": message_subject,
                     "campaign_name": payload.get("campaign_name", ""),
+                    # a retried student-summary hand-off must stay a summary: no Mark as Lead / AI Campaign writes (spec/48)
+                    "summary_only": bool(payload.get("summary_only")),
+                    "summary_call_event_id": payload.get("summary_call_event_id", ""),
                 },
                 entity_type="lead",
                 entity_id=contact_id,
@@ -849,7 +861,6 @@ def send_student_summary(job_id: str) -> None:
     5. Record audit log entry
     6. Complete job
     """
-    settings = get_settings()
     worker_id = get_worker_id()
 
     with get_sync_session() as session:
@@ -909,18 +920,44 @@ def send_student_summary(job_id: str) -> None:
             call_event = session.get(CallEvent, call_event_id)
             contact_id = call_event.contact_id if call_event else None
 
-            from app.adapters.ghl import GHLClient
-            from app.core.ghl_write import write_label_fields
-            from app.core.mode_flags import get_mode_flags
+            if not contact_id:
+                raise RuntimeError("student summary NOT sent: the call has no GHL contact id")
 
-            ghl = GHLClient(settings=settings)
-            field_label = settings.ghl_field_student_summary or "Student Summary"
-            if not write_label_fields(ghl, contact_id or "", {field_label: summary.student_summary}, settings,
-                                      get_mode_flags(session, settings), "student_summary"):
-                # It used to log "delivered" and record the audit even for a shadow write, and it sent the field label instead of the field id (spec/45)
-                raise RuntimeError("student summary NOT written to GHL (shadow mode, no matching contact, or the GHL field is missing)")
+            # The text goes through the same pipeline as every other Cora SMS (spec/33, spec/34, spec/48): a job that writes
+            # Support Issue Ticket #4 (the body of GHL's "AI Agent - Send SMS" workflow) after the do-not-disturb / opt-out /
+            # texting-hours / daily-budget checks; a summary with a non-allow-listed link goes by email instead. One hand-off
+            # per call: a retry of this job must not text the caller twice.
+            from app.models import ScheduledJob
+            from app.worker.scheduler import schedule_job
 
-            logger.info("send_student_summary: written to GHL | call_event_id=%s", call_event_id)
+            already = session.scalars(
+                select(ScheduledJob).where(
+                    ScheduledJob.job_type == "update_ghl_after_vm_message",
+                    ScheduledJob.entity_id == contact_id,
+                    ScheduledJob.payload_json["summary_call_event_id"].as_string() == call_event_id,
+                )
+            ).first()
+            if already is None:
+                schedule_job(
+                    session=session,
+                    job_type="update_ghl_after_vm_message",
+                    entity_type="lead",
+                    entity_id=contact_id,
+                    run_at=datetime.now(tz=timezone.utc),
+                    payload={
+                        "contact_id": contact_id,
+                        "channel": "sms",
+                        "message_body": summary.student_summary,
+                        "message_subject": "Your call summary from Colaberry",
+                        "campaign_name": "",
+                        "summary_only": True,
+                        "summary_call_event_id": call_event_id,
+                    },
+                    rq_queue=None,
+                    rq_job_func=update_ghl_after_vm_message,
+                )
+            logger.info("send_student_summary: handed to the SMS pipeline | call_event_id=%s duplicate=%s",
+                        call_event_id, already is not None)
 
             _record_summary_audit(session, call_event_id, call_id, contact_id)
             complete_job(session, job)
