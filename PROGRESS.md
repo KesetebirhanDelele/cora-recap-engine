@@ -2962,3 +2962,6 @@ Production = `feat/ghl-call-conversation-sync` tip (d624f51 + docs), Hetzner reb
 - Before any bulk GHL field write, tell Kes the contact count and check which published workflows trigger on that field (spec 46); GHL premium usage is only visible in the agency Billing > Usage / Transactions view, not through the API.
 - Look for an existing pipeline before proposing a new GHL field + workflow (the summary text already had one).
 - Synthflow's transfer action speaks its own fixed message on failure; the prompt can only tell the agent how to react after it (inbound item 2 + 4.a).
+
+## 2026-10-29 — Student summary banned-word guard
+Alert: a student-summary email to one lead said "...start exploring it for free". Cause: the summary prompt had no wording rules and no banned-term check (the VM follow-up writer already had both). Fix: `generate_student_summary` now rejects drafts with banned terms (`offer.forbidden_hits`), asks for one rewrite, and blanks the summary (nothing sent) if still banned; the prompt also forbids "free", job/placement claims and other course names. 3 new tests in test_ai_service.py. Deployed to Hetzner. Verify: test call, say yes to summary, mention "free" training; expect no new content alert.

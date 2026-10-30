@@ -24,11 +24,13 @@ Consent gate (enforced here and in the writeback path):
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
 from app.adapters.openai_client import OpenAIClient
 from app.config import Settings, get_settings
+from app.core import offer
 from app.prompts import get_prompt
 from app.schemas.ai import (
     CallAnalysisOutput,
@@ -131,12 +133,29 @@ def generate_student_summary(
     )
 
     messages = entry.build_messages(transcript=transcript)
-    raw = client.chat_completion(
-        messages=messages,
-        model=model,
-        response_format={"type": "json_object"},
-        _retry_delay=0.0 if settings.app_env == "test" else 1.0,
-    )
+    # The summary is sent to the student as a text or email, so it follows the same banned-wording rule as every other
+    # outbound message (a retired course name, an employment claim, the word "free"). One rewrite is allowed; a second
+    # failure blanks the summary so nothing is sent (the send job skips an empty summary).
+    terms = offer.parse_terms(getattr(settings, "offer_forbidden_terms", None))
+    raw: dict = {}
+    for attempt in range(2):
+        raw = client.chat_completion(
+            messages=messages,
+            model=model,
+            response_format={"type": "json_object"},
+            _retry_delay=0.0 if settings.app_env == "test" else 1.0,
+        )
+        hits = offer.forbidden_hits(str(raw.get("student_summary", "")), terms)
+        if not hits:
+            break
+        logger.warning("AI student_summary | draft uses banned wording %s | attempt=%d", hits, attempt + 1)
+        messages = messages + [
+            {"role": "assistant", "content": json.dumps(raw)},
+            {"role": "user", "content": f"That summary was rejected for using banned wording: {', '.join(hits)}. "
+                                        "Rewrite it without those words and return the same JSON."},
+        ]
+    else:
+        raw = {**raw, "student_summary": ""}
 
     return SummaryOutput(
         student_summary=raw.get("student_summary", ""),

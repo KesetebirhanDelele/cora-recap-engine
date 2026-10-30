@@ -379,3 +379,38 @@ def test_openai_client_raises_config_error_without_api_key():
     with pytest.raises(ConfigError, match="OPENAI_API_KEY"):
         client.chat_completion([{"role": "user", "content": "test"}], model="gpt-4o-mini")
     mock_oai.chat.completions.create.assert_not_called()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Banned wording in the student summary (it is texted / emailed to the student)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_LONG = "This is a sufficiently long transcript for the test."
+
+
+def test_summary_with_free_is_rewritten_once():
+    from app.services.ai import generate_student_summary
+    client = MagicMock()
+    client.chat_completion.side_effect = [
+        {"student_summary": "Start exploring it for free.", "summary_offered": True},
+        {"student_summary": "Start exploring at training.colaberry.com/start-free.", "summary_offered": True},
+    ]
+    result = generate_student_summary(_LONG, settings=_settings(), client=client)
+    assert client.chat_completion.call_count == 2
+    assert result.student_summary == "Start exploring at training.colaberry.com/start-free."
+
+
+def test_summary_still_banned_after_rewrite_is_blanked():
+    from app.services.ai import generate_student_summary
+    client = _mock_client({"student_summary": "It is free to start.", "summary_offered": True})
+    result = generate_student_summary(_LONG, settings=_settings(), client=client)
+    assert client.chat_completion.call_count == 2
+    assert result.student_summary == ""
+
+
+def test_summary_clean_text_not_retried():
+    from app.services.ai import generate_student_summary
+    client = _mock_client({"student_summary": "You asked about the program.", "summary_offered": True})
+    result = generate_student_summary(_LONG, settings=_settings(), client=client)
+    assert client.chat_completion.call_count == 1
+    assert result.student_summary == "You asked about the program."
