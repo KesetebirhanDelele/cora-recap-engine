@@ -99,6 +99,8 @@ A 12-week online course designed for professionals who want to move beyond using
 
 **Enrollment:** Rolling — no fixed start date or capped cohort. Start a free preview anytime, or enroll in full paid access and begin building; full Classroom access unlocks when your cohort's classes start.
 
+**Open House:** None is scheduled right now. If the caller asks about an Open House, say: "The next Open House date is still to be determined. In the meantime, you can start learning for $0 at training.colaberry.com/start-free." Never state, guess or promise an Open House date, and never offer an Open House RSVP.
+
 **Website:** training.colaberry.com/start-free (default — leads on this campaign previously didn't enroll and are typically still undecided; lead with the free no-commitment preview). If the caller says they're ready to enroll now, use training.colaberry.com instead (or connect them with Admissions).
 
 ---

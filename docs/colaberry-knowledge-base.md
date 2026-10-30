@@ -33,6 +33,8 @@ The AI Systems Architect Accelerator is built to fit around a full-time job: it 
 
 All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create an account at training.colaberry.com/start-free and begin exploring the material immediately.
 
+**Open House:** No Open House is scheduled right now. If asked, the answer is: "The next Open House date is still to be determined. In the meantime, you can start learning for $0 at training.colaberry.com/start-free." Never state or guess an Open House date, and never offer an Open House RSVP, until the dashboard setting for the next Open House is filled in again.
+
 ---
 
 ## Curriculum

@@ -121,3 +121,16 @@ def test_brand_context_masks_unset_values():
     assert ctx["next_class_start"] == "(none scheduled)"
     assert ctx["next_open_house_date"] == "(none scheduled)"
     assert ctx["live_open_house_link"] == ""
+
+
+def test_override_says_open_house_date_to_be_determined_when_unset():
+    from app.core.schedule_context import build_schedule_block
+    block = build_schedule_block("November 12, 2026", "", "")
+    assert "next Open House date is to be determined" in block
+    assert "start learning for $0" in block
+
+
+def test_no_tbd_wording_when_open_house_is_set():
+    from app.core.schedule_context import build_schedule_block
+    block = build_schedule_block("November 12, 2026", "December 3, 2026", "https://x.test/rsvp")
+    assert "to be determined" not in block

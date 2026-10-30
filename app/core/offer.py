@@ -22,7 +22,8 @@ DEFAULT_OFFER_FACTS = (
     "Two ways to take it: SELF-PACED, with enrollment open all the time so you can start whenever you like "
     "(anyone can start for $0 at {free_url} - no card needed; membership from $149/mo, state that price only if the "
     "lead asks about cost); or LIVE CLASSES, about 4 hours a week of instructor-led sessions on "
-    "Mondays and Thursdays (all recorded) - the Open House is the way to learn about and join the next live class. "
+    "Mondays and Thursdays (all recorded) - the Open House is the way to learn about and join the next live class "
+    "(when no Open House is scheduled, say the next Open House date is to be determined and point to the $0 start link). "
     "Never use the word 'free' (Texas Workforce Commission rule for a licensed career school): say '$0 to start' "
     "and 'no card needed' instead."
 )

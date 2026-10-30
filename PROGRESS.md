@@ -2965,3 +2965,6 @@ Production = `feat/ghl-call-conversation-sync` tip (d624f51 + docs), Hetzner reb
 
 ## 2026-10-29 — Student summary banned-word guard
 Alert: a student-summary email to one lead said "...start exploring it for free". Cause: the summary prompt had no wording rules and no banned-term check (the VM follow-up writer already had both). Fix: `generate_student_summary` now rejects drafts with banned terms (`offer.forbidden_hits`), asks for one rewrite, and blanks the summary (nothing sent) if still banned; the prompt also forbids "free", job/placement claims and other course names. 3 new tests in test_ai_service.py. Deployed to Hetzner. Verify: test call, say yes to summary, mention "free" training; expect no new content alert.
+
+## 2026-10-30 — Open House passed: "date to be determined" wording
+`next_open_house_date` was already empty in production (auto-expired). Email generator's SCHEDULE OVERRIDE now says the next Open House date is to be determined + $0 start link when no Open House is set; offer facts carry the same rule. Repo copies of the cold/warm/inbound Synthflow prompts, GHL conversation-AI prompt and knowledge base gained an Open House line (no dates, no RSVP, no "free"). Kes pastes the voice/chat prompts into Synthflow/GHL by hand. SMS notices unchanged (spec 37: no dates/links). Revert when a new Open House is scheduled.
