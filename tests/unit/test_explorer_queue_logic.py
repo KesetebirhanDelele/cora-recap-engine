@@ -107,6 +107,12 @@ def test_unmapped_stage_writes_no_stage_tag_and_is_counted():
     assert not any(t in L.STAGE_TAGS for t in d.tags_to_add) and d.stage_unmapped
 
 
+def test_unmapped_stage_and_missing_score_never_strip_existing_tags():
+    cur = frozenset({L.TAG_PRIORITY, L.TAG_SOURCE, "ent-stage-new-explorer", "ent-score-high"})
+    d = decide(row(state="mystery", score=None), current_tags=cur, state=L.ContactState(T0))
+    assert d.tags_to_remove == frozenset()
+
+
 # ── Drain (criteria 5, 6) ────────────────────────────────────────────────────
 def test_connected_call_after_tag_drains_priority_only():
     st = L.ContactState(tagged_at=T0)

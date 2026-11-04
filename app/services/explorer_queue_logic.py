@@ -154,9 +154,16 @@ def decide_row(
     current = current_tags or frozenset()
     want = desired_tags(row, stage_map)
     add = frozenset(want - current)
-    # Only stage/band tags are swapped; priority + source are never removed here.
-    remove = frozenset((current & (STAGE_TAGS | BAND_TAGS)) - want)
     stage_unmapped = stage_map.get(row.primary_state or "") not in STAGE_TAGS
+    # Only stage/band tags are swapped; priority + source are never removed here.
+    # A family we have no value for (unmapped stage, missing score) is left alone,
+    # never stripped: "we don't know" must not erase what is already there.
+    managed: set[str] = set()
+    if not stage_unmapped:
+        managed |= STAGE_TAGS
+    if score_band_tag(row.score) is not None:
+        managed |= BAND_TAGS
+    remove = frozenset((current & managed) - want)
 
     score = row.score if row.score is not None and (state is None or state.last_score != row.score) else None
     summary = None
