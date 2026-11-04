@@ -1,0 +1,12 @@
+{
+  "view": "reach_out",
+  "tracked_since": "2026-10-01",
+  "rows": [
+    {"enrollment_id": "e1", "name": "fake_one", "primary_state": "new_explorer", "score": 52, "overlays": [], "reasons": ["viewed 3 cards"], "rsvps": 0, "ghl_url": "https://app.gohighlevel.com/v2/location/LOCA/contacts/detail/CIDONE", "ai_summary": "Opened the portal twice this week and finished one tour."},
+    {"enrollment_id": "e2", "name": "fake_two", "primary_state": "activating", "score": 31, "overlays": [], "reasons": [], "rsvps": 0, "ghl_url": "https://app.gohighlevel.com/v2/location/LOCA/contacts/detail/CIDTWO"},
+    {"enrollment_id": "e3", "name": "fake_three", "primary_state": "active_learner", "score": 12, "overlays": [], "reasons": [], "rsvps": 0, "ghl_url": "https://app.gohighlevel.com/v2/location/LOCA/contacts/detail/CIDTHREE"},
+    {"enrollment_id": "e4", "name": "fake_four", "primary_state": "engaged_learner", "score": 40, "overlays": [], "reasons": [], "rsvps": 0, "ghl_url": null},
+    {"enrollment_id": "e5", "name": "fake_five", "primary_state": "new_explorer", "score": 25, "overlays": [], "reasons": [], "rsvps": 0, "ghl_url": "https://app.gohighlevel.com/v2/location/LOCB/contacts/detail/CIDFIVE"},
+    {"enrollment_id": "e6", "name": "fake_six", "primary_state": "activating", "score": 44, "overlays": [], "reasons": [], "rsvps": 0, "ghl_url": "https://app.gohighlevel.com/v2/location/LOCA/contacts/detail/CIDSIX"}
+  ]
+}

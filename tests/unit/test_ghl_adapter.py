@@ -1029,3 +1029,73 @@ def test_add_contact_tag_propagates_non_retryable_error():
 
     with pytest.raises(GHLError):
         client.add_contact_tag("cid-1", "ai cold leads")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Explorer call queue — remove_contact_tag / create_contact / numeric field write
+# (spec/49)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_remove_contact_tag_shadow_does_not_call_httpx():
+    client, mock_http = _make_client(_settings(ghl_write_mode="shadow"))
+    result = client.remove_contact_tag("cid-1", "ent-priority-call")
+    mock_http.request.assert_not_called()
+    assert result["shadow"] is True
+    assert result["operation"] == "remove_contact_tag"
+    assert result["payload"] == {"tags": ["ent-priority-call"]}
+
+
+def test_remove_contact_tag_live_calls_delete_tags():
+    client, mock_http = _make_client(_live_settings())
+    mock_http.request.return_value = _mock_response(200, {"succeeded": True})
+    client.remove_contact_tag("cid-1", "ent-priority-call")
+    call_args = mock_http.request.call_args
+    assert call_args[0][0] == "DELETE"
+    assert call_args[0][1] == "/contacts/cid-1/tags"
+    assert call_args.kwargs["json"] == {"tags": ["ent-priority-call"]}
+
+
+def test_remove_contact_tag_live_raises_config_error_without_api_key():
+    client, _ = _make_client(_live_settings(ghl_api_key=None))
+    with pytest.raises(ConfigError):
+        client.remove_contact_tag("cid-1", "ent-priority-call")
+
+
+def test_remove_contact_tag_propagates_non_retryable_error():
+    client, mock_http = _make_client(_live_settings())
+    mock_http.request.return_value = _mock_response(400, {"message": "bad"})
+    with pytest.raises(GHLError):
+        client.remove_contact_tag("cid-1", "ent-priority-call")
+
+
+def test_create_contact_shadow_does_not_call_httpx():
+    client, mock_http = _make_client(_settings(ghl_write_mode="shadow"))
+    result = client.create_contact(first_name="fake_one", tags=["ent-test-delete"])
+    mock_http.request.assert_not_called()
+    assert result["shadow"] is True
+    assert result["operation"] == "create_contact"
+
+
+def test_create_contact_live_posts_without_phone_or_email():
+    client, mock_http = _make_client(_live_settings())
+    mock_http.request.return_value = _mock_response(200, {"contact": {"id": "new-1"}})
+    client.create_contact(first_name="fake_one", tags=["ent-test-delete"])
+    call_args = mock_http.request.call_args
+    assert call_args[0][0] == "POST"
+    assert call_args[0][1] == "/contacts/"
+    body = call_args.kwargs["json"]
+    assert body["locationId"] == "loc-123"
+    assert body["firstName"] == "fake_one"
+    assert body["tags"] == ["ent-test-delete"]
+    assert "phone" not in body and "email" not in body
+
+
+def test_update_contact_fields_live_accepts_numeric_value():
+    client, mock_http = _make_client(_live_settings())
+    mock_http.request.return_value = _mock_response(200, {})
+    client.update_contact_fields("cid-1", {"UYv8i2BnHkLOJyhc08mR": 42.5})
+    call_args = mock_http.request.call_args
+    assert call_args[0][0] == "PUT"
+    assert call_args.kwargs["json"] == {
+        "customFields": [{"id": "UYv8i2BnHkLOJyhc08mR", "value": 42.5}]
+    }

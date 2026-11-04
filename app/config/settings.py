@@ -238,6 +238,29 @@ class Settings(BaseSettings):
     # anyone has seen a few days of run history.
     ai_cold_lead_tagging_batch_cap: int = 500
 
+    # ── Explorer call queue tagging (spec/49) ────────────────────────────────
+    # Off by default — deploying must not start tagging real contacts. Checked
+    # in the service layer BEFORE any tag/field write, in addition to (not
+    # instead of) the ghl_write_mode gate. The job never sends SMS/email/calls
+    # and never calls an LLM.
+    explorer_queue_tagging_enabled: bool = False
+    # Per-run safety cap on contacts written (the accelerator feed caps at 200/page).
+    explorer_queue_batch_cap: int = 200
+    # GHL custom-field ids in Cora's location (verified read-only 2026-11-04).
+    # Score: NUMERICAL contact.score. AI Summary: LARGE_TEXT contact.ent_ai_summary.
+    explorer_queue_score_field_id: str = "UYv8i2BnHkLOJyhc08mR"
+    explorer_queue_ai_summary_field_id: str = "3yYPrP3zgbG2J5T1jf83"
+    # AI Campaign checkbox (contact.ai_campaign, CHECKBOX Yes/No) — "Yes" stays off the queue.
+    explorer_queue_ai_campaign_field_id: str = "q4MlGTxSYqHoXfuMm8mW"
+    # Accelerator view feeding Rose's list: reach_out | engaged (open with Ali).
+    explorer_queue_view: str = "reach_out"
+    # JSON object {primary_state: ent-stage-*}. Empty until Ali confirms the mapping;
+    # contacts then get no stage tag and are reported as "stage unmapped".
+    explorer_queue_stage_map: str = "{}"
+    # Fixture feed path. Empty = no feed configured = the scheduled job records "skipped".
+    # Replaced by a live service-token feed when Ali provides one.
+    explorer_queue_feed_path: str = ""
+
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"
     prompt_version_call_analysis: str = "v1"

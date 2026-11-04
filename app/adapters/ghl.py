@@ -617,12 +617,13 @@ class GHLClient:
     def update_contact_fields(
         self,
         contact_id: str,
-        field_updates: dict[str, str],
+        field_updates: dict[str, Any],
         *,
         mode_flags: Any = None,
     ) -> dict:
         """
-        Write custom field values to a GHL contact.
+        Write custom field values to a GHL contact (values may be str or
+        number — NUMERICAL fields such as Score take a number).
 
         Shadow mode (default): logs payload, returns shadow response dict.
         Live mode: calls GHL PUT /contacts/{id} with the field update payload.
@@ -769,6 +770,65 @@ class GHLClient:
             self.settings.validate_for_ghl_writes()
         logger.info("GHL add_contact_tag | contact_id=%s tag=%r", contact_id, tag)
         return self._request("POST", f"/contacts/{contact_id}/tags", json=payload)
+
+    def remove_contact_tag(
+        self,
+        contact_id: str,
+        tag: str,
+        *,
+        mode_flags: Any = None,
+    ) -> dict:
+        """
+        Remove a tag from a GHL contact (spec/49).
+
+        Shadow mode (default): logs payload, returns shadow response dict.
+        Live mode: calls GHL DELETE /contacts/{id}/tags with a JSON body.
+        Removing a tag the contact does not carry is a no-op on GHL's side.
+
+        mode_flags: optional ModeFlags from get_mode_flags(session, settings).
+                    When supplied, overrides settings.ghl_writes_enabled.
+        """
+        payload = self.build_tag_payload([tag])
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
+            return self._shadow_write("remove_contact_tag", contact_id, payload)
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
+        logger.info("GHL remove_contact_tag | contact_id=%s tag=%r", contact_id, tag)
+        return self._request("DELETE", f"/contacts/{contact_id}/tags", json=payload)
+
+    def create_contact(
+        self,
+        *,
+        first_name: str,
+        last_name: str = "",
+        tags: list[str] | None = None,
+        mode_flags: Any = None,
+    ) -> dict:
+        """
+        Create a contact in this client's location (spec/49 — test contacts only).
+
+        Deliberately accepts NO phone and NO email: contacts made here can
+        never be messaged or called by a GHL workflow. Shadow mode (default)
+        logs the payload and returns a shadow dict.
+        """
+        payload: dict[str, Any] = {
+            "locationId": self.settings.ghl_location_id,
+            "firstName": first_name,
+            "lastName": last_name,
+            "tags": list(tags or []),
+        }
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
+            return self._shadow_write("create_contact", "(new)", payload)
+        if mode_flags is not None:
+            self.settings.validate_for_ghl_reads()
+        else:
+            self.settings.validate_for_ghl_writes()
+        logger.info("GHL create_contact | first_name=%r tags=%s", first_name, payload["tags"])
+        return self._request("POST", "/contacts/", json=payload)
 
     # ── Shadow write helper ───────────────────────────────────────────────────
 

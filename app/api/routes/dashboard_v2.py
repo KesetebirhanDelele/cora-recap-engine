@@ -301,6 +301,26 @@ def get_tag_ai_cold_leads_runs(
     return _get_runs(session, limit=limit)
 
 
+@router.get("/explorer-queue")
+def get_explorer_queue(
+    limit: int = Query(default=10, le=100),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """
+    Explorer call queue monitor (spec/49): job switch, queue counts, contacts
+    called at least once but not yet reached, and recent run history.
+    """
+    from app.config import get_settings as _get_settings
+    from app.core.mode_flags import get_mode_flags
+    from app.services.dashboard_metrics import get_explorer_queue_summary as _get
+
+    out = _get(session, limit=limit)
+    flags = get_mode_flags(session, _get_settings())
+    out["job_enabled"] = bool(flags.explorer_queue_tagging_enabled)
+    out["ghl_writes_enabled"] = bool(flags.ghl_writes_enabled)
+    return out
+
+
 @router.get("/intent-calls")
 def get_intent_calls(
     intent: str = Query(..., description="detected_intent value to drill into"),
@@ -1837,6 +1857,7 @@ _ALLOWED_MODE_KEYS = frozenset({
     "outbound_campaigns_paused",
     "cold_lead_campaign_paused",
     "ai_cold_lead_tagging_enabled",
+    "explorer_queue_tagging_enabled",
 })
 
 _BOOL_MODE_KEYS = frozenset({
@@ -1851,6 +1872,7 @@ _BOOL_MODE_KEYS = frozenset({
     "outbound_campaigns_paused",
     "cold_lead_campaign_paused",
     "ai_cold_lead_tagging_enabled",
+    "explorer_queue_tagging_enabled",
 })
 
 

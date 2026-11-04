@@ -1673,6 +1673,91 @@ def get_ai_cold_lead_tagging_runs(session: Session, limit: int = 10) -> dict[str
     }
 
 
+def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limit: int = 100) -> dict[str, Any]:
+    """
+    Explorer call queue tile data (spec/49): recent runs, queue counts, and the
+    contacts still on the queue that have been called at least once since the
+    tag was written (all non-connected, since a connected call drains them).
+
+    Empty tables return zeros / empty lists, not an error.
+    """
+    def _iso(v: Any) -> str | None:
+        if v is None:
+            return None
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
+
+    runs = session.execute(text("""
+        SELECT id, started_at, finished_at, status, dry_run, view, rows_fetched,
+               contacts_tagged, contacts_already_tagged, contacts_untagged,
+               skipped_no_ghl_url, skipped_ai_campaign, skipped_no_access,
+               contacts_failed, error_message
+        FROM explorer_queue_runs
+        ORDER BY started_at DESC
+        LIMIT :limit
+    """), {"limit": limit}).fetchall()
+
+    open_rows = session.execute(text("""
+        SELECT c.ghl_contact_id, c.ghl_location_id, c.last_score, c.last_stage_tag,
+               c.last_score_band_tag, c.tagged_at,
+               COUNT(q.id) AS attempts, MAX(q.call_time) AS last_attempt
+        FROM explorer_queue_contacts c
+        LEFT JOIN staff_call_quality q
+               ON q.ghl_contact_id = c.ghl_contact_id AND q.call_time > c.tagged_at
+        WHERE c.drained_at IS NULL
+        GROUP BY c.ghl_contact_id, c.ghl_location_id, c.last_score, c.last_stage_tag,
+                 c.last_score_band_tag, c.tagged_at
+    """)).fetchall()
+    drained = session.execute(text(
+        "SELECT COUNT(*) FROM explorer_queue_contacts WHERE drained_at IS NOT NULL"
+    )).scalar() or 0
+
+    attempted = sorted(
+        (r for r in open_rows if (r.attempts or 0) > 0),
+        key=lambda r: (-(r.attempts or 0), -(r.last_score or 0)),
+    )[:attempted_limit]
+
+    return {
+        "queue": {
+            "in_queue": len(open_rows),
+            "never_called": sum(1 for r in open_rows if not r.attempts),
+            "called_not_reached": sum(1 for r in open_rows if r.attempts),
+            "drained_after_connected_call": int(drained),
+        },
+        "attempted": [
+            {
+                "ghl_contact_id": r.ghl_contact_id,
+                "ghl_location_id": r.ghl_location_id,
+                "score": r.last_score,
+                "stage_tag": r.last_stage_tag,
+                "attempts": int(r.attempts),
+                "last_attempt": _iso(r.last_attempt),
+                "tagged_at": _iso(r.tagged_at),
+            }
+            for r in attempted
+        ],
+        "runs": [
+            {
+                "id": r.id,
+                "started_at": _iso(r.started_at),
+                "finished_at": _iso(r.finished_at),
+                "status": r.status,
+                "dry_run": bool(r.dry_run),
+                "view": r.view,
+                "rows_fetched": r.rows_fetched,
+                "contacts_tagged": r.contacts_tagged,
+                "contacts_already_tagged": r.contacts_already_tagged,
+                "contacts_untagged": r.contacts_untagged,
+                "skipped_no_ghl_url": r.skipped_no_ghl_url,
+                "skipped_ai_campaign": r.skipped_ai_campaign,
+                "skipped_no_access": r.skipped_no_access,
+                "contacts_failed": r.contacts_failed,
+                "error_message": r.error_message,
+            }
+            for r in runs
+        ],
+    }
+
+
 # ── Recent Calls / Sales Queue ────────────────────────────────────────────────
 
 # Intent → base sales score (0-100).  Used to rank leads in the sales queue.

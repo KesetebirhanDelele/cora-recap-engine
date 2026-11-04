@@ -1,0 +1,60 @@
+{
+  "view": "reach_out",
+  "tracked_since": "2026-11-04",
+  "rows": [
+    {
+      "enrollment_id": "test-fake_one",
+      "name": "fake_one",
+      "primary_state": "new_explorer",
+      "score": 52,
+      "overlays": [],
+      "reasons": [],
+      "rsvps": 0,
+      "ghl_url": "https://app.gohighlevel.com/v2/location/ttBtJmxoLwjf18lIvvVD/contacts/detail/677nMb71xk6lLv9oDBxv",
+      "ai_summary": "Opened the portal twice this week and finished one tour. Asked about start dates."
+    },
+    {
+      "enrollment_id": "test-fake_two",
+      "name": "fake_two",
+      "primary_state": "activating",
+      "score": 31,
+      "overlays": [],
+      "reasons": [],
+      "rsvps": 0,
+      "ghl_url": "https://app.gohighlevel.com/v2/location/ttBtJmxoLwjf18lIvvVD/contacts/detail/3LtL2yGkwbb0uKG1lr0L",
+      "ai_summary": "Signed up 5 days ago, viewed 3 cards, no call yet."
+    },
+    {
+      "enrollment_id": "test-fake_three",
+      "name": "fake_three",
+      "primary_state": "active_learner",
+      "score": 12,
+      "overlays": [],
+      "reasons": [],
+      "rsvps": 0,
+      "ghl_url": "https://app.gohighlevel.com/v2/location/ttBtJmxoLwjf18lIvvVD/contacts/detail/iEpEAqjtYS6RxEBJ1kdS"
+    },
+    {
+      "enrollment_id": "test-fake_four",
+      "name": "fake_four",
+      "primary_state": "engaged_learner",
+      "score": 44,
+      "overlays": [],
+      "reasons": [],
+      "rsvps": 0,
+      "ghl_url": "https://app.gohighlevel.com/v2/location/ttBtJmxoLwjf18lIvvVD/contacts/detail/xZjMcKmliG2qSu2Cp2wK",
+      "ai_summary": "Active every day this week; strongest candidate for a call."
+    },
+    {
+      "enrollment_id": "test-fake_five",
+      "name": "fake_five",
+      "primary_state": "new_explorer",
+      "score": 25,
+      "overlays": [],
+      "reasons": [],
+      "rsvps": 0,
+      "ghl_url": "https://app.gohighlevel.com/v2/location/ttBtJmxoLwjf18lIvvVD/contacts/detail/OWiamqCiBubDH7WiFPYh",
+      "ai_summary": "Joined Monday, one login. Borderline score."
+    }
+  ]
+}

@@ -566,6 +566,49 @@ export interface TagAiColdLeadsRunsResponse {
   runs: TagAiColdLeadsRun[];
 }
 
+// ── Explorer call queue (spec/49) ─────────────────────────────────────────────
+
+export interface ExplorerQueueRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "completed" | "failed" | "skipped";
+  dry_run: boolean;
+  view: string | null;
+  rows_fetched: number;
+  contacts_tagged: number;
+  contacts_already_tagged: number;
+  contacts_untagged: number;
+  skipped_no_ghl_url: number;
+  skipped_ai_campaign: number;
+  skipped_no_access: number;
+  contacts_failed: number;
+  error_message: string | null;
+}
+
+export interface ExplorerQueueAttempted {
+  ghl_contact_id: string;
+  ghl_location_id: string;
+  score: number | null;
+  stage_tag: string | null;
+  attempts: number;
+  last_attempt: string | null;
+  tagged_at: string | null;
+}
+
+export interface ExplorerQueueResponse {
+  job_enabled: boolean;
+  ghl_writes_enabled: boolean;
+  queue: {
+    in_queue: number;
+    never_called: number;
+    called_not_reached: number;
+    drained_after_connected_call: number;
+  };
+  attempted: ExplorerQueueAttempted[];
+  runs: ExplorerQueueRun[];
+}
+
 // ── Recent Calls ──────────────────────────────────────────────────────────────
 
 export interface RecentCallRow {

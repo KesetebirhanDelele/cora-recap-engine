@@ -66,6 +66,10 @@ class ModeFlags:
     # radius than the one-off writes that flag already guards, so this stays
     # off even if ghl_write_mode is already live for other write paths.
     ai_cold_lead_tagging_enabled: bool
+    # Dedicated gate for the Explorer call queue tagging job (spec/49) — checked
+    # in the service layer BEFORE any tag/field write. Independent of
+    # ghl_write_mode, same reasoning as ai_cold_lead_tagging_enabled. Default off.
+    explorer_queue_tagging_enabled: bool
 
     @property
     def ghl_writes_enabled(self) -> bool:
@@ -86,6 +90,7 @@ class ModeFlags:
             "outbound_campaigns_paused": self.outbound_campaigns_paused,
             "cold_lead_campaign_paused": self.cold_lead_campaign_paused,
             "ai_cold_lead_tagging_enabled": self.ai_cold_lead_tagging_enabled,
+            "explorer_queue_tagging_enabled": self.explorer_queue_tagging_enabled,
             # derived
             "ghl_writes_enabled": self.ghl_writes_enabled,
         }
@@ -153,6 +158,10 @@ def get_mode_flags(session: Session, settings: Settings) -> ModeFlags:
             "ai_cold_lead_tagging_enabled", session, settings,
             fallback=getattr(settings, "ai_cold_lead_tagging_enabled", False),
         )
+        explorer_queue_tagging_enabled = get_bool(
+            "explorer_queue_tagging_enabled", session, settings,
+            fallback=getattr(settings, "explorer_queue_tagging_enabled", False),
+        )
     except Exception:
         logger.warning(
             "get_mode_flags: DB read failed — using safe shadow defaults",
@@ -173,6 +182,7 @@ def get_mode_flags(session: Session, settings: Settings) -> ModeFlags:
         outbound_campaigns_paused=outbound_campaigns_paused,
         cold_lead_campaign_paused=cold_lead_campaign_paused,
         ai_cold_lead_tagging_enabled=ai_cold_lead_tagging_enabled,
+        explorer_queue_tagging_enabled=explorer_queue_tagging_enabled,
     )
 
 
@@ -193,6 +203,7 @@ def _safe_shadow_defaults() -> ModeFlags:
         # Opposite default from the flags above: for this flag, "safe" means
         # "don't run the bulk-tagging job at all," not "run it but shadow."
         ai_cold_lead_tagging_enabled=False,
+        explorer_queue_tagging_enabled=False,
     )
 
 

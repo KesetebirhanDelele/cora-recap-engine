@@ -38,6 +38,7 @@ import type {
   SaveSettingsResponse,
   StaffCallQualityResponse,
   TagAiColdLeadsRunsResponse,
+  ExplorerQueueResponse,
   VoicePerformanceResponse,
   WebhookFailuresResponse,
   WorkerActivityResponse,
@@ -385,6 +386,12 @@ export async function fetchTagAiColdLeadsRuns(limit?: number): Promise<TagAiCold
   const params: Record<string, string> = {};
   if (limit) params.limit = String(limit);
   return get<TagAiColdLeadsRunsResponse>("/dashboard/tag-ai-cold-leads/runs", params);
+}
+
+export async function fetchExplorerQueue(limit?: number): Promise<ExplorerQueueResponse> {
+  const params: Record<string, string> = {};
+  if (limit) params.limit = String(limit);
+  return get<ExplorerQueueResponse>("/dashboard/explorer-queue", params);
 }
 
 export async function fetchIntentCalls(options: {
