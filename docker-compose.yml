@@ -1,9 +1,18 @@
+# Log rotation for every container (disk hygiene, 2026-11-05): json-file logs were unbounded
+# (pgbouncer reached 1.8 GB). Each container keeps at most 3 files x 10 MB = 30 MB.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
 
   # ── Postgres ─────────────────────────────────────────────────────────────────
   # Persistent storage. Named volume survives container restarts and upgrades.
   # Credentials come from .env via compose variable substitution — never hardcoded.
   postgres:
+    logging: *default-logging
     image: postgres:16
     environment:
       POSTGRES_USER: ${POSTGRES_USERNAME:-postgres}
@@ -21,6 +30,7 @@ services:
   # ── Redis ─────────────────────────────────────────────────────────────────────
   # Ephemeral queue broker. No persistence needed — job state lives in Postgres.
   redis:
+    logging: *default-logging
     image: redis:7
     restart: unless-stopped
     healthcheck:
@@ -36,6 +46,7 @@ services:
   # Listens on :5432 internally. App services use pgbouncer:5432 in DATABASE_URL.
   # migrate and adminer connect directly to postgres:5432 (bypass pooler).
   pgbouncer:
+    logging: *default-logging
     image: edoburu/pgbouncer:latest
     environment:
       DB_HOST: postgres
@@ -63,6 +74,7 @@ services:
   # Connects directly to postgres:5432 — bypasses PgBouncer for DDL safety.
   # All services that touch the DB depend on this completing successfully.
   migrate:
+    logging: *default-logging
     build: .
     command: alembic upgrade head
     env_file:
@@ -79,6 +91,7 @@ services:
   # --workers 2 matches a 2-vCPU Hetzner CX22. Adjust for larger VMs.
   # No --reload in production. Source code is baked into the image.
   api:
+    logging: *default-logging
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports:
@@ -103,6 +116,7 @@ services:
   # Read-heavy + operator actions. Isolated from webhook ingestion on port 8000.
   # CORS origin is controlled by ALLOW_ORIGINS in .env.
   dashboard-api:
+    logging: *default-logging
     build: .
     command: uvicorn app.api.dashboard_main:app --host 0.0.0.0 --port 8001 --workers 2
     ports:
@@ -127,6 +141,7 @@ services:
   # Next.js production build. DASHBOARD_API_URL and WS_URL baked in at build time
   # via next.config.js env block — set these in .env before building.
   frontend:
+    logging: *default-logging
     build:
       context: ./dashboard-ui
       dockerfile: Dockerfile
@@ -145,6 +160,7 @@ services:
   # Owns the Postgres scheduler loop — only this role runs it (no duplicate enqueues).
   # Scale: docker compose up --scale worker-default=3
   worker-default:
+    logging: *default-logging
     build: .
     command: python -m app.worker.main
     env_file:
@@ -169,6 +185,7 @@ services:
   # Isolated so OpenAI latency never blocks voicemail tier scheduling.
   # Scale: docker compose up --scale worker-ai=3
   worker-ai:
+    logging: *default-logging
     build: .
     command: python -m app.worker.main
     env_file:
@@ -193,6 +210,7 @@ services:
   # GHL and Synthflow API calls. 2 replicas matches practical GHL rate limits.
   # Scale: docker compose up --scale worker-callbacks=2
   worker-callbacks:
+    logging: *default-logging
     build: .
     command: python -m app.worker.main
     env_file:
@@ -216,6 +234,7 @@ services:
   # Handles failed job retries in isolation — retry storms never crowd out
   # live traffic on the default or callbacks queues.
   worker-retries:
+    logging: *default-logging
     build: .
     command: python -m app.worker.main
     env_file:
@@ -240,6 +259,7 @@ services:
   # worker-default and backed up call processing (spec/29). Isolated here so a
   # slow scan never delays process_call_event / voicemail tiers / the scheduler.
   worker-quality:
+    logging: *default-logging
     build: .
     command: python -m app.worker.main
     env_file:
@@ -270,6 +290,7 @@ services:
   # port down to 127.0.0.1 is a separate, later step once it's confirmed
   # nothing external still needs it directly.
   caddy:
+    logging: *default-logging
     image: caddy:2-alpine
     ports:
       - "80:80"
@@ -287,6 +308,7 @@ services:
   # Login: System=PostgreSQL, Server=postgres, Username/Password/Database from .env
   # WARNING: bind to 127.0.0.1 or put behind auth if server is publicly accessible.
   adminer:
+    logging: *default-logging
     image: adminer:4
     ports:
       - "127.0.0.1:8080:8080"

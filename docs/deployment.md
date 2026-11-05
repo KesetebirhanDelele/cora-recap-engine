@@ -172,6 +172,20 @@ docker compose logs -f worker-default
 
 ---
 
+
+### 3.5 Disk hygiene (added 2026-11-05)
+
+On 2026-11-05 the server was 84% full; 44 GB was unused Docker build cache left by past `--build` deploys.
+Prevent a repeat:
+
+- **Container logs are capped** in `docker-compose.yml` (`x-logging`): 3 files x 10 MB = 30 MB per container.
+  Takes effect when a container is recreated (`docker compose up -d`).
+- **Weekly trim**: `scripts/server_disk_hygiene.sh` removes build cache older than 7 days and dangling images.
+  Install the cron line shown at the top of the script once per server. It never touches volumes, the
+  database, the system journal or backups.
+- Check any time with `df -h /` and `docker system df`.
+- Database dumps in `/root/backups` live on the same disk. Copy them off the server for real protection.
+
 ## Step 4 — Updating the Application
 
 For every subsequent code deploy:
