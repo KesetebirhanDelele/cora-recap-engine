@@ -156,3 +156,11 @@ def test_shadow_ghl_mode_records_dry_run_and_no_state(session):
     r, _ = run(session, fl=flags(enabled=True, writes=False))
     assert r.dry_run is True
     assert session.scalars(select(ExplorerQueueContact)).all() == []
+
+
+def test_worker_entrypoints_exist_with_the_names_main_imports():
+    # Regression: a bad rename once left start_explorer_queue_sync undefined, so the
+    # nightly job was never scheduled on worker startup (found in production 2026-11-05).
+    from app.worker.jobs import explorer_queue_jobs as j
+    assert callable(j.explorer_queue_sync_job) and callable(j.start_explorer_queue_sync)
+    assert j._JOB_TYPE == "explorer_queue_sync"

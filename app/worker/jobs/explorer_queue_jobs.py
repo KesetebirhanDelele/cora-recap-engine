@@ -98,7 +98,7 @@ def _reschedule(session: Session) -> None:
     logger.debug("explorer_queue_sync: rescheduled in %ds", _SCHEDULE_INTERVAL_SECONDS)
 
 
-def start_explorer_queue_syncner() -> None:
+def start_explorer_queue_sync() -> None:
     """Enqueue the first explorer_queue_sync job. Call once from worker startup."""
     from app.db import get_sync_session
     from app.worker.scheduler import schedule_job
@@ -112,7 +112,7 @@ def start_explorer_queue_syncner() -> None:
 
         if existing:
             logger.info(
-                "start_explorer_queue_syncner: job already pending (id=%s) — skipping", existing[0],
+                "start_explorer_queue_sync: job already pending (id=%s) — skipping", existing[0],
             )
             return
 
@@ -125,4 +125,4 @@ def start_explorer_queue_syncner() -> None:
             payload={"_scheduled_by": "startup"},
         )
         session.commit()
-        logger.info("start_explorer_queue_syncner: job enqueued")
+        logger.info("start_explorer_queue_sync: job enqueued")
