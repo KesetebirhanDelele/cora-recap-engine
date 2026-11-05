@@ -114,11 +114,49 @@ def test_unmapped_stage_and_missing_score_never_strip_existing_tags():
 
 
 # ── Drain (criteria 5, 6) ────────────────────────────────────────────────────
-def test_connected_call_after_tag_drains_priority_only():
+def test_connected_call_after_tag_adds_exit_tag_and_never_removes_priority():
     st = L.ContactState(tagged_at=T0)
     d = decide(state=st, last_connected_call_time=T0 + timedelta(hours=5))
-    assert d.action == L.DRAIN and d.tags_to_remove == {L.TAG_PRIORITY}
-    assert L.TAG_SOURCE not in d.tags_to_remove
+    assert d.action == L.EXIT and d.exit_reason == "connected_call"
+    assert d.tags_to_add == {L.TAG_OUT_CONNECTED}
+    assert d.tags_to_remove == frozenset()  # the filter hides it; the tag stays
+
+
+@pytest.mark.parametrize("tag,reason", [
+    ("ent-out-not-interested", "not_interested"),
+    ("ent-out-enrolled", "enrolled"),
+    ("ent-out-wrong-number", "wrong_number"),
+])
+def test_rose_outcome_tag_exits_with_reason_and_no_ghl_write(tag, reason):
+    cur = frozenset({L.TAG_PRIORITY, L.TAG_SOURCE, tag})
+    d = decide(current_tags=cur, state=L.ContactState(tagged_at=T0))
+    assert d.action == L.EXIT and d.exit_reason == reason and not d.writes
+
+
+def test_callback_tag_blocks_connected_call_exit_and_sets_hold():
+    cur = frozenset({L.TAG_PRIORITY, L.TAG_SOURCE, L.TAG_OUT_CALLBACK, "ent-stage-new-explorer", "ent-score-high"})
+    d = decide(current_tags=cur, state=L.ContactState(T0, last_score=52),
+               last_connected_call_time=T0 + timedelta(hours=5))
+    assert d.action != L.EXIT and d.callback_hold is True
+    assert d.tags_to_remove == frozenset() and L.TAG_OUT_CONNECTED not in d.tags_to_add
+
+
+def test_outcome_tag_wins_over_callback_tag():
+    cur = frozenset({L.TAG_OUT_CALLBACK, "ent-out-enrolled"})
+    d = decide(current_tags=cur, state=L.ContactState(tagged_at=T0))
+    assert d.action == L.EXIT and d.exit_reason == "enrolled"
+
+
+def test_exit_tag_not_re_added_when_already_present():
+    cur = frozenset({L.TAG_PRIORITY, L.TAG_OUT_CONNECTED})
+    ex = L.decide_exit(L.ContactState(tagged_at=T0), cur, T0 + timedelta(hours=1))
+    assert ex == ("connected_call", frozenset())
+
+
+def test_reconcile_never_touches_exit_tags():
+    cur = frozenset({L.TAG_PRIORITY, L.TAG_SOURCE, L.TAG_OUT_CALLBACK, "ent-stage-new-explorer", "ent-score-mid"})
+    d = decide(row(score=45), current_tags=cur, state=L.ContactState(T0, last_score=30))
+    assert d.tags_to_remove == {"ent-score-mid"}  # only the band swaps
 
 
 def test_connected_call_before_tag_does_not_drain():
@@ -130,8 +168,8 @@ def test_no_connected_call_means_no_drain():  # busy / no-answer / voicemail nev
     assert not L.decide_drain(L.ContactState(tagged_at=T0), None)
 
 
-def test_drained_contact_not_retagged_even_if_back_in_feed():
-    st = L.ContactState(tagged_at=T0, drained_at=T0 + timedelta(days=1))
+def test_exited_contact_not_touched_even_if_back_in_feed():
+    st = L.ContactState(tagged_at=T0, drained_at=T0 + timedelta(days=1), exit_reason="connected_call")
     d = decide(state=st, last_connected_call_time=T0 + timedelta(hours=5))
     assert d.action == L.SKIP_DRAINED and not d.writes
 

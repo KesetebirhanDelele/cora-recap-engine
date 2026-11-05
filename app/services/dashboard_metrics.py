@@ -1698,18 +1698,20 @@ def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limi
 
     open_rows = session.execute(text("""
         SELECT c.ghl_contact_id, c.ghl_location_id, c.last_score, c.last_stage_tag,
-               c.last_score_band_tag, c.tagged_at,
+               c.last_score_band_tag, c.tagged_at, c.callback_hold,
                COUNT(q.id) AS attempts, MAX(q.call_time) AS last_attempt
         FROM explorer_queue_contacts c
         LEFT JOIN staff_call_quality q
                ON q.ghl_contact_id = c.ghl_contact_id AND q.call_time > c.tagged_at
         WHERE c.drained_at IS NULL
         GROUP BY c.ghl_contact_id, c.ghl_location_id, c.last_score, c.last_stage_tag,
-                 c.last_score_band_tag, c.tagged_at
+                 c.last_score_band_tag, c.tagged_at, c.callback_hold
     """)).fetchall()
-    drained = session.execute(text(
-        "SELECT COUNT(*) FROM explorer_queue_contacts WHERE drained_at IS NOT NULL"
-    )).scalar() or 0
+    exit_rows = session.execute(text(
+        "SELECT COALESCE(exit_reason, 'unknown') AS reason, COUNT(*) AS n "
+        "FROM explorer_queue_contacts WHERE drained_at IS NOT NULL GROUP BY exit_reason"
+    )).fetchall()
+    exits = {r.reason: int(r.n) for r in exit_rows}
 
     attempted = sorted(
         (r for r in open_rows if (r.attempts or 0) > 0),
@@ -1721,8 +1723,10 @@ def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limi
             "in_queue": len(open_rows),
             "never_called": sum(1 for r in open_rows if not r.attempts),
             "called_not_reached": sum(1 for r in open_rows if r.attempts),
-            "drained_after_connected_call": int(drained),
+            "callback_pending": sum(1 for r in open_rows if r.callback_hold),
+            "exited": sum(exits.values()),
         },
+        "exits": exits,
         "attempted": [
             {
                 "ghl_contact_id": r.ghl_contact_id,

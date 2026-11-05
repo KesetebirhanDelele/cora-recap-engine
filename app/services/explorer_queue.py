@@ -12,6 +12,10 @@ Modes
            require ghl_write_mode=live (otherwise the client logs shadow writes and
            the run is recorded as dry_run).
 
+Exit rule: the job never deletes a contact and never removes ent-priority-call. A contact
+leaves Rose's list because her Smart List filter excludes the ent-out- tags; after a connected
+call the job ADDS ent-out-connected-call (unless Rose set ent-out-callback or an outcome tag).
+
 No SMS / email / call sending and no LLM calls anywhere in this module.
 """
 from __future__ import annotations
@@ -153,7 +157,7 @@ def run_explorer_queue_cycle(
 
         def to_logic_state(st: Any) -> L.ContactState | None:
             return None if st is None else L.ContactState(
-                tagged_at=st.tagged_at, drained_at=st.drained_at,
+                tagged_at=st.tagged_at, drained_at=st.drained_at, exit_reason=st.exit_reason,
                 last_score=st.last_score, last_summary_hash=st.last_summary_hash,
             )
 
@@ -180,20 +184,39 @@ def run_explorer_queue_cycle(
             pairs.append((row, d))
             decisions.append(d)
 
-        for cid, st in states.items():
-            if cid in feed_ids or st.drained_at is not None:
+        # Contacts we tagged earlier that are no longer in the feed can still exit
+        # (connected call, or Rose's outcome tag), so read their tags and decide.
+        for cid, st in list(states.items()):
+            if cid in feed_ids or st.drained_at is not None or st.ghl_location_id != allowed_location:
                 continue
-            if L.decide_drain(to_logic_state(st), last_connected.get(cid)):
+            try:
+                tags, _ai = _read_contact(lookup(cid), settings.explorer_queue_ai_campaign_field_id)
+            except Exception as exc:
+                failed += 1
+                logger.warning("explorer_queue: could not read contact_id=%s: %s", cid, exc)
+                continue
+            exit_ = L.decide_exit(to_logic_state(st), tags, last_connected.get(cid))
+            callback = L.TAG_OUT_CALLBACK in tags
+            if exit_ is not None:
+                reason, add_tags = exit_
                 d = L.Decision(
-                    L.DRAIN, contact_id=cid, location_id=st.ghl_location_id,
-                    tags_to_remove=frozenset({L.TAG_PRIORITY}), reason="connected call after tag write (not in feed)",
+                    L.EXIT, contact_id=cid, location_id=st.ghl_location_id, tags_to_add=add_tags,
+                    exit_reason=reason, reason=f"exit: {reason} (not in feed)",
                 )
-                pairs.append((None, d))
-                decisions.append(d)
+            else:
+                d = L.Decision(L.ALREADY, contact_id=cid, location_id=st.ghl_location_id,
+                               callback_hold=callback, reason="not in feed; left alone")
+            pairs.append((None, d))
+            decisions.append(d)
 
         if will_write:
             for row, d in pairs:
-                if not d.writes and d.action != L.TAG_NEW:
+                st = states.get(d.contact_id)
+                # State-only change: remember whether Rose has the contact on callback hold.
+                if st is not None and d.action in (L.ALREADY, L.RECONCILE) and st.callback_hold != d.callback_hold:
+                    st.callback_hold = d.callback_hold
+                    st.updated_at = now
+                if not d.writes and d.action not in (L.TAG_NEW, L.EXIT):
                     continue
                 try:
                     _apply_decision(client, d, settings, mode_flags)
@@ -201,9 +224,17 @@ def run_explorer_queue_cycle(
                     failed += 1
                     logger.warning("explorer_queue: write failed contact_id=%s: %s", d.contact_id, exc)
                     continue
-                st = states.get(d.contact_id)
-                if d.action == L.DRAIN and st is not None:
+                if d.action == L.EXIT:
+                    if st is None:  # Rose's outcome tag on a contact we never tagged
+                        st = ExplorerQueueContact(
+                            ghl_contact_id=d.contact_id, ghl_location_id=d.location_id,
+                            enrollment_id=row.enrollment_id if row else None, tagged_at=now,
+                        )
+                        session.add(st)
+                        states[d.contact_id] = st
                     st.drained_at = now
+                    st.exit_reason = d.exit_reason
+                    st.callback_hold = False
                     st.updated_at = now
                 elif d.action in (L.TAG_NEW, L.RECONCILE) and row is not None:
                     if st is None:
@@ -213,6 +244,7 @@ def run_explorer_queue_cycle(
                         )
                         session.add(st)
                         states[d.contact_id] = st
+                    st.callback_hold = d.callback_hold
                     st.last_score = row.score if d.write_score is not None else st.last_score
                     if d.write_summary is not None:
                         st.last_summary_hash = L.summary_hash(d.write_summary)

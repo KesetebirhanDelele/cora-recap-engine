@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -22,9 +22,10 @@ def _session():
     return sessionmaker(bind=engine)()
 
 
-def _contact(s, cid, score, drained=False):
+def _contact(s, cid, score, drained=False, reason="connected_call", hold=False):
     s.add(ExplorerQueueContact(ghl_contact_id=cid, ghl_location_id="L", tagged_at=T0, last_score=score,
-                               drained_at=T0 + timedelta(days=1) if drained else None))
+                               drained_at=T0 + timedelta(days=1) if drained else None,
+                               exit_reason=reason if drained else None, callback_hold=hold))
 
 
 def _call(s, cid, when, connected=False):
@@ -34,7 +35,9 @@ def _call(s, cid, when, connected=False):
 
 def test_empty_tables_return_zeros():
     out = get_explorer_queue_summary(_session())
-    assert out["queue"] == {"in_queue": 0, "never_called": 0, "called_not_reached": 0, "drained_after_connected_call": 0}
+    assert out["queue"] == {"in_queue": 0, "never_called": 0, "called_not_reached": 0,
+                            "callback_pending": 0, "exited": 0}
+    assert out["exits"] == {}
     assert out["attempted"] == [] and out["runs"] == []
 
 
@@ -44,6 +47,8 @@ def test_counts_and_attempted_list():
     _contact(s, "tried_twice", 30)
     _contact(s, "tried_once", 60)
     _contact(s, "done", 40, drained=True)
+    _contact(s, "no", 10, drained=True, reason="not_interested")
+    _contact(s, "cb", 20, hold=True)
     _call(s, "tried_twice", T0 + timedelta(hours=1))
     _call(s, "tried_twice", T0 + timedelta(hours=2))
     _call(s, "tried_once", T0 + timedelta(hours=3))
@@ -51,5 +56,7 @@ def test_counts_and_attempted_list():
     _call(s, "done", T0 + timedelta(hours=1), True)
     s.commit()
     out = get_explorer_queue_summary(s)
-    assert out["queue"] == {"in_queue": 3, "never_called": 1, "called_not_reached": 2, "drained_after_connected_call": 1}
+    assert out["queue"] == {"in_queue": 4, "never_called": 2, "called_not_reached": 2,
+                            "callback_pending": 1, "exited": 2}
+    assert out["exits"] == {"connected_call": 1, "not_interested": 1}
     assert [(a["ghl_contact_id"], a["attempts"]) for a in out["attempted"]] == [("tried_twice", 2), ("tried_once", 1)]

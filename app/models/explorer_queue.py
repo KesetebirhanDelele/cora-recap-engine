@@ -53,7 +53,11 @@ class ExplorerQueueContact(Base):
     ghl_location_id: Mapped[str] = mapped_column(String(64), nullable=False)
     enrollment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tagged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    drained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # = exited_at
+    # Why the contact left the queue: connected_call | not_interested | enrolled | wrong_number.
+    exit_reason: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    # True while Rose has ent-out-callback on the contact (kept on the list on purpose).
+    callback_hold: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     last_stage_tag: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_score_band_tag: Mapped[str | None] = mapped_column(String(40), nullable=True)
     last_score: Mapped[float | None] = mapped_column(Float, nullable=True)

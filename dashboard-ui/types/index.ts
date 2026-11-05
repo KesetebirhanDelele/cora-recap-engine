@@ -603,8 +603,10 @@ export interface ExplorerQueueResponse {
     in_queue: number;
     never_called: number;
     called_not_reached: number;
-    drained_after_connected_call: number;
+    callback_pending: number;
+    exited: number;
   };
+  exits: Record<string, number>;
   attempted: ExplorerQueueAttempted[];
   runs: ExplorerQueueRun[];
 }

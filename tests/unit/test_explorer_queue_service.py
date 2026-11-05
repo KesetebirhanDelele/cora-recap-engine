@@ -126,21 +126,57 @@ def test_ai_campaign_contact_is_skipped(session):
     assert all(a.args[0] != "CIDTWO" for a in c.add_contact_tag.call_args_list)
 
 
-def test_connected_call_after_tag_drains_and_is_not_retagged(session):
+def test_connected_call_adds_exit_tag_keeps_priority_and_is_not_repeated(session):
     run(session)
     add_call(session, "CIDONE", T0 + timedelta(hours=6), connected=True)
     add_call(session, "CIDTWO", T0 + timedelta(hours=6), connected=False)  # no-answer: stays
     tags = ["ent-priority-call", "ent-src-campus-ranking"]
     r, c = run(session, lookup=lambda cid: {"contact": {"tags": tags}}, now=T0 + timedelta(days=1))
-    removed = [(a.args[0], a.args[1]) for a in c.remove_contact_tag.call_args_list if a.args[1] == "ent-priority-call"]
-    assert removed == [("CIDONE", "ent-priority-call")]
+    added = [(a.args[0], a.args[1]) for a in c.add_contact_tag.call_args_list if a.args[1].startswith("ent-out-")]
+    assert added == [("CIDONE", "ent-out-connected-call")]
+    assert not any(a.args[1] == "ent-priority-call" for a in c.remove_contact_tag.call_args_list)  # never removed
     assert r.contacts_untagged == 1
     st = session.get(ExplorerQueueContact, "CIDONE")
-    assert st.drained_at is not None and session.get(ExplorerQueueContact, "CIDTWO").drained_at is None
-    # third night: drained contact is skipped, never re-tagged
+    assert st.drained_at is not None and st.exit_reason == "connected_call"
+    assert session.get(ExplorerQueueContact, "CIDTWO").drained_at is None
+    # next night: nothing added again (a human who removes the exit tag is not overridden)
     r3, c3 = run(session, lookup=lambda cid: {"contact": {"tags": tags}}, now=T0 + timedelta(days=2))
     assert r3.contacts_untagged == 0
-    assert all(a.args[0] != "CIDONE" for a in c3.add_contact_tag.call_args_list)
+    assert not any(a.args[0] == "CIDONE" and a.args[1].startswith("ent-out-") for a in c3.add_contact_tag.call_args_list)
+
+
+def test_rose_outcome_tag_records_reason_without_any_ghl_write_for_that_contact(session):
+    run(session)
+    def lookup(cid):
+        extra = ["ent-out-not-interested"] if cid == "CIDTHREE" else []
+        return {"contact": {"tags": ["ent-priority-call", "ent-src-campus-ranking", *extra]}}
+    r, c = run(session, lookup=lookup, now=T0 + timedelta(days=1))
+    assert session.get(ExplorerQueueContact, "CIDTHREE").exit_reason == "not_interested"
+    assert all(a.args[0] != "CIDTHREE" for a in c.add_contact_tag.call_args_list)
+    assert all(a.args[0] != "CIDTHREE" for a in c.remove_contact_tag.call_args_list)
+
+
+def test_callback_tag_keeps_contact_despite_connected_call_and_sets_hold(session):
+    run(session)
+    add_call(session, "CIDTWO", T0 + timedelta(hours=6), connected=True)
+    def lookup(cid):
+        extra = ["ent-out-callback"] if cid == "CIDTWO" else []
+        return {"contact": {"tags": ["ent-priority-call", "ent-src-campus-ranking", *extra]}}
+    r, c = run(session, lookup=lookup, now=T0 + timedelta(days=1))
+    st = session.get(ExplorerQueueContact, "CIDTWO")
+    assert st.drained_at is None and st.callback_hold is True
+    assert all(not (a.args[0] == "CIDTWO" and a.args[1] == "ent-out-connected-call") for a in c.add_contact_tag.call_args_list)
+
+
+def test_contact_missing_from_feed_still_exits_after_connected_call(session):
+    run(session)
+    session.add(ExplorerQueueContact(ghl_contact_id="GHOST", ghl_location_id="LOCA", tagged_at=T0))
+    session.commit()
+    add_call(session, "GHOST", T0 + timedelta(hours=6), connected=True)
+    tags = ["ent-priority-call"]
+    r, c = run(session, lookup=lambda cid: {"contact": {"tags": tags}}, now=T0 + timedelta(days=1))
+    assert ("GHOST", "ent-out-connected-call") in [(a.args[0], a.args[1]) for a in c.add_contact_tag.call_args_list]
+    assert session.get(ExplorerQueueContact, "GHOST").exit_reason == "connected_call"
 
 
 def test_one_failing_write_does_not_stop_the_batch(session):

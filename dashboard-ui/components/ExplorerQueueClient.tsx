@@ -40,7 +40,7 @@ function RunRow({ run }: { run: ExplorerQueueRun }) {
       </span>
       <span style={{ color: "#374151" }}>
         {run.rows_fetched} fetched · {run.contacts_tagged} tagged · {run.contacts_already_tagged} already tagged ·{" "}
-        {run.contacts_untagged} removed after call · {skipped} skipped
+        {run.contacts_untagged} left the list · {skipped} skipped
         {run.contacts_failed > 0 && ` · ${run.contacts_failed} failed`}
       </span>
       {run.error_message && <span style={{ color: run.status === "failed" ? "#dc2626" : "#64748b", fontSize: "0.75rem" }}>— {run.error_message}</span>}
@@ -76,12 +76,20 @@ export default function ExplorerQueueClient() {
         <StatTile label="On Rose's list now" value={String(data.queue.in_queue)} />
         <StatTile label="Never called yet" value={String(data.queue.never_called)} />
         <StatTile label="Called at least once, not reached" value={String(data.queue.called_not_reached)} />
-        <StatTile label="Removed after a connected call" value={String(data.queue.drained_after_connected_call)} />
+        <StatTile label="Callback pending (kept on list)" value={String(data.queue.callback_pending)} />
+        <StatTile label="Left the list (see reasons below)" value={String(data.queue.exited)} />
       </div>
       <p style={{ fontSize: "0.8rem", color: stale && data.job_enabled ? "#dc2626" : "#64748b", margin: "0 0 1.25rem" }}>
         Job switch: <strong>{sw}</strong> · Last run: {lastRun ? timeAgo(lastRun.started_at) : "never"}
         {stale && data.job_enabled && " — no run in the last 36 hours, check the worker"}
       </p>
+
+      {data.queue.exited > 0 && (
+        <p style={{ fontSize: "0.8rem", color: "#475569", margin: "-0.75rem 0 1.25rem" }}>
+          Left the list because:{" "}
+          {Object.entries(data.exits).map(([k, n]) => `${k.replace(/_/g, " ")} ${n}`).join(" · ")}
+        </p>
+      )}
 
       <h2 style={{ fontSize: "0.95rem", fontWeight: 700, color: "#1e293b", margin: "0 0 0.75rem" }}>Called at least once, still on the list</h2>
       {data.attempted.length === 0 ? (

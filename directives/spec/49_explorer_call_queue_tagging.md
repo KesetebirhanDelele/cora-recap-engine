@@ -24,6 +24,8 @@
 
 10. **Second GHL column: `ent_AI_Summary`** (added by Kes on Ali's request, so Rose reads a short journey summary before calling). Verified read-only 2026-11-04: key `contact.ent_ai_summary`, type LARGE_TEXT, id `3yYPrP3zgbG2J5T1jf83`. Not to be confused with the existing `Student Summary` field (`contact.student_summary`), which belongs to the SMS pipeline and is never touched here. **Who writes the summary text is OPEN (asked of Ali).** Default until answered: the job writes only text supplied by the feed (no summary in the feed -> field left blank). **The job does not generate the text with an LLM** (cost; see Must-nots) unless Kes explicitly approves a separate, capped step.
 
+11. **Exit by filter, never by deletion (Kes, 2026-11-05).** Leads in GHL are never deleted, and the job never removes `ent-priority-call`. A contact leaves Rose's list only because her Smart List filter (**has `ent-priority-call` AND has none of the `ent-out-` tags**) stops matching. Tags: `ent-out-connected-call` (added by the job after a connected call that came after the queue tag was written), and applied by Rose by hand: `ent-out-not-interested`, `ent-out-enrolled`, `ent-out-wrong-number` (leave for good; the job only records the reason) and `ent-out-callback` (stays on the list; a connected call does NOT add the exit tag). An outcome tag wins over `ent-out-callback`. The job never re-adds an exit tag once a contact has exited, so a human who removes it keeps the contact on the list. This replaces the earlier "remove the queue tag" wording from Ali; tell him. The only tag removals the job makes are stage/band swaps. Run-ledger column `contacts_untagged` now means "contacts that left the queue this run". `drained_at` means "exited at"; `exit_reason` and `callback_hold` added in migration 0032.
+
 **Still open (do not assume):**
 - Ali: who produces the `ent_AI_Summary` text (his feed, or us)? Feed payload documented so far has no summary field; `reasons[]` is the nearest thing.
 - Ali: which GHL sub-accounts the queue's contacts live in, and where Rose's Smart List sits (our key covers one location).
@@ -109,10 +111,10 @@ anything touching Eventbrite or `rsvps`; any sending.
 4. Reconcile: a contact whose score moves mid -> high ends with
    `ent-score-high` and without `ent-score-mid`; a stage change swaps the stage
    tag. `ent-src-campus-ranking` and `ent-priority-call` are untouched by a swap.
-5. Drain: `ent-priority-call` is removed from a contact that has a
+5. Exit (supersedes the removal wording, see decision 11): `ent-out-connected-call` is ADDED (and `ent-priority-call` is NOT removed) for a contact that has a
    `staff_call_quality` row with `call_connected = true` and `call_time` **after**
    the time the job wrote the tag, by any staff member. `ent-src-campus-ranking`
-   stays. A non-connected call (busy / no-answer / voicemail) does **not** drain.
+   stays. A non-connected call (busy / no-answer / voicemail) does **not** exit the contact; neither does a connected call while `ent-out-callback` is on the contact.
 6. A drained contact is not re-tagged on the next run while the call stays
    newer than the tag write (otherwise the queue refills itself).
 7. Second run on the same day: tags zero new contacts, reports them as

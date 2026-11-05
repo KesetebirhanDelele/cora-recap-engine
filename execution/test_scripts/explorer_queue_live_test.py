@@ -14,6 +14,8 @@ Usage (from repo root):
     python execution/test_scripts/explorer_queue_live_test.py apply      # tag + Score + AI Summary
     python execution/test_scripts/explorer_queue_live_test.py verify     # read back from GHL
     python execution/test_scripts/explorer_queue_live_test.py fakecall <name>   # fake connected call (local DB only), then re-run apply
+    python execution/test_scripts/explorer_queue_live_test.py rosetag <name> <tag>   # play Rose: add an ent-out-* tag
+    python execution/test_scripts/explorer_queue_live_test.py setscore <name> <n>    # change a score in the test feed
     python execution/test_scripts/explorer_queue_live_test.py ids        # list ids for manual cleanup
 """
 from __future__ import annotations
@@ -158,6 +160,26 @@ def cmd_fakecall(name: str) -> None:
     print(f"fake connected call recorded in LOCAL ledger for {name} ({cid}). Production call records untouched.")
 
 
+def cmd_rosetag(name: str, tag: str) -> None:
+    """Simulate Rose applying an outcome tag by hand. Only ent-out-* tags, only on our fake contacts."""
+    if not tag.startswith("ent-out-"):
+        sys.exit("only ent-out-* tags can be applied with this command")
+    ids = _load_ids()
+    client = GHLClient()
+    _guard(client, ids)
+    client.add_contact_tag(ids[name], tag, mode_flags=FLAGS_LIVE)
+    print(f"added {tag} to {name}")
+
+
+def cmd_setscore(name: str, score: float) -> None:
+    feed = json.loads(FEED_FILE.read_text(encoding="utf-8"))
+    for r in feed["rows"]:
+        if r["name"] == name:
+            r["score"] = score
+    FEED_FILE.write_text(json.dumps(feed, indent=2), encoding="utf-8")
+    print(f"feed score for {name} set to {score}")
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "create":
@@ -168,6 +190,10 @@ def main() -> None:
         cmd_verify()
     elif cmd == "fakecall" and len(sys.argv) > 2:
         cmd_fakecall(sys.argv[2])
+    elif cmd == "rosetag" and len(sys.argv) > 3:
+        cmd_rosetag(sys.argv[2], sys.argv[3])
+    elif cmd == "setscore" and len(sys.argv) > 3:
+        cmd_setscore(sys.argv[2], float(sys.argv[3]))
     elif cmd == "ids":
         print(json.dumps(_load_ids(), indent=2))
     else:
