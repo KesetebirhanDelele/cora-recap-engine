@@ -1,10 +1,12 @@
-# Log rotation for every container (disk hygiene, 2026-11-05): json-file logs were unbounded
-# (pgbouncer reached 1.8 GB). Each container keeps at most 3 files x 10 MB = 30 MB.
+# Container logs go to the host's systemd journal (changed 2026-11-05 from capped json-file).
+# Why: json-file logs are deleted whenever a container is recreated (every deploy) and the 10 MB x 3
+# cap held only days for the busy containers. The journal survives redeploys and is searchable:
+#   journalctl CONTAINER_NAME=cora-recap-engine-worker-default-2 --since "1 month ago"
+# Retention is set on the HOST (/etc/systemd/journald.conf.d/cora.conf: SystemMaxUse=8G); see docs/deployment.md 3.5.
 x-logging: &default-logging
-  driver: json-file
+  driver: journald
   options:
-    max-size: "10m"
-    max-file: "3"
+    tag: "{{.Name}}"
 
 services:
 

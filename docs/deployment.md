@@ -178,8 +178,13 @@ docker compose logs -f worker-default
 On 2026-11-05 the server was 84% full; 44 GB was unused Docker build cache left by past `--build` deploys.
 Prevent a repeat:
 
-- **Container logs are capped** in `docker-compose.yml` (`x-logging`): 3 files x 10 MB = 30 MB per container.
-  Takes effect when a container is recreated (`docker compose up -d`).
+- **Container logs go to the host's systemd journal** (`x-logging` in `docker-compose.yml`, driver `journald`),
+  so they survive redeploys (json-file logs are deleted when a container is recreated). Search a month back with
+  `journalctl CONTAINER_NAME=cora-recap-engine-worker-default-2 --since "1 month ago"`; `docker logs <name>` still works.
+  Host setting (once per server) in `/etc/systemd/journald.conf.d/cora.conf`:
+  `SystemMaxUse=8G` and `RateLimitIntervalSec=0` (journald's default rate limit can drop bursts). No time-based
+  retention is set, so older system logs are kept until the size cap is reached. Measured 2026-11-05: all containers
+  together write about 6 MB/day when quiet; one month should be well under 2 GB.
 - **Weekly trim**: `scripts/server_disk_hygiene.sh` removes build cache older than 7 days and dangling images.
   Install the cron line shown at the top of the script once per server. It never touches volumes, the
   database, the system journal or backups.
