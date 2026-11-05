@@ -3001,3 +3001,5 @@ Supersedes the json-file cap described in the 2026-11-05 (night) disk-hygiene en
 - New rule: a tagged contact absent from a *complete* feed (non-empty and below the 200 cap) gets `ent-out-left-queue` (exit_reason `left_feed`); it overrides callback, a connected-call/outcome tag keeps its own reason. Rose's Smart List filter must now hide FIVE tags: not-interested, enrolled, wrong-number, connected-call, left-queue.
 - Verified: explorer tests pass (+9 new); full suite 2187 pass, same 7 pre-existing unrelated failures. Ali's 20-row sample through the logic offline: 16 would be tagged (9 doing-work, 4 started, 3 not-started, all with why-now text), 3 skipped no link, 1 skipped other sub-account.
 - Not done: deploy, live feed (Ali's blocker).
+
+**Deployed 2026-11-05** (commit c130710, pushed to feat/ghl-call-conversation-sync, Hetzner rebuilt, no migration). The server `.env` carried an old test `EXPLORER_QUEUE_STAGE_MAP` that overrode the new default; that line was removed so the code default (Ali's buckets) applies. Nightly job still runs on the fake test feed.
