@@ -200,3 +200,24 @@ def test_worker_entrypoints_exist_with_the_names_main_imports():
     from app.worker.jobs import explorer_queue_jobs as j
     assert callable(j.explorer_queue_sync_job) and callable(j.start_explorer_queue_sync)
     assert j._JOB_TYPE == "explorer_queue_sync"
+
+
+def test_tagged_contact_missing_from_feed_gets_left_queue_tag(session):
+    run(session)
+    session.add(ExplorerQueueContact(ghl_contact_id="GONE", ghl_location_id="LOCA", tagged_at=T0))
+    session.commit()
+    r, c = run(session, lookup=lambda cid: {"contact": {"tags": ["ent-priority-call"]}}, now=T0 + timedelta(days=1))
+    assert ("GONE", "ent-out-left-queue") in [(a.args[0], a.args[1]) for a in c.add_contact_tag.call_args_list]
+    assert not any(a.args[1] == "ent-priority-call" for a in c.remove_contact_tag.call_args_list)
+    assert session.get(ExplorerQueueContact, "GONE").exit_reason == "left_feed"
+
+
+def test_left_queue_rule_is_skipped_when_feed_is_at_the_cap(session):
+    run(session)
+    session.add(ExplorerQueueContact(ghl_contact_id="GONE", ghl_location_id="LOCA", tagged_at=T0))
+    session.commit()
+    # cap 6 == fixture size: the list may be truncated, so absence proves nothing
+    r, c = run(session, st=settings(explorer_queue_batch_cap=6),
+               lookup=lambda cid: {"contact": {"tags": ["ent-priority-call"]}}, now=T0 + timedelta(days=1))
+    assert session.get(ExplorerQueueContact, "GONE").exit_reason is None
+    assert not any(a.args[0] == "GONE" for a in c.add_contact_tag.call_args_list)

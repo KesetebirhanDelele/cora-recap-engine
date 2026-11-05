@@ -254,9 +254,13 @@ class Settings(BaseSettings):
     explorer_queue_ai_campaign_field_id: str = "q4MlGTxSYqHoXfuMm8mW"
     # Accelerator view feeding Rose's list: reach_out | engaged (open with Ali).
     explorer_queue_view: str = "reach_out"
-    # JSON object {primary_state: ent-stage-*}. Empty until Ali confirms the mapping;
-    # contacts then get no stage tag and are reported as "stage unmapped".
-    explorer_queue_stage_map: str = "{}"
+    # JSON {primary_state: ent-stage-*}; Ali's buckets (2026-11-05). CONVERTED never reaches us.
+    # ent_AI_Summary column was renamed ent_Why_Now (same id): filled from the feed's `reasons`.
+    explorer_queue_stage_map: str = (
+        '{"NOT_STARTED":"ent-stage-not-started","NEW_EXPLORER":"ent-stage-started",'
+        '"ACTIVATING":"ent-stage-started","ACTIVE_LEARNER":"ent-stage-doing-work",'
+        '"ENGAGED_LEARNER":"ent-stage-doing-work","CONNECTED_TO_COMMUNITY":"ent-stage-doing-work"}'
+    )
     # Fixture feed path. Empty = no feed configured = the scheduled job records "skipped".
     # Replaced by a live service-token feed when Ali provides one.
     explorer_queue_feed_path: str = ""

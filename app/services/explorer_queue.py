@@ -161,6 +161,9 @@ def run_explorer_queue_cycle(
                 last_score=st.last_score, last_summary_hash=st.last_summary_hash,
             )
 
+        # Only trust "vanished from the feed" when the feed looks complete: non-empty and
+        # below the row cap (a capped or empty answer must never mass-exit the queue).
+        feed_complete = 0 < len(result.rows) < settings.explorer_queue_batch_cap
         feed_ids: set[str] = set()
         pairs: list[tuple[FeedRow | None, L.Decision]] = []
         for row in result.rows:
@@ -195,7 +198,7 @@ def run_explorer_queue_cycle(
                 failed += 1
                 logger.warning("explorer_queue: could not read contact_id=%s: %s", cid, exc)
                 continue
-            exit_ = L.decide_exit(to_logic_state(st), tags, last_connected.get(cid))
+            exit_ = L.decide_exit(to_logic_state(st), tags, last_connected.get(cid), left_feed=feed_complete)
             callback = L.TAG_OUT_CALLBACK in tags
             if exit_ is not None:
                 reason, add_tags = exit_

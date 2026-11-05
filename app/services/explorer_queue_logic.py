@@ -21,7 +21,10 @@ from app.services.explorer_queue_feed import FeedRow
 # ── Tags ──────────────────────────────────────────────────────────────────────
 TAG_PRIORITY = "ent-priority-call"      # the one tag Rose's Smart List filters on
 TAG_SOURCE = "ent-src-campus-ranking"   # provenance; never removed
+# Ali's 3 reachable buckets (2026-11-05). The older 4 names stay in the set only so a
+# contact tagged before the change has its old stage tag swapped out, not left behind.
 STAGE_TAGS = frozenset({
+    "ent-stage-not-started", "ent-stage-started", "ent-stage-doing-work",
     "ent-stage-new-explorer", "ent-stage-activating",
     "ent-stage-active-learner", "ent-stage-engaged-learner",
 })
@@ -39,6 +42,10 @@ OUT_TERMINAL_TAGS = {
     "ent-out-wrong-number": "wrong_number",
 }
 REASON_CONNECTED = "connected_call"
+# Added by the job when a tagged contact is no longer in the accelerator's list (enrolled
+# people vanish from it). Hidden by Rose's Smart List filter like the other ent-out- tags.
+TAG_OUT_LEFT_QUEUE = "ent-out-left-queue"
+REASON_LEFT_FEED = "left_feed"
 
 # Mapping primary_state -> stage tag is NOT decided (open with Ali). Until it is
 # supplied, no stage tag is written and the row is counted as "stage unmapped".
@@ -67,9 +74,20 @@ def score_band_tag(score: float | None) -> str | None:
     return "ent-score-low"
 
 
+def lookup_stage(stage_map: StageMap, primary_state: str | None) -> str | None:
+    """Case-insensitive lookup (the accelerator sends UPPERCASE states)."""
+    if not primary_state:
+        return None
+    want = primary_state.strip().upper()
+    for k, v in stage_map.items():
+        if k.strip().upper() == want:
+            return v
+    return None
+
+
 def desired_tags(row: FeedRow, stage_map: StageMap) -> set[str]:
     tags = {TAG_PRIORITY, TAG_SOURCE}
-    stage = stage_map.get(row.primary_state or "")
+    stage = lookup_stage(stage_map, row.primary_state)
     if stage in STAGE_TAGS:
         tags.add(stage)
     band = score_band_tag(row.score)
@@ -142,22 +160,26 @@ def decide_exit(
     state: ContactState | None,
     current_tags: frozenset[str] | None,
     last_connected_call_time: datetime | None,
+    left_feed: bool = False,
 ) -> tuple[str, frozenset[str]] | None:
     """Return (exit_reason, tags_to_add) when a contact should leave the queue, else None.
 
     1. Rose applied a terminal outcome tag -> exit, reason from the tag, no GHL write
        needed (her filter already hides it).
-    2. Rose applied ent-out-callback -> never exit on a connected call (stays on the list).
-    3. Connected call after the queue tag was written -> add ent-out-connected-call.
+    2. Connected call after the queue tag was written -> add ent-out-connected-call,
+       unless Rose applied ent-out-callback (stays on the list).
+    3. Contact vanished from a complete feed -> add ent-out-left-queue (beats callback).
     """
     tags = current_tags or frozenset()
     for tag, reason in OUT_TERMINAL_TAGS.items():
         if tag in tags:
             return reason, frozenset()
-    if TAG_OUT_CALLBACK in tags:
-        return None
-    if decide_drain(state, last_connected_call_time):
+    if TAG_OUT_CALLBACK not in tags and decide_drain(state, last_connected_call_time):
         return REASON_CONNECTED, frozenset({TAG_OUT_CONNECTED}) if TAG_OUT_CONNECTED not in tags else frozenset()
+    if left_feed:
+        # Overrides callback: someone who vanished may have enrolled; calling them is the
+        # worst outcome. Caller must only set this when the feed looks complete.
+        return REASON_LEFT_FEED, (frozenset() if TAG_OUT_LEFT_QUEUE in tags else frozenset({TAG_OUT_LEFT_QUEUE}))
     return None
 
 
@@ -194,7 +216,7 @@ def decide_row(
     current = current_tags or frozenset()
     want = desired_tags(row, stage_map)
     add = frozenset(want - current)
-    stage_unmapped = stage_map.get(row.primary_state or "") not in STAGE_TAGS
+    stage_unmapped = lookup_stage(stage_map, row.primary_state) not in STAGE_TAGS
     # Only stage/band tags are swapped; priority + source are never removed here.
     # A family we have no value for (unmapped stage, missing score) is left alone,
     # never stripped: "we don't know" must not erase what is already there.
@@ -207,8 +229,9 @@ def decide_row(
 
     score = row.score if row.score is not None and (state is None or state.last_score != row.score) else None
     summary = None
-    if row.ai_summary and (state is None or state.last_summary_hash != summary_hash(row.ai_summary)):
-        summary = row.ai_summary  # never overwritten with blank
+    why = row.why_now
+    if why and (state is None or state.last_summary_hash != summary_hash(why)):
+        summary = why  # never overwritten with blank
 
     if state is None:
         action = TAG_NEW

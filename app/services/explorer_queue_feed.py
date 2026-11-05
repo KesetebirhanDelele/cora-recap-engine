@@ -34,6 +34,14 @@ class FeedRow:
     # Not in the payload Ali documented as of 2026-11-03 — optional until he says who writes it.
     ai_summary: str | None = None
 
+    @property
+    def why_now(self) -> str | None:
+        """Text for the ent_Why_Now column: an explicit summary if the feed ever sends one,
+        otherwise the accelerator's deterministic `reasons` (no LLM involved)."""
+        if self.ai_summary:
+            return self.ai_summary
+        return "; ".join(self.reasons) if self.reasons else None
+
 
 @dataclass(frozen=True)
 class FeedResult:

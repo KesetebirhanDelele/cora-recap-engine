@@ -219,3 +219,53 @@ def test_module_imports_no_sender_or_llm(rel):
         elif isinstance(n, ast.ImportFrom):
             names.append(n.module or "")
     assert not [x for x in names if any(f in x.lower() for f in FORBIDDEN)], names
+
+
+# ── Ali's 2026-11-05 answers: UPPERCASE states, 3 buckets, why-now text, left-feed exit ──
+ALI_MAP = {
+    "NOT_STARTED": "ent-stage-not-started", "NEW_EXPLORER": "ent-stage-started",
+    "ACTIVATING": "ent-stage-started", "ACTIVE_LEARNER": "ent-stage-doing-work",
+    "ENGAGED_LEARNER": "ent-stage-doing-work", "CONNECTED_TO_COMMUNITY": "ent-stage-doing-work",
+}
+
+
+@pytest.mark.parametrize("state,tag", [
+    ("NOT_STARTED", "ent-stage-not-started"), ("NEW_EXPLORER", "ent-stage-started"),
+    ("ACTIVATING", "ent-stage-started"), ("ACTIVE_LEARNER", "ent-stage-doing-work"),
+    ("ENGAGED_LEARNER", "ent-stage-doing-work"), ("CONNECTED_TO_COMMUNITY", "ent-stage-doing-work"),
+    ("active_learner", "ent-stage-doing-work"),  # case-insensitive
+])
+def test_ali_state_maps_to_bucket_tag(state, tag):
+    assert tag in decide(row(state=state), stage_map=ALI_MAP).tags_to_add
+
+
+def test_converted_or_unknown_state_gets_no_stage_tag_and_strips_nothing():
+    cur = frozenset({L.TAG_PRIORITY, "ent-stage-started"})
+    d = decide(row(state="CONVERTED"), stage_map=ALI_MAP, current_tags=cur, state=L.ContactState(T0))
+    assert d.stage_unmapped and "ent-stage-started" not in d.tags_to_remove
+
+
+def test_old_stage_tag_is_swapped_for_new_bucket():
+    cur = frozenset({L.TAG_PRIORITY, "ent-stage-new-explorer"})
+    d = decide(row(state="NEW_EXPLORER"), stage_map=ALI_MAP, current_tags=cur, state=L.ContactState(T0))
+    assert d.tags_to_remove == {"ent-stage-new-explorer"} and "ent-stage-started" in d.tags_to_add
+
+
+def test_why_now_uses_reasons_when_no_summary():
+    r = FeedRow("e", "n", "u", "NOT_STARTED", 1.0, reasons=("Completed 22 assignments", "Active today"))
+    assert r.why_now == "Completed 22 assignments; Active today"
+    assert FeedRow("e", "n", "u", None, 1.0).why_now is None
+    d = decide(FeedRow("e", "n", row().ghl_url, "NOT_STARTED", 1.0, reasons=("Completed 22 assignments", "Active today")))
+    assert d.write_summary == "Completed 22 assignments; Active today"
+
+
+def test_left_feed_adds_out_tag_even_with_callback_but_not_when_feed_incomplete():
+    st = L.ContactState(tagged_at=T0)
+    ex = L.decide_exit(st, frozenset({L.TAG_PRIORITY}), None, left_feed=True)
+    assert ex == ("left_feed", frozenset({"ent-out-left-queue"}))
+    ex = L.decide_exit(st, frozenset({L.TAG_OUT_CALLBACK}), None, left_feed=True)
+    assert ex is not None and ex[0] == "left_feed"
+    assert L.decide_exit(st, frozenset({L.TAG_PRIORITY}), None, left_feed=False) is None
+    # a terminal tag still wins; a connected call keeps its own reason
+    assert L.decide_exit(st, frozenset({"ent-out-enrolled"}), None, left_feed=True)[0] == "enrolled"
+    assert L.decide_exit(st, frozenset(), T0 + timedelta(hours=1), left_feed=True)[0] == "connected_call"
