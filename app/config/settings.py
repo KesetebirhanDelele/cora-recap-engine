@@ -264,6 +264,10 @@ class Settings(BaseSettings):
     # Fixture feed path. Empty = no feed configured = the scheduled job records "skipped".
     # Replaced by a live service-token feed when Ali provides one.
     explorer_queue_feed_path: str = ""
+    # Live feed (Ali, 2026-11-06). Token env var is CORA_SERVICE_TOKEN (placed on the server by
+    # Ali, never printed). While explorer_queue_feed_path is set it takes precedence.
+    explorer_queue_feed_url: str = ""
+    cora_service_token: str = ""
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"

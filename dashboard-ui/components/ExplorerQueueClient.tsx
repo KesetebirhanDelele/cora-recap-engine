@@ -121,6 +121,41 @@ export default function ExplorerQueueClient() {
         </table>
       )}
 
+      {lastRun?.feed_capped && (
+        <p style={{ fontSize: "0.8rem", color: "#b45309", margin: "0 0 1.25rem" }}>
+          The last pull returned the maximum of {lastRun.rows_fetched} rows, so more leads exist than we can see until paging is added.
+        </p>
+      )}
+
+      <h2 style={{ fontSize: "0.95rem", fontWeight: 700, color: "#1e293b", margin: "0 0 0.75rem" }}>Leads we could not tag (report to Ali)</h2>
+      {Object.values(data.skipped ?? {}).every((l) => l.length === 0) ? (
+        <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: "1.25rem", textAlign: "center" as const, color: "#94a3b8", fontSize: "0.85rem", marginBottom: "1.25rem" }}>
+          Nothing skipped in the last run.
+        </div>
+      ) : (
+        <table style={{ width: "100%", fontSize: "0.82rem", background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, borderCollapse: "collapse", marginBottom: "1.25rem" }}>
+          <thead>
+            <tr style={{ textAlign: "left" as const, color: "#64748b" }}>
+              <th style={{ padding: "0.5rem 0.75rem" }}>Why</th><th>Rank</th><th>Score</th><th>State</th><th>Enrollment id</th><th>Lead id</th>
+            </tr>
+          </thead>
+          <tbody>
+            {Object.entries(data.skipped).flatMap(([reason, list]) =>
+              list.map((s, i) => (
+                <tr key={`${reason}-${i}`} style={{ borderTop: "1px solid #f1f5f9" }}>
+                  <td style={{ padding: "0.5rem 0.75rem" }}>{reason === "no_ghl_contact" ? "No GHL contact" : "Wrong sub-account"}</td>
+                  <td>{s.rank ?? "—"}</td>
+                  <td>{s.score ?? "—"}</td>
+                  <td>{s.primary_state ?? "—"}</td>
+                  <td>{s.enrollment_id ?? "—"}</td>
+                  <td>{s.lead_id ?? "—"}</td>
+                </tr>
+              )),
+            )}
+          </tbody>
+        </table>
+      )}
+
       <h2 style={{ fontSize: "0.95rem", fontWeight: 700, color: "#1e293b", margin: "0 0 0.75rem" }}>Recent runs</h2>
       {data.runs.length === 0 ? (
         <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 8, padding: "2rem", textAlign: "center" as const, color: "#94a3b8", fontSize: "0.875rem" }}>

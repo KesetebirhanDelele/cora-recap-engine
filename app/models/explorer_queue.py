@@ -39,6 +39,8 @@ class ExplorerQueueRun(Base):
     skipped_ai_campaign: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     skipped_no_access: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     contacts_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # True when the feed returned as many rows as we asked for (more may exist; no paging yet).
+    feed_capped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     def __repr__(self) -> str:
@@ -68,3 +70,27 @@ class ExplorerQueueContact(Base):
 
     def __repr__(self) -> str:
         return f"<ExplorerQueueContact {self.ghl_contact_id!r} drained={self.drained_at is not None}>"
+
+
+class ExplorerQueueSkip(Base):
+    """A feed row the job could not tag, kept so it can be reported back to Ali (one set per run).
+
+    reason: no_ghl_contact (ghl_url empty/malformed) | wrong_subaccount (contact lives in a
+    sub-account Cora cannot write to). The live feed has no name/email, so the report is keyed by
+    enrollment_id / lead_id / rank.
+    """
+    __tablename__ = "explorer_queue_skips"
+    __table_args__ = (Index("idx_explorer_queue_skips_run", "run_id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    reason: Mapped[str] = mapped_column(String(30), nullable=False)
+    enrollment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lead_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    primary_state: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ghl_location_id: Mapped[str | None] = mapped_column(String(64), nullable=True)  # wrong_subaccount only
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

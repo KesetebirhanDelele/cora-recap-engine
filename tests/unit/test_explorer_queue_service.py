@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from app.models.base import Base
-from app.models.explorer_queue import ExplorerQueueContact, ExplorerQueueRun
+from app.models.explorer_queue import ExplorerQueueContact, ExplorerQueueRun, ExplorerQueueSkip
 from app.models.staff_call_quality import StaffCallQuality
 from app.services.explorer_queue import run_explorer_queue_cycle
 from app.services.explorer_queue_feed import FixtureFeed
@@ -26,7 +26,7 @@ AI_FIELD = "AIFIELD"
 def session():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(
-        engine, tables=[ExplorerQueueRun.__table__, ExplorerQueueContact.__table__, StaffCallQuality.__table__]
+        engine, tables=[ExplorerQueueRun.__table__, ExplorerQueueContact.__table__, ExplorerQueueSkip.__table__, StaffCallQuality.__table__]
     )
     with sessionmaker(bind=engine)() as s:
         yield s

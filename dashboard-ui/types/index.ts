@@ -583,7 +583,17 @@ export interface ExplorerQueueRun {
   skipped_ai_campaign: number;
   skipped_no_access: number;
   contacts_failed: number;
+  feed_capped: boolean;
   error_message: string | null;
+}
+
+export interface ExplorerQueueSkippedRow {
+  enrollment_id: string | null;
+  lead_id: string | null;
+  rank: number | null;
+  score: number | null;
+  primary_state: string | null;
+  ghl_location_id: string | null;
 }
 
 export interface ExplorerQueueAttempted {
@@ -607,6 +617,7 @@ export interface ExplorerQueueResponse {
     exited: number;
   };
   exits: Record<string, number>;
+  skipped: Record<string, ExplorerQueueSkippedRow[]>;
   attempted: ExplorerQueueAttempted[];
   runs: ExplorerQueueRun[];
 }

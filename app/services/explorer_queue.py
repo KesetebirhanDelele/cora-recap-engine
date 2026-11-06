@@ -88,7 +88,7 @@ def run_explorer_queue_cycle(
     now: datetime | None = None,
 ) -> "ExplorerQueueRun":  # noqa: F821
     from app.core.mode_flags import get_mode_flags
-    from app.models.explorer_queue import ExplorerQueueContact, ExplorerQueueRun
+    from app.models.explorer_queue import ExplorerQueueContact, ExplorerQueueRun, ExplorerQueueSkip
     from app.models.staff_call_quality import StaffCallQuality
 
     if mode not in ("dry", "apply"):
@@ -255,6 +255,21 @@ def run_explorer_queue_cycle(
                     st.last_score_band_tag = next((t for t in d.tags_to_add if t in L.BAND_TAGS), st.last_score_band_tag)
                     st.updated_at = now
 
+        # Report-back list for Ali: rows we could not tag, split by why (recorded in dry runs too).
+        for row, d in pairs:
+            if row is None or d.action not in (L.SKIP_NO_URL, L.SKIP_NO_ACCESS):
+                continue
+            session.add(ExplorerQueueSkip(
+                id=str(uuid.uuid4()), run_id=run.id,
+                reason="no_ghl_contact" if d.action == L.SKIP_NO_URL else "wrong_subaccount",
+                enrollment_id=row.enrollment_id, lead_id=row.lead_id, rank=row.rank, score=row.score,
+                primary_state=row.primary_state,
+                ghl_location_id=d.location_id if d.action == L.SKIP_NO_ACCESS else None,
+            ))
+        run.feed_capped = len(result.rows) >= settings.explorer_queue_batch_cap
+        if run.feed_capped:
+            logger.warning("explorer_queue: feed returned %d rows (= the limit); more may exist, "
+                           "so 'left the feed' exits are off this run", len(result.rows))
         counts = L.summarize(decisions)
         run.rows_fetched = len(result.rows)
         run.contacts_tagged = counts.tagged

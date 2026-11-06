@@ -1690,7 +1690,7 @@ def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limi
         SELECT id, started_at, finished_at, status, dry_run, view, rows_fetched,
                contacts_tagged, contacts_already_tagged, contacts_untagged,
                skipped_no_ghl_url, skipped_ai_campaign, skipped_no_access,
-               contacts_failed, error_message
+               contacts_failed, error_message, feed_capped
         FROM explorer_queue_runs
         ORDER BY started_at DESC
         LIMIT :limit
@@ -1713,6 +1713,22 @@ def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limi
     )).fetchall()
     exits = {r.reason: int(r.n) for r in exit_rows}
 
+    # Rows the latest run could not tag, kept apart by cause (report-back list for Ali).
+    skipped: dict[str, list[dict[str, Any]]] = {"no_ghl_contact": [], "wrong_subaccount": []}
+    if runs:
+        skip_rows = session.execute(text("""
+            SELECT reason, enrollment_id, lead_id, rank, score, primary_state, ghl_location_id
+            FROM explorer_queue_skips
+            WHERE run_id = :run_id
+            ORDER BY rank
+        """), {"run_id": runs[0].id}).fetchall()
+        for r in skip_rows:
+            skipped.setdefault(r.reason, []).append({
+                "enrollment_id": r.enrollment_id, "lead_id": r.lead_id, "rank": r.rank,
+                "score": r.score, "primary_state": r.primary_state,
+                "ghl_location_id": r.ghl_location_id,
+            })
+
     attempted = sorted(
         (r for r in open_rows if (r.attempts or 0) > 0),
         key=lambda r: (-(r.attempts or 0), -(r.last_score or 0)),
@@ -1727,6 +1743,7 @@ def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limi
             "exited": sum(exits.values()),
         },
         "exits": exits,
+        "skipped": skipped,
         "attempted": [
             {
                 "ghl_contact_id": r.ghl_contact_id,
@@ -1755,6 +1772,7 @@ def get_explorer_queue_summary(session: Session, limit: int = 10, attempted_limi
                 "skipped_ai_campaign": r.skipped_ai_campaign,
                 "skipped_no_access": r.skipped_no_access,
                 "contacts_failed": r.contacts_failed,
+                "feed_capped": bool(r.feed_capped),
                 "error_message": r.error_message,
             }
             for r in runs

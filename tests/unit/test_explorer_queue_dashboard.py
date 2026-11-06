@@ -8,7 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models.base import Base
-from app.models.explorer_queue import ExplorerQueueContact, ExplorerQueueRun
+from app.models.explorer_queue import ExplorerQueueContact, ExplorerQueueRun, ExplorerQueueSkip
 from app.models.staff_call_quality import StaffCallQuality
 from app.services.dashboard_metrics import get_explorer_queue_summary
 
@@ -18,7 +18,7 @@ T0 = datetime(2026, 11, 4, 12, 0)
 def _session():
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine, tables=[
-        ExplorerQueueRun.__table__, ExplorerQueueContact.__table__, StaffCallQuality.__table__])
+        ExplorerQueueRun.__table__, ExplorerQueueContact.__table__, ExplorerQueueSkip.__table__, StaffCallQuality.__table__])
     return sessionmaker(bind=engine)()
 
 

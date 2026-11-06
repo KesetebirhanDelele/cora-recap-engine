@@ -3003,3 +3003,11 @@ Supersedes the json-file cap described in the 2026-11-05 (night) disk-hygiene en
 - Not done: deploy, live feed (Ali's blocker).
 
 **Deployed 2026-11-05** (commit c130710, pushed to feat/ghl-call-conversation-sync, Hetzner rebuilt, no migration). The server `.env` carried an old test `EXPLORER_QUEUE_STAGE_MAP` that overrode the new default; that line was removed so the code default (Ali's buckets) applies. Nightly job still runs on the fake test feed.
+
+## 2026-11-06 — Live feed reader + skipped-lead report (built locally, NOT committed/deployed)
+- Ali's live feed is up (GET /api/v1/explorer-growth/outreach, view + limit only, Bearer `CORA_SERVICE_TOKEN` already on the server; fingerprint verified = matches Ali's). Pool > 200 and the cap is binding; paging is Ali's to build. Live payload has no name/email (18 fields incl. lead_id, ghl_url). Real unjoinable rate ~3.5% (193/200), two at the very top.
+- Built: `LiveFeed` (explicit limit, only view+limit sent, retries on 5xx/network, 401/403/400 fail loudly, count must equal rows, token never logged); `build_feed` precedence — fixture path first (nightly stays on the test feed until go-live), else URL+token. New settings `explorer_queue_feed_url`, `cora_service_token`.
+- Skipped-lead report: table `explorer_queue_skips` (migration 0033, additive) split `no_ghl_contact` / `wrong_subaccount`, written in dry runs too; run flag `feed_capped` (rows == limit); dashboard section "Leads we could not tag (report to Ali)".
+- Verified: explorer tests 82 pass; full suite 2201 pass, same 7 pre-existing failures; tsc clean. Not run against the real feed yet.
+- Decision: leave server `.env` mode 0644 (Kes: only Kes and Ali have access).
+- Next: commit/deploy (migration 0033), then one-off DRY RUN against the live feed (reads GHL, writes nothing), send counts to Ali. Nightly job stays on the fixture until go-live.
