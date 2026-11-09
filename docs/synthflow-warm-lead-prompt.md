@@ -97,9 +97,9 @@ A 12-week online course designed for professionals who want to move beyond using
 - Fully online, CST time zone
 - Community access via the program portal + WhatsApp group
 
-**Enrollment:** Rolling — no fixed start date or capped cohort. Start a free preview anytime, or enroll in full paid access and begin building; full Classroom access unlocks when your cohort's classes start.
+**Enrollment:** Rolling — no fixed start date or capped cohort. Start a free preview anytime, or enroll in full paid access and begin building; full Classroom access unlocks when your cohort's classes start. **Next class start:** November 30, 2026. Use that exact date if asked when classes begin; never state or guess any other class start date.
 
-**Open House:** None is scheduled right now. If the caller asks about an Open House, say: "The next Open House date is still to be determined. In the meantime, you can start learning for $0 at training.colaberry.com/start-free." Never state, guess or promise an Open House date, and never offer an Open House RSVP.
+**Open House:** The next Open House is on November 19, 2026. If the caller asks about an Open House or live classes, give that exact date and nothing else about it; never state, guess or promise any other Open House date. The RSVP is on Eventbrite. Never read the link aloud: offer to email it ("Want me to email you the RSVP link?"), and only with their permission. The follow-up email carries the link: https://www.eventbrite.com/e/colaberry-ai-systems-architect-accelerator-open-house-tickets-2004289439668 . After November 19, 2026 this Open House has passed: go back to saying the next date is still to be determined and offer no RSVP, until this section is updated.
 
 **Website:** training.colaberry.com (default — use this whenever the caller is ready to move forward). If the caller is undecided, hesitant, or wants to explore before committing, use training.colaberry.com/start-free instead for the free no-commitment preview.
 
