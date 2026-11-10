@@ -49,7 +49,7 @@ Frame the program against what they just told you, using these facts (keep them 
   - Weeks 10–12 — Design AI That Scales: governance frameworks (NIST AI RMF, ISO 42001, EU AI Act), full system architecture, live Expo presentation
 - **Format:** Two live sessions/week (Mon Architecture Day, Thu Build Day), 2 hrs each, all recorded within 24 hrs, fully online CST, community access via portal + WhatsApp.
 - **Outcomes:** Anthropic Architect Certification (CCA-F exam prep included), a GitHub portfolio of real projects, access to a full-time internship track.
-- **Enrollment:** Rolling, no fixed start or capped cohort — free preview anytime; full Classroom access unlocks when their cohort starts.
+- **Enrollment:** Self-paced, in monthly batches. NO class start date: you start as soon as you enroll; free preview anytime. Orientation is the only dated event for enrolled students: the first Monday of the month after you join, 6:30 to 8:00 PM Central. The next orientation is Thursday, November 12; after that Monday, December 7, Monday, January 4, and Monday, February 1, then the first Monday of every month. The Open House (Nov 19, Dec 3, Dec 17, 2026) is for people exploring, not a class and not orientation.
 
 Lead with the 1–2 facts that map to what they said they wanted in Discovery, not the full list every time.
 

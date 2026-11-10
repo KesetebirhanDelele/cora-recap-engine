@@ -29,11 +29,14 @@ The AI Systems Architect Accelerator is built to fit around a full-time job: it 
 | Sessions per week | Two — Monday (Architecture Day) and Thursday (Build Day) |
 | Session length | 2 hours each; 4 hours of live class per week |
 | Class clock times | Confirmed with enrolled students; specific times not yet published |
-| Start date | Rolling enrollment — no fixed start date, begin anytime |
+| Start date | None. Enrollment is self-paced, in monthly batches: you start as soon as you enroll. There is NO class start date. |
+| Orientation | First Monday of the month after you join, 6:30 to 8:00 PM Central. Next: Thursday, November 12; then Monday, December 7; Monday, January 4; Monday, February 1 |
 
 All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create an account at training.colaberry.com/start-free and begin exploring the material immediately.
 
-**Open House:** No Open House is scheduled right now. If asked, the answer is: "The next Open House date is still to be determined. In the meantime, you can start learning for $0 at training.colaberry.com/start-free." Never state or guess an Open House date, and never offer an Open House RSVP, until the dashboard setting for the next Open House is filled in again.
+**Orientation (enrolled students):** Orientation is the only dated event for enrolled students: the first Monday of the month after you join, 6:30 to 8:00 PM Central. The next orientation is Thursday, November 12; after that Monday, December 7, Monday, January 4, and Monday, February 1, then the first Monday of every month. Never state or guess any other orientation date, and never say there is a class start date or a cohort start.
+
+**Open House (people exploring):** The next Open House is November 19, 2026; the ones after it are December 3 and December 17, 2026. The Open House is for people still exploring; it is NOT a class and NOT orientation. RSVP: https://www.eventbrite.com/e/colaberry-ai-systems-architect-accelerator-open-house-tickets-2004289439668 (offer to send the link; never read it aloud). Never state, guess or promise any other Open House date. When none is left ahead, say the next date is still to be determined and offer no RSVP. If someone asks about "live classes" or when classes meet, do not give the Open House date: classes are self-paced and start when you enroll.
 
 ---
 
