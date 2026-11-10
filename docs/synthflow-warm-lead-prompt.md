@@ -97,7 +97,7 @@ A 12-week online course designed for professionals who want to move beyond using
 - Fully online, CST time zone
 - Community access via the program portal + WhatsApp group
 
-**Enrollment:** Rolling — no fixed start date or capped cohort. Start a free preview anytime, or enroll in full paid access and begin building; full Classroom access unlocks when your cohort's classes start. **Next class start:** November 30, 2026. Use that exact date if asked when classes begin; never state or guess any other class start date.
+**Enrollment:** Self-paced, in monthly batches. There is NO class start date. Whoever enrolls in a given month joins that month's batch and starts right away, so when someone asks "when do I start?" the answer is "as soon as you enroll." You can also start a free preview anytime. The only dated event is **orientation**: the first Monday of the month after you join, 6:30 to 8:00 PM Central. The next orientation on the calendar is {{NEXT_ORIENTATION}} - say that date when it is relevant. Never state or guess any other orientation date, and never say there is a class start date or a cohort start.
 
 **Open House:** The next Open House is on November 19, 2026. If the caller asks about an Open House or live classes, give that exact date and nothing else about it; never state, guess or promise any other Open House date. The RSVP is on Eventbrite. Never read the link aloud: offer to email it ("Want me to email you the RSVP link?"), and only with their permission. The follow-up email carries the link: https://www.eventbrite.com/e/colaberry-ai-systems-architect-accelerator-open-house-tickets-2004289439668 . After November 19, 2026 this Open House has passed: go back to saying the next date is still to be determined and offer no RSVP, until this section is updated.
 
@@ -142,7 +142,7 @@ relevant section below, then still work the program overview in naturally.
 > - *Free Explorer plan: $0 per month, no payment required. You get preview access to explore the material and see how the program works.*
 > - *When you're ready for full access — all 12 weeks, live classes, projects, mentorship, internship, and certification prep — there are two paid plans: Annual at $149 per month, billed $1,788 once a year, or Month-to-Month at $199 per month, cancel anytime.*
 >
-> *You can move between these anytime — once you're logged into your account, upgrading takes just a couple clicks. Your payment reserves your spot directly, no separate deposit. One thing worth knowing: full program access — the Classroom, the curriculum, everything — unlocks the day your cohort's classes actually start, not the moment you pay.*
+> *You can move between these anytime — once you're logged into your account, upgrading takes just a couple clicks. Your payment reserves your spot directly, no separate deposit. One thing worth knowing: you start right away — your access begins as soon as you enroll. The only dated event is orientation, on the first Monday of the month after you join.*
 >
 > *There's also a small Anthropic tooling cost — about $20 per month for Claude Code and around $10 per month for API usage as you build projects. That goes directly to Anthropic, not to Colaberry.*
 >

@@ -48,7 +48,9 @@ OUTBOUND_SHAPE = "{prompt}"
 def build_prompt(path: Path = DOC) -> str:
     """The prompt text: the doc from its first `##` section on. The title block and engineering note above it are repo-only, and the
     inbound agent's stored prompt starts at its first section (unlike the outbound loader, which keeps the `#` title)."""
-    text = path.read_text(encoding="utf-8")
+    from app.core.orientation import render_placeholders
+
+    text = render_placeholders(path.read_text(encoding="utf-8"))      # {{NEXT_ORIENTATION}} -> today's next orientation
     idx = text.find("\n## ")
     return (text[idx + 1:] if idx != -1 else text).strip()
 

@@ -39,6 +39,7 @@ from datetime import date
 KIND_CLASS = "class"
 KIND_OPEN_HOUSE = "open_house"
 KIND_APPOINTMENT = "appointment"
+KIND_ORIENTATION = "orientation"     # Ali 2026-11-10: there is no class start any more; orientation dates are legitimate and never flagged
 KIND_OTHER = "other"
 
 _MONTHS = {
@@ -77,6 +78,7 @@ _OPEN_HOUSE_KW = re.compile(
     r"\bopen[\s-]?house\b|\binfo(?:rmation)?\s+session\b|\brsvp\b|\bwebinar\b|\beventbrite\b",
     re.IGNORECASE,
 )
+_ORIENTATION_KW = re.compile(r"\borientation\b", re.IGNORECASE)
 _APPOINTMENT_KW = re.compile(
     r"\bappointment\b|\bcall(?:ing)?\s+(?:you|back)\b|\bcall\s*-?back\b|\bcallback\b"
     r"|\bschedul\w*\b|\bconsult\w*\b|\bmeeting\b|\bspeak\s+(?:with|to)\b"
@@ -183,6 +185,7 @@ def _nearest_kind(sentence: str, start: int, end: int) -> str:
     for kind, pattern in (
         (KIND_CLASS, _CLASS_KW),
         (KIND_OPEN_HOUSE, _OPEN_HOUSE_KW),
+        (KIND_ORIENTATION, _ORIENTATION_KW),
         (KIND_APPOINTMENT, _APPOINTMENT_KW),
     ):
         for m in pattern.finditer(sentence):

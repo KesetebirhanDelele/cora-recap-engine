@@ -384,6 +384,7 @@ def build_correction_text(session: Session, settings: Any, channel: str = "email
 
 
 DEFAULT_EMAIL_SUBJECT = "Correction: our class and Open House dates"
+SELF_PACED_EMAIL_SUBJECT = "Correction: when you start and your orientation date"     # used while no class start date is set
 # GHL fields behind the "AI Agent - Send Email" workflow (after its Subject/Body were un-swapped
 # 2026-10-01): Subject = Support Issue Ticket #2, Body = Message. The trigger is Ticket #2 changing.
 EMAIL_SUBJECT_ATTR = "ghl_field_support_ticket_2"
@@ -393,8 +394,34 @@ EMAIL_BODY_ATTR = "ghl_field_message"
 def correction_email_subject(session: Session, settings: Any) -> str:
     """Short subject for the correction email. Originates here (app_config
     `correction_email_subject`), never from whatever happens to be in a GHL field."""
-    subject = " ".join(_config(session, settings, "correction_email_subject", DEFAULT_EMAIL_SUBJECT).split())
-    return subject[:120] or DEFAULT_EMAIL_SUBJECT
+    from app.core.schedule_context import is_unset
+
+    class_start, _oh = expected_dates(session, settings)
+    default = SELF_PACED_EMAIL_SUBJECT if is_unset(class_start) else DEFAULT_EMAIL_SUBJECT
+    subject = " ".join(_config(session, settings, "correction_email_subject", default).split())
+    return subject[:120] or default
+
+
+def _self_paced_html(open_house: str, rsvp: str | None, free_url: str, free_href: str, sender: str, today: Any = None) -> str:
+    """Correction in the self-paced enrollment model (Ali 2026-11-10): no class start date; you start when you enroll; the only dated
+    event is orientation (first Monday of the month after you join, 6:30 to 8:00 PM Central); the Open House stays as set."""
+    from html import escape
+
+    from app.core import orientation as ori
+
+    nxt = ori.upcoming_texts(today or ori.central_today(), 2)
+    items = ["<li>There is no class start date. Enrollment is self-paced: when you enroll, you start right away.</li>",
+             "<li>Orientation is the first Monday of the month after you join, 6:30 to 8:00 PM Central. "
+             f"The next orientation is <strong>{escape(nxt[0])}</strong>."
+             + (f" The one after that is <strong>{escape(nxt[1])}</strong>." if len(nxt) > 1 else "") + "</li>"]
+    if open_house:
+        rsvp_html = f' &mdash; <a href="{escape(rsvp, quote=True)}">RSVP here</a>' if rsvp else ""
+        items.append(f"<li>Next Open House: <strong>{escape(open_house)}</strong>{rsvp_html}</li>")
+    return (
+        "<p>Hi there,</p><p>We recently sent you a message with an incorrect date. Here is the correct information:</p>"
+        "<ul>" + "".join(items) + "</ul>"
+        + f'<p>You can also start learning for $0 anytime at <a href="{escape(free_href, quote=True)}">{escape(free_url)}</a> - no card needed.</p>'
+        + "<p>Sorry for any confusion!</p>" + f"<p>{escape(sender)}</p>")
 
 
 def build_correction_email(session: Session, settings: Any) -> tuple[str, str]:
@@ -411,6 +438,8 @@ def build_correction_email(session: Session, settings: Any) -> tuple[str, str]:
 
     has_class = not is_unset(class_start)
     has_oh = not is_unset(open_house)
+    if not has_class:
+        return correction_email_subject(session, settings), _self_paced_html(open_house if has_oh else "", rsvp, free_url, free_href, sender)
     items = []
     if has_class:
         items.append(f"<li>Next class starts: <strong>{escape(class_start)}</strong></li>")

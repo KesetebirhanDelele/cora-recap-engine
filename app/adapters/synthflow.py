@@ -87,8 +87,15 @@ _CAMPAIGN_PROMPT_FILES = {
 }
 
 
-@lru_cache(maxsize=8)
 def _load_campaign_prompt(campaign_name: str) -> str:
+    """The campaign prompt with today's next orientation date filled in. The file read is cached; the date is NOT (it would go stale)."""
+    from app.core.orientation import render_placeholders
+
+    return render_placeholders(_read_campaign_prompt(campaign_name))
+
+
+@lru_cache(maxsize=8)
+def _read_campaign_prompt(campaign_name: str) -> str:
     """
     Load the full per-campaign Synthflow voice-agent system prompt.
 
