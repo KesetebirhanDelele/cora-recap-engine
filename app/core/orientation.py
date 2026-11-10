@@ -16,8 +16,9 @@ from zoneinfo import ZoneInfo
 TIMEZONE = "America/Chicago"
 MONTHLY_TIME = "6:30 to 8:00 PM Central"
 # One-off orientations on top of the monthly pattern. Add a date here (no code change elsewhere) when Ali announces one.
-# 2026-11-12 (Thursday): Ali 2026-11-10 - "the date leads need to hear right now"; no time was given, so none is spoken.
-ONE_OFF: tuple[date, ...] = (date(2026, 11, 12),)
+# November 2026 is the exception to "first Monday": orientation is Thursday 2026-11-19 (Kes, 2026-11-10, correcting an earlier
+# Nov 12 reading of Ali's email). No time was given, so none is spoken. From December it is the first Monday again (Dec 7, Jan 4...).
+ONE_OFF: tuple[date, ...] = (date(2026, 11, 19),)
 
 PLACEHOLDER = "{{NEXT_ORIENTATION}}"
 

@@ -14,9 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize("today,want", [
-    (date(2026, 11, 10), "Thursday, November 12"),                       # today: the one-off this Thursday
-    (date(2026, 11, 12), "Thursday, November 12"),                       # on the day itself
-    (date(2026, 11, 13), "Monday, December 7, 6:30 to 8:00 PM Central"),  # once Thursday passes
+    (date(2026, 11, 10), "Thursday, November 19"),                       # today: November's one-off
+    (date(2026, 11, 19), "Thursday, November 19"),                       # on the day itself
+    (date(2026, 11, 20), "Monday, December 7, 6:30 to 8:00 PM Central"),  # once Thursday passes
     (date(2026, 12, 1), "Monday, December 7, 6:30 to 8:00 PM Central"),
     (date(2026, 12, 7), "Monday, December 7, 6:30 to 8:00 PM Central"),
     (date(2026, 12, 8), "Monday, January 4, 6:30 to 8:00 PM Central"),   # then the next first Monday
@@ -40,9 +40,9 @@ def test_first_monday():
 
 
 def test_placeholder_is_rendered_in_central_time_and_plain_text_is_untouched():
-    late_utc = datetime(2026, 11, 13, 3, 0, tzinfo=ZoneInfo("UTC"))      # still Nov 12 in Chicago
-    assert o.render_placeholders("Next: {{NEXT_ORIENTATION}}.", late_utc) == "Next: Thursday, November 12."
-    next_day = datetime(2026, 11, 13, 18, 0, tzinfo=ZoneInfo("UTC"))
+    late_utc = datetime(2026, 11, 20, 3, 0, tzinfo=ZoneInfo("UTC"))      # still Nov 19 in Chicago
+    assert o.render_placeholders("Next: {{NEXT_ORIENTATION}}.", late_utc) == "Next: Thursday, November 19."
+    next_day = datetime(2026, 11, 20, 18, 0, tzinfo=ZoneInfo("UTC"))
     assert "December 7" in o.render_placeholders("{{NEXT_ORIENTATION}}", next_day)
     assert o.render_placeholders("no placeholder", late_utc) == "no placeholder"
 
@@ -65,10 +65,10 @@ def test_the_date_in_the_prompt_changes_with_the_day_and_is_not_cached():
     from app.adapters.synthflow import _load_campaign_prompt
 
     with patch("app.core.orientation.central_today", return_value=date(2026, 11, 11)):
-        assert "Thursday, November 12" in _load_campaign_prompt("Cold Lead")
-    with patch("app.core.orientation.central_today", return_value=date(2026, 11, 20)):
+        assert "Thursday, November 19" in _load_campaign_prompt("Cold Lead")
+    with patch("app.core.orientation.central_today", return_value=date(2026, 11, 21)):
         p = _load_campaign_prompt("Cold Lead")
-    assert "Monday, December 7, 6:30 to 8:00 PM Central" in p and "Thursday, November 12" not in p
+    assert "Monday, December 7, 6:30 to 8:00 PM Central" in p and "Thursday, November 19" not in p
 
 
 def test_the_open_house_text_is_unchanged():

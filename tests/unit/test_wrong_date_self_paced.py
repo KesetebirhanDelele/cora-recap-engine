@@ -18,7 +18,7 @@ def flagged(body, cls=NO_CLASS, oh=OH):
 
 # ── the detector ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 def test_an_orientation_date_is_never_flagged_even_with_no_class_start_set():
-    assert flagged("<p>The next orientation is Thursday, November 12, and the one after that is Monday, December 7.</p>") == []
+    assert flagged("<p>The next orientation is Thursday, November 19, and the one after that is Monday, December 7.</p>") == []
     assert flagged("Your orientation is on Monday, January 4, 6:30 to 8:00 PM Central.") == []
 
 
@@ -42,7 +42,7 @@ def test_the_correction_says_there_is_no_class_start_and_gives_the_orientation_a
     h = html()
     for must in ("incorrect date", "There is no class start date", "when you enroll, you start right away",
                  "first Monday of the month after you join, 6:30 to 8:00 PM Central",
-                 "The next orientation is <strong>Thursday, November 12</strong>",
+                 "The next orientation is <strong>Thursday, November 19</strong>",
                  "The one after that is <strong>Monday, December 7, 6:30 to 8:00 PM Central</strong>",
                  "Next Open House: <strong>November 19, 2026</strong>", "RSVP here", "https://www.eventbrite.com/e/x-123",
                  "start learning for $0", "Cora from Colaberry"):
@@ -50,8 +50,8 @@ def test_the_correction_says_there_is_no_class_start_and_gives_the_orientation_a
     assert "November 30" not in h
 
 
-def test_the_orientation_rolls_forward_after_nov_12():
-    h = html(today=date(2026, 11, 13))
+def test_the_orientation_rolls_forward_after_nov_19():
+    h = html(today=date(2026, 11, 20))
     assert "The next orientation is <strong>Monday, December 7, 6:30 to 8:00 PM Central</strong>" in h
     assert "The one after that is <strong>Monday, January 4, 6:30 to 8:00 PM Central</strong>" in h
 
