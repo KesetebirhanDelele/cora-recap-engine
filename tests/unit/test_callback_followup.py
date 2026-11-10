@@ -626,3 +626,50 @@ def test_history_emails_are_dated_at_arrival_and_send_no_notice(session):
     assert out["handled"] == 1 and sent == []
     row = session.execute(select(CallbackFollowup)).scalars().one()
     assert row.created_at.replace(tzinfo=timezone.utc) == NOW - timedelta(days=9) and row.approval_status == "pending"
+
+
+# ── routing follows what the call is ABOUT, not the line the failed transfer aimed at (Kes 2026-11-10) ───────────────────────
+ROSE_ID, TAIWO_ID, BALA_ID, FARHAT_ID = "0swBv9tBNeXeYXPYFBSx", "93bhNRgb5pzSoHmaSimH", "yIhCTptvoNLixaWkLcRd", "RBa4nlSSiWeu4CoGFVyl"
+
+
+@pytest.mark.parametrize("assign,classification,want", [
+    (ROSE_ID, "warm_lead", "admissions"), (TAIWO_ID, "", "ipbc"), (FARHAT_ID, "support_call", "support"),
+    ("", "warm_lead", "admissions"), ("", "cold_lead", "admissions"), ("", "escalate_admissions", "admissions"),
+    ("", "support_call", "support"), ("", "not_a_lead", None), ("", "", None), ("unknown-id", "", None),
+])
+def test_kind_from_analysis(assign, classification, want):
+    assert cf.kind_from_analysis(assign, classification, DIR) == want
+
+
+def routed(session, analysis_kwargs, actions=FAILED):
+    analysis = SimpleNamespace(purpose_summary="s", requested_day="", requested_clock="", time_is_clear=False,
+                               call_detailed_summary="", **analysis_kwargs)
+    cfg = {"callback_followup_enabled": "false"}
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)):
+        return svc.process_call(session, SimpleNamespace(alert_email_to=""), _call(actions), analysis, contact_id="c1",
+                                contact_phone="+1", ghl=FakeGHL(), now=NOW)
+
+
+def test_an_admissions_question_sent_to_the_support_line_goes_to_rose(session):         # the 2026-11-09 call (customer_support_bala)
+    row = routed(session, {"assign_to": ROSE_ID, "lead_classification": "warm_lead"})
+    assert row.staff_key == "roselen" and row.staff_name == "Roselen Flores"
+
+
+def test_a_support_topic_keeps_the_support_person_the_transfer_named(session):
+    row = routed(session, {"assign_to": BALA_ID, "lead_classification": "support_call"})
+    assert row.staff_key == "balakrishna"
+
+
+def test_a_support_topic_that_was_sent_to_admissions_goes_to_support_not_rose(session):
+    admissions_failed = {"admissions_transfer_roselen": {"name": "admissions_transfer_roselen", "action_type": "transfer_call_action_type",
+                                                         "return_value": '{"failed_reason": "destination_busy"}', "error_message": "error"}}
+    row = routed(session, {"assign_to": "", "lead_classification": "support_call"}, actions=admissions_failed)
+    assert row.staff_key != "roselen"                       # no roster in this test -> all support staff, no booking
+    assert row.reason == "no_calendar"
+
+
+def test_an_unhelpful_analysis_falls_back_to_the_team_the_transfer_aimed_at(session):
+    row = routed(session, {"assign_to": "", "lead_classification": "not_a_lead"})
+    assert row.staff_key == "balakrishna"
+    row2 = routed(session, {})                              # an older analysis without the fields at all
+    assert row2 is None or row2.staff_key == "balakrishna"

@@ -49,6 +49,25 @@ def parse_directory(raw: str | None) -> list[dict[str, Any]]:
         return list(DEFAULT_STAFF)
 
 
+ADMISSIONS_CLASSES = frozenset({"warm_lead", "cold_lead", "escalate_admissions"})
+
+
+def kind_from_analysis(assign_to: str | None, classification: str | None, directory: list[dict[str, Any]]) -> str | None:
+    """Which team the call is ABOUT, from the post-call AI analysis (Kes 2026-11-10: a clear admissions question was routed to
+    support because the failed transfer had aimed at the support line). The analysis's `assign_to` is a staff GHL id (admissions ->
+    Roselen, billing -> Taiwo, support -> whoever is on shift); failing that, its lead classification. None when the analysis says
+    nothing useful (then the caller falls back to the team the failed transfer aimed at)."""
+    person = next((p for p in directory if assign_to and p.get("ghl_id") == assign_to), None)
+    if person is not None:
+        return person.get("kind")
+    c = (classification or "").strip().lower()
+    if c in ADMISSIONS_CLASSES:
+        return "admissions"
+    if c == "support_call":
+        return "support"
+    return None
+
+
 def support_on_duty(directory: list[dict[str, Any]], roster: list[dict[str, Any]] | None, now: datetime) -> dict[str, Any] | None:
     """The support person whose shift covers `now` (dashboard `support_staff_roster`); when nobody is on shift, the next person
     whose shift starts. None when there is no usable roster (the caller then falls back to all support staff)."""

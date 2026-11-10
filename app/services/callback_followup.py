@@ -371,7 +371,13 @@ def process_call(session: Session, settings: Any, call_event: Any, analysis: Any
         if not tr.needs_callback(call_event.detected_intent, ea):
             return None
         target = _extract_executed_actions(ea).get("transfer_target") or ""
-        kind = tr.target_kind(ea)
+        kind = tr.target_kind(ea)                                   # the team the failed transfer aimed at
+        # The team the call is ABOUT wins (Kes 2026-11-10): an admissions question that was sent to the support line goes to
+        # Roselen. A person named by a transfer to a different team is not used.
+        topic = cf.kind_from_analysis(getattr(analysis, "assign_to", ""), getattr(analysis, "lead_classification", ""),
+                                      cf.parse_directory(_cfg(session, settings, "staff_directory", None)))
+        if topic and topic != kind:
+            kind, target = topic, ""
         summary = (getattr(analysis, "purpose_summary", "") or getattr(analysis, "call_detailed_summary", "") or "")[:600]
         started = getattr(call_event, "start_time_utc", None) or datetime.now(timezone.utc)
         if started.tzinfo is None:
