@@ -16,9 +16,9 @@ from zoneinfo import ZoneInfo
 TIMEZONE = "America/Chicago"
 MONTHLY_TIME = "6:30 to 8:00 PM Central"
 # One-off orientations on top of the monthly pattern. Add a date here (no code change elsewhere) when Ali announces one.
-# November 2026 is the exception to "first Monday": orientation is Thursday 2026-11-19 (Kes, 2026-11-10, correcting an earlier
-# Nov 12 reading of Ali's email). No time was given, so none is spoken. From December it is the first Monday again (Dec 7, Jan 4...).
-ONE_OFF: tuple[date, ...] = (date(2026, 11, 19),)
+# 2026-11-12 (Thursday): the November orientation for ENROLLED students (Ali, confirmed by Kes 2026-11-10). The Nov 19 Open House is a
+# different event (for people still exploring) and is NOT an orientation. Monthly orientation is the first Monday. No time given for Nov 12.
+ONE_OFF: tuple[date, ...] = (date(2026, 11, 12),)
 
 PLACEHOLDER = "{{NEXT_ORIENTATION}}"
 
