@@ -440,16 +440,34 @@ def _lead_line(settings: Any, contact_id: str) -> str:
         return f"contact {contact_id}"
 
 
+_MEANING = {"offers": "a rule is broken", "unclear": "could not tell", "not_offering": "no rule broken"}
+
+
+def _checks_text(detail: dict, error: Any) -> str:
+    """'word filter: X | meaning check: Y' so the reader sees whether the second check would have cleared it. A flag with no
+    meaning check on it (opt-out answers, a disabled or out-of-budget judge) says so."""
+    word = f"word filter: {error}"
+    v = detail.get("llm_verdict")
+    if not v:
+        return f"{word} | meaning check: not run"
+    votes = detail.get("llm_votes") or []
+    ok = sum(1 for x in votes if x == "not_offering")
+    reads = f" ({ok} of {len(votes)} reads said fine)" if votes else ""
+    reason = f" - {detail['llm_reason']}" if detail.get("llm_reason") else ""
+    return f"{word} | meaning check: {_MEANING.get(v, v)}{reads}{reason}; kept flagged"
+
+
 def _flag_line(settings: Any, f: Any) -> str:
     """One alert line for a content flag, ending with WHERE it came from so whoever gets the alert fixes the right system.
     Voice flags (GHL Voice AI agents such as the AI Receptionist) say what the agent said; texts / emails keep GHL's source."""
     ext, cid, channel, error, source, at, detail = f[0], f[1], f[2], f[3], f[4], f[5], (f[6] or {})
     who = _lead_line(settings, cid) if cid else f"unknown caller {detail.get('from_number') or ''}".strip()
+    checks = _checks_text(detail, error)
     if channel == "voice":
         origin = detail.get("origin") or "GHL Voice AI agent (voice call)"
-        return (f"- {who}: {origin} at {at:%Y-%m-%d %H:%M} UTC; found: {error}; call id {ext}; the agent said: "
+        return (f"- {who}: {origin} at {at:%Y-%m-%d %H:%M} UTC; {checks}; call id {ext}; the agent said: "
                 f"\"{(detail.get('snippet') or '')[:160]}\" [origin: {origin} - fix its prompt / knowledge base in GHL Voice AI]")
-    return (f"- {who}: {channel} sent by {source} at {at:%Y-%m-%d %H:%M} UTC; found: {error}; message id {ext} "
+    return (f"- {who}: {channel} sent by {source} at {at:%Y-%m-%d %H:%M} UTC; {checks}; message id {ext} "
             f"[origin: GHL {channel} with source '{source}' - for 'app', the Conversation AI bot or a person in the GHL app]")
 
 

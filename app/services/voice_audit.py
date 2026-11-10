@@ -147,19 +147,27 @@ def _scan_one(session: Session, settings: Any, lg: dict, terms: tuple[str, ...],
         _upsert(session, kind="voice_seen", log=lg, at=at, now=now, detail=base)
         return
     verdict = None
-    if finding.course_only and judge is not None:
+    meaning: dict = {}
+    if judge is not None:
         try:
             said = " ".join(va.bot_turns(transcript))
             verdict = judge(settings, lg["id"], said, finding.prior_human, terms=list(finding.terms))
+            from app.services import content_judge
+
+            meaning = content_judge.last_detail(lg["id"]) or {}
         except Exception as exc:                        # fail closed: any doubt leaves the call flagged
             logger.warning("voice_audit: judge failed for %s: %s", lg["id"], exc)
     if verdict == "not_offering":
-        _upsert(session, kind="content_ok", log=lg, at=at, now=now, detail={**base, "terms": finding.terms, "verdict": verdict})
+        _upsert(session, kind="content_ok", log=lg, at=at, now=now,
+                detail={**base, "terms": finding.terms, "verdict": verdict, "votes": meaning.get("votes"),
+                        "reason": meaning.get("reason")})
         _upsert(session, kind="voice_seen", log=lg, at=at, now=now, detail=base)
         stats["cleared"] += 1
         return
     detail = {**base, "terms": finding.terms, "snippet": finding.excerpt}
     if verdict:
         detail["llm_verdict"] = verdict
+        detail["llm_votes"] = meaning.get("votes")
+        detail["llm_reason"] = meaning.get("reason")
     _upsert(session, kind="content_flag", log=lg, at=at, now=now, error=", ".join(finding.terms)[:290], detail=detail)
     stats["flagged"] += 1

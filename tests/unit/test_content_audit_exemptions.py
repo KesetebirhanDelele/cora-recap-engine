@@ -125,9 +125,11 @@ def test_offers_and_unclear_stay_flagged_with_the_verdict_recorded(verdict):
     assert len(events) == 1 and events[0]["detail"]["llm_verdict"] == verdict
 
 
-def test_employment_claims_never_reach_the_judge_even_with_a_decline_phrase():
-    events, calls = _run("We no longer run the bootcamp but our placement rate is 71%", verdict=cj.DECLINES)
-    assert len(events) == 1 and calls == []
+@pytest.mark.parametrize("verdict", [cj.OFFERS, cj.UNCLEAR])
+def test_employment_claims_reach_the_judge_and_stay_flagged_unless_it_clears(verdict):
+    """Kes 2026-11-09: the meaning check now reads employment hits too; only an all-clear removes the flag."""
+    events, calls = _run("We no longer run the bootcamp but our placement rate is 71%", verdict=verdict)
+    assert len(events) == 1 and len(calls) == 1 and events[0]["detail"]["llm_verdict"] == verdict
 
 
 def test_exhausted_budget_or_disabled_llm_keeps_the_flag():
@@ -166,9 +168,9 @@ def test_interview_notice_without_any_listed_term_is_not_flagged():
     assert events == [] and calls == []
 
 
-def test_employment_claim_is_flagged_and_never_sent_to_the_judge():
-    events, calls = _run("[Interview Notification] Data Analyst role, 90% placement rate", verdict=cj.DECLINES)
-    assert len(events) == 1 and "placement rate" in events[0]["detail"]["terms"] and calls == []
+def test_employment_claim_is_flagged_when_the_judge_says_a_rule_is_broken():
+    events, calls = _run("[Interview Notification] Data Analyst role, 90% placement rate", verdict=cj.OFFERS)
+    assert len(events) == 1 and "placement rate" in events[0]["detail"]["terms"] and len(calls) == 1
 
 
 # ── company name in a signature (Claudia Zapata email, 2026-10-12) ───────────
@@ -299,11 +301,13 @@ def test_doubt_or_offer_never_clears(verdict):
     assert len(events) == 1 and ok == []
 
 
-def test_a_decline_that_also_says_start_free_stays_flagged_and_never_reaches_the_judge():
-    """TWC wording rule (Ali 2026-10-04): 'free' is a claim, not a course name - the decline judge cannot clear it."""
-    events, calls = _run("We no longer enroll in the Data Analytics bootcamp, but you can start free at https://training.colaberry.com/start-free.",
-                         verdict=cj.DECLINES)
-    assert calls == [] and len(events) == 1 and "free" in events[0]["detail"]["terms"]
+def test_a_decline_that_also_says_start_free_goes_to_the_judge_and_stays_flagged_unless_cleared():
+    """TWC wording rule (Ali 2026-10-04): 'free' is a claim. Since 2026-11-09 the meaning check reads it too, with its own
+    rule, so a sentence calling the program free stays flagged on an 'offers' verdict."""
+    body = "We no longer enroll in the Data Analytics bootcamp, but you can start free at https://training.colaberry.com/start-free."
+    events, calls = _run(body, verdict=cj.OFFERS)
+    assert len(calls) == 1 and len(events) == 1 and "free" in events[0]["detail"]["terms"]
+    assert events[0]["detail"]["llm_verdict"] == cj.OFFERS
 
 
 def test_feel_free_in_a_staff_text_is_not_flagged():

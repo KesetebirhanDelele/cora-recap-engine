@@ -144,7 +144,7 @@ def _kinds(session):
 
 def test_a_flagged_call_is_recorded_with_its_origin_and_what_the_agent_said():
     s = FakeSession()
-    out = svc.audit_voice_calls(s, None, NOW, ghl=FakeGHL([[_log("call1", ABERE)]]), judge=MagicMock())
+    out = svc.audit_voice_calls(s, None, NOW, ghl=FakeGHL([[_log("call1", ABERE)]]), judge=MagicMock(return_value="offers"))
     assert out["flagged"] == 1 and out["error"] is None
     flag = next(p for p in s.inserts if p["k"] == "content_flag")
     assert flag["x"] == "call1" and flag["src"] == "ghl_voice_ai" and "sql" in flag["e"] and "free" in flag["e"]
@@ -174,10 +174,11 @@ def test_the_judge_may_clear_a_course_name_only_call_but_never_a_hard_term():
     assert out["cleared"] == 1 and out["flagged"] == 0
     assert ("content_ok", "r1") in _kinds(s) and ("content_flag", "r1") not in _kinds(s)
 
-    judge2, s2 = MagicMock(return_value="not_offering"), FakeSession()
+    # Kes 2026-11-09: "free" and employment hits go to the meaning check too; a rule-broken verdict keeps the flag
+    judge2, s2 = MagicMock(return_value="offers"), FakeSession()
     out2 = svc.audit_voice_calls(s2, None, NOW, ghl=FakeGHL([[_log("h1", ABERE)]]), judge=judge2)
-    judge2.assert_not_called()                          # "free" is in ABERE: hard term, no judge
-    assert out2["flagged"] == 1
+    judge2.assert_called_once()
+    assert out2["flagged"] == 1 and out2["cleared"] == 0
 
 
 @pytest.mark.parametrize("verdict", ["offers", "unclear"])
@@ -272,7 +273,7 @@ def test_every_value_written_fits_the_channel_events_columns():
     s = FakeSession()
     svc.audit_voice_calls(s, None, NOW, ghl=FakeGHL([[
         _log("w1", ABERE), _log("w2", "bot:ok"), _log("w3", "human:SQL?\nbot:Colaberry no longer offers the SQL course."),
-        _log("w4", "", age_min=300)]]), judge=MagicMock(return_value="not_offering"))
+        _log("w4", "", age_min=300)]]), judge=lambda st, cid, said, prior, terms=None: "offers" if cid == "w1" else "not_offering")
     kinds = {p["k"] for p in s.inserts}
     assert {"content_flag", "content_ok", "voice_seen"} <= kinds
     for p in s.inserts:

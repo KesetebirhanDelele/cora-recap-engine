@@ -240,10 +240,10 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
 
     The company's own name (`brand_phrases`, e.g. "Colaberry School of Data Analytics" in a staff signature) is removed
     from the text before the scan.
-    One exemption, removing course-name hits only (an employment / placement claim and the word "free" are always flagged):
-      - the LLM judge reads the whole message in context and says it does NOT OFFER the retired course (a refusal, an
-        explanation of the move to the AI program, a quoted caller, a job title...). Both votes must agree; any doubt, split,
-        error or exhausted budget leaves it flagged. Every cleared message is recorded as channel_events kind 'content_ok'.
+    One exemption, for ALL word lists (Kes 2026-11-09): the LLM judge reads the whole message in context and says no rule is
+    broken (a refusal of a retired course, a denial such as "does not guarantee job placement", "feel free to reply"...). Both
+    votes must agree; any doubt, split, error or exhausted budget leaves it flagged, and the flag carries the word-filter hits
+    and the judge's verdict, votes and reason. Every cleared message is recorded as channel_events kind 'content_ok' (no alert).
     There is no interview-notification exemption (removed 2026-10-13) and no wording list in code."""
     try:
         from app.core import content_audit as ca
@@ -258,6 +258,7 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
         scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
         hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
         verdict = None
+        meaning: dict = {}
         if hits and ca.is_staff_sender(m, ca.staff_user_ids(cfg("admissions_assistants", None), cfg("ipbc_assistants", None), cfg("support_staff_roster", None),
                                                        cfg("audit_staff_user_ids", ca.DEFAULT_STAFF_USER_IDS), cfg("audit_ai_user_ids", ca.DEFAULT_AI_USER_IDS))):
             # a person on the staff list wrote it (Ali 2026-10-22): "free" and course names are recorded, never alerted;
@@ -281,7 +282,7 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
                               source=str(m.get("source") or "?")[:30],
                               detail={"terms": hits, "snippet": (body or "")[:160]})
                 return
-        if ca.course_only(hits) and settings is not None \
+        if hits and settings is not None \
                 and str(cfg("content_llm_enabled", "true")).lower() in ("true", "1", "yes") \
                 and (llm_budget is None or llm_budget[0] > 0):
             if llm_budget is not None:
@@ -289,17 +290,21 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
             prior = ca.prior_inbound(conv_msgs or [], m, _parse_ts)
             cleared_terms = list(hits)
             verdict = content_judge.judge(settings, m["id"], ca.strip_footer(ca.visible_text(body)), prior, terms=cleared_terms)
+            meaning = content_judge.last_detail(m["id"]) or {}
             if verdict == content_judge.NOT_OFFERING:
                 hits = []
-                # audit trail: everything the model let through can be spot-checked (kind 'content_ok')
+                # audit trail: everything the model let through can be spot-checked (kind 'content_ok'); no alert, no email
                 _upsert_event(session, kind="content_ok", channel=channel, contact_id=cid, external_id=m["id"],
                               status_raw=None, outcome=None, error=None, event_at=at, now=now,
                               source=str(m.get("source") or "?")[:30],
-                              detail={"terms": cleared_terms, "verdict": verdict, "snippet": (body or "")[:160]})
+                              detail={"terms": cleared_terms, "verdict": verdict, "votes": meaning.get("votes"),
+                                      "reason": meaning.get("reason"), "snippet": (body or "")[:160]})
         if hits:
             detail = {"terms": hits, "snippet": (body or "")[:160]}
             if verdict:
                 detail["llm_verdict"] = verdict
+                detail["llm_votes"] = meaning.get("votes")
+                detail["llm_reason"] = meaning.get("reason")
             _upsert_event(session, kind="content_flag", channel=channel, contact_id=cid, external_id=m["id"],
                           status_raw=None, outcome=None, error=", ".join(hits)[:290], event_at=at, now=now,
                           source=str(m.get("source") or "?")[:30], detail=detail)

@@ -137,6 +137,18 @@ def is_hard_term(term: str) -> bool:
     return is_employment_term(term) or term.strip().lower() == "free"
 
 
+COURSE, EMPLOYMENT, FREE = "course", "employment", "free"
+
+
+def categories(hits: list[str]) -> set[str]:
+    """Which word lists the keyword filter hit: retired course names, employment / placement claims, the banned word "free".
+    The meaning check (content_judge) reads the message once per category present and may clear any of them (Kes 2026-11-09)."""
+    out: set[str] = set()
+    for h in hits:
+        out.add(EMPLOYMENT if is_employment_term(h) else FREE if h.strip().lower() == "free" else COURSE)
+    return out
+
+
 def course_only(hits: list[str]) -> bool:
     """True when every hit is a course / subject name (none is an employment / placement claim or the word "free")."""
     return bool(hits) and not any(is_hard_term(h) for h in hits)

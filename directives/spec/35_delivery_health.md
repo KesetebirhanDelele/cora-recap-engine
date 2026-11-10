@@ -93,3 +93,13 @@ A quiet recovered channel stays recovered: no failure in the last `recovery_hour
 **Every content-flag alert line ends with its origin:** voice -> `[origin: GHL AI Receptionist (voice call) - fix its prompt / knowledge base in GHL Voice AI]` (other Voice AI agents: `GHL Voice AI agent ...<last 6 of id>`; the Receptionist's id is in `KNOWN_AGENTS`); text / email -> `[origin: GHL <channel> with source '<source>' ...]`. Not yet distinguished: Cora engine vs Conversation AI bot for source `app` texts.
 **If the audit itself breaks** it raises ONE `ghl_voice_audit_error` alert ("AI Receptionist call audit could NOT read GHL Voice AI call logs: <error> ... not a problem in the AI Receptionist itself"; usual cause: the Private Integration token lost its Voice AI read scope) and resolves it on the next good read. Nothing is marked clean after a failed read.
 **Dry run on production (2026-10-20, read-only):** 216 call logs, 210 with transcripts, 13 would flag (5 "free", 1 "job placement", 1 "sql"+"free" = the Abere call, 6 course-name-only that the judge decides). Voice flags still email `alert_email_to` like text flags (same alert).
+
+## Meaning check for every word list (Kes, 2026-11-09)
+
+The word filter still flags first. A flagged text, email or voice-call line then goes to the meaning check (`app/services/content_judge.py`), which now covers all three lists, each with its own rule:
+- **Retired course:** broken only if the message OFFERS one (unchanged).
+- **Employment / placement:** broken if it states, promises, guarantees or implies a job, placement, hiring, salary result or rate. NOT broken: a plain denial ("Colaberry does not guarantee job placement") or preparation wording without a result ("helps you prepare for AI roles").
+- **"free":** broken if it describes a Colaberry program, plan, class, trial or price as free. NOT broken: "feel free to reply", or the approved address `training.colaberry.com/start-free` itself.
+
+Safety is unchanged: the check can only REMOVE a flag; two reads must both say no rule is broken; a split, "unclear", timeout, error or exhausted budget keeps the flag. **A cleared message sends no alert or email**; it is stored as `channel_events` kind `content_ok` with the word-filter terms, both votes and the reason (query it to spot-check). **A kept flag alerts with both results**: `word filter: <terms> | meaning check: <verdict> (<n> of 2 reads said fine) - <reason>; kept flagged`.
+Not covered: claims the word filter never matches (for example "we will help you land a job", "9 in 10 are hired") are not seen by either check; widening the word list is a separate decision. Tests: `tests/unit/test_meaning_check.py`.

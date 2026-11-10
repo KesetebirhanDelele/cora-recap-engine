@@ -3013,3 +3013,11 @@ Supersedes the json-file cap described in the 2026-11-05 (night) disk-hygiene en
 - Next: commit/deploy (migration 0033), then one-off DRY RUN against the live feed (reads GHL, writes nothing), send counts to Ali. Nightly job stays on the fixture until go-live.
 
 **Deployed 2026-11-06** (commit 548f922, migration 0033 applied, all services up). **Live-feed DRY RUN** (one-off, reads only, nothing written to GHL; nightly job still on the fixture): feed returned 200 rows (= cap, so more exist). Would tag 135 new; 47 skipped because AI Campaign = Yes; 11 no GHL contact (null link; ranks 1, 4, 44, 46, 168, 170, 177, 180, 185, 190, 197); 7 wrong sub-account (all one other location); 0 failed. Stages: NOT_STARTED 105, ACTIVE_LEARNER 46, NEW_EXPLORER 41, ENGAGED_LEARNER 3, CONNECTED_TO_COMMUNITY 3, ACTIVATING 2. All 200 rows have why-now text; scores 7–54. Note: Ali said 193/200 carry a link; we see 189 (11 null). "already tagged 4" = the 4 fake contacts not in this feed. Counts to send Ali for same-night comparison.
+
+## 2026-11-09 - Meaning check extended to employment claims and "free" (built, NOT yet deployed)
+- Trigger: ghl_content_flag alert on a Conversation AI text that said "Colaberry does not guarantee job placement" (a disclaimer, flagged only because the phrase is on the word list; the lead's own "free" was never scanned).
+- Change (Kes): the meaning check that already cleared retired-course hits now also reads employment and "free" hits (per-category rules). Cleared = no alert/email, record kept (content_ok with votes + reason). Kept flags show both results on the alert line. "Prepares you for AI roles" is not a claim.
+- Files: app/core/content_audit.py, app/services/content_judge.py, delivery_sync.py, voice_audit.py, channel_health.py; tests/unit/test_meaning_check.py (new) plus 6 older tests updated (they encoded "employment/free never reach the judge"); spec/35.
+- Checked: 216 related tests pass; full suite 2218 pass, 7 pre-existing unrelated failures. Real-model run on 12 representative messages: 0 mismatches (3 disclaimers cleared, 4 real claims kept, retired-course and "free" cases correct).
+- Known gap: claims the word list never matches ("land a job", "hired") are invisible to both checks.
+- Not done: commit, deploy (needs Kes's go); a page to browse content_ok records (query channel_events for now).
