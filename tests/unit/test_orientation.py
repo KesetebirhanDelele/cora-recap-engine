@@ -75,7 +75,7 @@ def test_the_open_house_text_is_unchanged():
     from app.adapters.synthflow import _load_campaign_prompt
 
     p = _load_campaign_prompt("New Lead")
-    assert "next Open House is on November 19, 2026" in p
+    assert "next Open House is on November 19, 2026" in p and "{{NEXT_OPEN_HOUSE}}" not in p
 
 
 def test_the_inbound_push_script_renders_the_date():
@@ -85,3 +85,22 @@ def test_the_inbound_push_script_renders_the_date():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert "{{NEXT_ORIENTATION}}" not in mod.build_prompt()
+
+
+@pytest.mark.parametrize("today,want", [
+    (date(2026, 11, 10), "on November 19, 2026"), (date(2026, 11, 19), "on November 19, 2026"),
+    (date(2026, 11, 20), "on December 3, 2026"), (date(2026, 12, 4), "on December 17, 2026"),
+    (date(2026, 12, 18), o.OPEN_HOUSE_TBD),                    # none left: to be determined, no RSVP
+])
+def test_next_open_house(today, want):
+    assert o.next_open_house_text(today) == want
+
+
+def test_lists_for_later_dates():
+    d = date(2026, 11, 10)
+    assert o.open_house_list_text(d) == "November 19, 2026; December 3, 2026; December 17, 2026"
+    assert o.open_house_list_text(date(2026, 12, 4)) == "December 17, 2026"
+    assert o.open_house_list_text(date(2026, 12, 18)) == o.OPEN_HOUSE_TBD
+    out = o.render_placeholders("{{ORIENTATION_LIST}} | {{OPEN_HOUSE_LIST}}", datetime(2026, 11, 10, 18, 0, tzinfo=ZoneInfo("UTC")))
+    assert out.startswith("Thursday, November 12; Monday, December 7, 6:30 to 8:00 PM Central; Monday, January 4, 6:30 to 8:00 PM Central; Monday, February 1")
+    assert "{{" not in out

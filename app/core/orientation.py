@@ -21,6 +21,27 @@ MONTHLY_TIME = "6:30 to 8:00 PM Central"
 ONE_OFF: tuple[date, ...] = (date(2026, 11, 12),)
 
 PLACEHOLDER = "{{NEXT_ORIENTATION}}"
+# Open Houses (for people still exploring - NOT orientation). Confirmed by Kes 2026-11-10 for the rest of 2026; add new dates here.
+OPEN_HOUSES: tuple[date, ...] = (date(2026, 11, 19), date(2026, 12, 3), date(2026, 12, 17))
+OPEN_HOUSE_PLACEHOLDER = "{{NEXT_OPEN_HOUSE}}"
+OPEN_HOUSE_LIST_PLACEHOLDER = "{{OPEN_HOUSE_LIST}}"
+ORIENTATION_LIST_PLACEHOLDER = "{{ORIENTATION_LIST}}"
+OPEN_HOUSE_TBD = "still to be determined (no date is set yet; offer no RSVP)"
+
+
+def open_house_list_text(today: date) -> str:
+    """All Open Houses still ahead, e.g. 'November 19, 2026; December 3, 2026; December 17, 2026' (none left -> to be determined)."""
+    upcoming = sorted(d for d in OPEN_HOUSES if d >= today)
+    return "; ".join(f"{d.strftime('%B')} {d.day}, {d.year}" for d in upcoming) if upcoming else OPEN_HOUSE_TBD
+
+
+def next_open_house_text(today: date) -> str:
+    """'on November 19, 2026' for the next Open House on or after `today`, or the to-be-determined wording once none is left."""
+    upcoming = sorted(d for d in OPEN_HOUSES if d >= today)
+    if not upcoming:
+        return OPEN_HOUSE_TBD
+    d = upcoming[0]
+    return f"on {d.strftime('%B')} {d.day}, {d.year}"
 
 
 def first_monday(year: int, month: int) -> date:
@@ -62,7 +83,12 @@ def upcoming_texts(today: date, count: int = 2) -> list[str]:
 
 
 def render_placeholders(text: str, now: datetime | None = None) -> str:
-    """Fill {{NEXT_ORIENTATION}} with today's next orientation (Central time). Text without the placeholder is returned unchanged."""
-    if PLACEHOLDER not in text:
+    """Fill the date placeholders with today's values (Central time). Text without placeholders is returned unchanged."""
+    marks = (PLACEHOLDER, OPEN_HOUSE_PLACEHOLDER, OPEN_HOUSE_LIST_PLACEHOLDER, ORIENTATION_LIST_PLACEHOLDER)
+    if not any(m in text for m in marks):
         return text
-    return text.replace(PLACEHOLDER, orientation_text(central_today(now)))
+    today = central_today(now)
+    return (text.replace(PLACEHOLDER, orientation_text(today))
+                .replace(OPEN_HOUSE_PLACEHOLDER, next_open_house_text(today))
+                .replace(OPEN_HOUSE_LIST_PLACEHOLDER, open_house_list_text(today))
+                .replace(ORIENTATION_LIST_PLACEHOLDER, "; ".join(upcoming_texts(today, 4))))
