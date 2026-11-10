@@ -31,6 +31,18 @@ def clear_settings_cache():
 
 
 @pytest.fixture(autouse=True)
+def _no_real_email_from_tests():
+    """No unit test may send a real email. On 2026-11-10 two existing create_crm_task tests ran with the developer's real settings
+    (real SMTP credentials from .env) and, through the new call-back follow-up, mailed a fake "Suresh" request to the real alert
+    address. smtplib is replaced by a mock for every test; a test that wants to inspect the send patches smtplib itself (the inner
+    patch wins)."""
+    from unittest.mock import MagicMock, patch
+
+    with patch("smtplib.SMTP", MagicMock()), patch("smtplib.SMTP_SSL", MagicMock()):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _call_gate_allows_by_default(request):
     """The opt-out call gate (spec/39) reads GHL live. Existing call-job tests mock settings, so let the gate allow unless a
     test module opts in with `pytestmark = pytest.mark.real_call_gate` (tests/unit/test_call_gate.py)."""
