@@ -90,7 +90,7 @@ export default function CallbackFollowupsClient() {
         <StatTile label="Email to staff planned" value={c.email_planned} hint="no / unclear time" />
         <StatTile label="Booking or email sent to staff" value={c.staff_notified} hint={`${c.booked} bookings · ${c.failed} failed`} />
         <StatTile label="Waiting for your approval" value={c.pending_approval} hint={`${c.approved} approved · ${c.rejected} rejected`} />
-        <StatTile label="Lead reached by staff" value={c.contacted} hint="a connected staff call after the request" />
+        <StatTile label="Lead reached by staff" value={c.contacted} hint="a staff call, text or email after the request" />
       </div>
 
       <h2 style={{ fontSize: "0.95rem", fontWeight: 700, color: "#1e293b", margin: "1rem 0 0.75rem" }}>Leads and students who need a call back</h2>
@@ -123,7 +123,7 @@ export default function CallbackFollowupsClient() {
                     <div style={{ color: "#94a3b8" }}>{REASON[l.reason] ?? l.reason}</div>
                   </td>
                   <td><StatusBadge lead={l} /></td>
-                  <td style={{ fontSize: "0.75rem", color: l.contacted_at ? "#16a34a" : "#94a3b8" }}>{l.contacted_at ? timeAgo(l.contacted_at) : "not yet"}</td>
+                  <td style={{ fontSize: "0.75rem", color: l.contacted_at ? "#16a34a" : "#94a3b8" }}>{l.contacted_at ? `${l.contacted_via ? l.contacted_via + " · " : ""}${timeAgo(l.contacted_at)}` : "not yet"}</td>
                   <td style={{ whiteSpace: "nowrap" as const }}>
                     {l.approval_status === "pending" && (
                       <>

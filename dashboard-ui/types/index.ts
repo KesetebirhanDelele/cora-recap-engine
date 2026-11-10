@@ -792,6 +792,7 @@ export interface CallbackFollowupLead {
   plan_start: string | null;
   created_at: string | null;
   contacted_at: string | null;
+  contacted_via?: string | null;
   contact_id: string | null;
 }
 

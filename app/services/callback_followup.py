@@ -113,6 +113,45 @@ def _lead(ghl: Any, contact_id: str, fallback_name: str, fallback_phone: str, ca
     return lead
 
 
+STAFF_REACH_TYPES = ("TYPE_CALL", "TYPE_SMS", "TYPE_EMAIL")
+DEFAULT_AI_USER_ID = "yIhCTptvoNLixaWkLcRd"      # the id the Conversation AI posts under (also a real support person): never proof a person acted
+
+
+def _conv_client(settings: Any) -> Any:
+    """GHL client for reading Conversations (a separate key from the calendar / contact one)."""
+    from app.adapters.ghl import GHLClient
+
+    return GHLClient(settings=settings, api_key_override=getattr(settings, "ghl_conversations_api_key", None))
+
+
+def _staff_ids(directory: list[dict], ai_ids: str | None = None) -> set[str]:
+    ai = {i.strip() for i in (ai_ids if ai_ids is not None else DEFAULT_AI_USER_ID).split(",") if i.strip()}
+    return {p["ghl_id"] for p in directory if p.get("ghl_id")} - ai
+
+
+def _ts(value: Any) -> datetime | None:
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def staff_reach_after(conv: Any, contact_id: str, after: datetime, staff_ids: set[str]) -> tuple[datetime, str] | None:
+    """The first call, text or email a STAFF member sent this contact after `after`, read from the GHL conversation (the source of
+    truth; our own tables miss some staff messages). Internal notes and automatic activity do not count. Returns (when, kind)."""
+    best: tuple[datetime, str] | None = None
+    for c in conv.get_conversations_by_contact(contact_id, limit=5):
+        for m in conv.get_conversation_messages(c["id"], limit=40):
+            kind = m.get("messageType") or m.get("type")
+            if (m.get("direction") or "").lower() != "outbound" or kind not in STAFF_REACH_TYPES or m.get("userId") not in staff_ids:
+                continue
+            at = _ts(m.get("dateAdded"))
+            if at is not None and at > after and (best is None or at < best[0]):
+                best = (at, {"TYPE_CALL": "call", "TYPE_SMS": "text", "TYPE_EMAIL": "email"}[kind])
+    return best
+
+
 def _email_what_happened(body: str | None, received_at: datetime) -> str:
     excerpt = " ".join((body or "").split())[:400]
     when_in = received_at.astimezone(ZoneInfo(cf.DEFAULT_TZ)).strftime("%A %b %d at %I:%M %p Central").replace(" 0", " ")
@@ -403,9 +442,10 @@ def refresh_missing_names(session: Session, settings: Any, now: datetime | None 
     return filled
 
 
-def update_contacted(session: Session, settings: Any, now: datetime | None = None, *, force: bool = False) -> int:
-    """Mark follow-ups whose lead was reached: a CONNECTED staff call to that contact after the request was recorded. Same
-    30-minute rhythm as the email check. Returns the number newly marked."""
+def update_contacted(session: Session, settings: Any, now: datetime | None = None, *, force: bool = False, conv: Any = None) -> int:
+    """Mark follow-ups whose lead was reached by staff after the request was recorded: a CONNECTED staff call (our call records), or
+    a call, text or email a staff member sent in the GHL conversation (Rose texting or emailing counts - Kes 2026-11-10). Same
+    30-minute rhythm as the email check. The way it was reached is kept in the row's detail. Returns the number newly marked."""
     from sqlalchemy import select
 
     from app.models.callback_followup import CallbackFollowup
@@ -422,16 +462,44 @@ def update_contacted(session: Session, settings: Any, now: datetime | None = Non
     pending = session.execute(select(CallbackFollowup).where(
         CallbackFollowup.contacted_at.is_(None), CallbackFollowup.contact_id.is_not(None),
         CallbackFollowup.created_at >= now - timedelta(days=30))).scalars().all()
+    staff_ids = _staff_ids(cf.parse_directory(_cfg(session, settings, "staff_directory", None)),
+                           _cfg(session, settings, "audit_ai_user_ids", None))
+    own_conv = False
     for row in pending:
         created = row.created_at if row.created_at.tzinfo else row.created_at.replace(tzinfo=timezone.utc)
+        found: tuple[datetime, str] | None = None
         first = session.execute(
             select(StaffCallQuality.call_time).where(
                 StaffCallQuality.ghl_contact_id == row.contact_id, StaffCallQuality.call_connected.is_(True),
                 StaffCallQuality.call_time > created).order_by(StaffCallQuality.call_time).limit(1)).scalar()
         if first is not None:
-            row.contacted_at = first
+            found = (first, "call")
+        elif not (row.contact_id or "").replace("+", "").isdigit():          # a real GHL contact id, not a bare phone number
+            try:
+                if conv is None:
+                    conv, own_conv = _conv_client(settings), True
+                found = staff_reach_after(conv, row.contact_id, created, staff_ids)
+            except Exception as exc:
+                logger.warning("callback_followup: could not read conversation of %s: %s", row.contact_id, exc)
+        if found is not None:
+            row.contacted_at = found[0]
+            try:
+                detail = json.loads(row.detail or "{}")
+            except ValueError:
+                detail = {}
+            detail["contacted_via"] = found[1]
+            row.detail = json.dumps(detail, default=str)[:4000]
             marked += 1
+    if own_conv and conv is not None:
+        conv.close()
     return marked
+
+
+def _detail_value(raw: str | None, key: str) -> str | None:
+    try:
+        return (json.loads(raw or "{}") or {}).get(key)
+    except ValueError:
+        return None
 
 
 def get_summary(session: Session, settings: Any, limit: int = 100) -> dict[str, Any]:
@@ -467,6 +535,7 @@ def get_summary(session: Session, settings: Any, limit: int = 100) -> dict[str, 
         "approval_status": r.approval_status, "requested_time": r.requested_time, "plan_start": r.plan_start,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "contacted_at": r.contacted_at.isoformat() if r.contacted_at else None, "contact_id": r.contact_id,
+        "contacted_via": _detail_value(r.detail, "contacted_via"),
     } for r in rows[:limit]]
     return {
         "counts": counts, "leads": leads,
@@ -593,7 +662,7 @@ def analyze_email(settings: Any, body: str, now: datetime, *, _client: Any = Non
         return {}
 
 
-def run_unanswered_email_check(session: Session, settings: Any, now: datetime | None = None, *, ghl: Any = None,
+def run_unanswered_email_check(session: Session, settings: Any, now: datetime | None = None, *, ghl: Any = None, conv: Any = None,
                                analyze: Callable[..., dict] | None = None, send: Callable[..., None] | None = None,
                                force: bool = False, lookback: timedelta | None = None, notify_pending: bool = True,
                                history: bool = False, limit: int | None = None) -> dict:
@@ -606,7 +675,7 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
     `history=True` dates each row at the email's arrival so the dashboard and the 'reached' check read correctly."""
     cap = limit or MAX_EMAILS_PER_RUN
     now = now or datetime.now(timezone.utc)
-    stats = {"seen": 0, "handled": 0, "skipped_internal": 0, "throttled": False}
+    stats = {"seen": 0, "handled": 0, "skipped_internal": 0, "answered": 0, "throttled": False}
     try:
         every = max(1, int(_cfg(session, settings, "unanswered_email_check_minutes", "30") or 30))
     except (TypeError, ValueError):
@@ -628,6 +697,9 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
 
         ghl = GHLClient(settings=settings)
     internal = ca.parse_internal_domains(_cfg(session, settings, "audit_internal_email_domains", None))
+    staff_ids = _staff_ids(cf.parse_directory(_cfg(session, settings, "staff_directory", None)),
+                           _cfg(session, settings, "audit_ai_user_ids", None))
+    own_conv = False
     try:
         for ext_id, contact_id, body, received_at in rows:
             if stats["handled"] >= cap:
@@ -643,6 +715,16 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
             if ca.is_internal_email(lead.email, internal):          # staff writing to staff is not a lead waiting for a reply
                 stats["skipped_internal"] += 1
                 continue
+            # Our own tables miss some staff replies (Rose's email to Michael Rivera on 2026-11-06 was not in them), so the GHL
+            # conversation decides: a staff call, text or email after this email means it was answered.
+            try:
+                if conv is None:
+                    conv, own_conv = _conv_client(settings), True
+                if staff_reach_after(conv, contact_id, received_at, staff_ids) is not None:
+                    stats["answered"] += 1
+                    continue
+            except Exception as exc:                                  # unreadable: flag it rather than lose a real request
+                logger.warning("callback_followup: could not read conversation of %s: %s", contact_id, exc)
             got = (analyze or (lambda b: analyze_email(settings, b, now)))(body or "")
             summary = str(got.get("purpose_summary") or "").strip() or (body or "").strip()[:300]
             happened = _email_what_happened(body, received_at)
@@ -660,4 +742,6 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
     finally:
         if own_ghl and ghl is not None:
             ghl.close()
+        if own_conv and conv is not None:
+            conv.close()
     return stats

@@ -382,14 +382,14 @@ def add_inbound(session, ext, minutes_ago, contact="c1", body="Can someone call 
     session.commit()
 
 
-def run_emails(session, ghl=None, analyze=None, enabled=True, now=NOW, force=True, every=None):
+def run_emails(session, ghl=None, analyze=None, enabled=True, now=NOW, force=True, every=None, conv=None):
     sent = []
     cfg = {"unanswered_email_enabled": "true" if enabled else "false"}
     if every:
         cfg["unanswered_email_check_minutes"] = str(every)
     with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)), \
             patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
-        out = svc.run_unanswered_email_check(session, SimpleNamespace(alert_email_to=""), now, ghl=ghl or FakeGHL(),
+        out = svc.run_unanswered_email_check(session, SimpleNamespace(alert_email_to=""), now, ghl=ghl or FakeGHL(), conv=conv or FakeConv([]),
                                              analyze=analyze or (lambda b: {"purpose_summary": "Asks for a call.", "callback_wanted": "yes"}),
                                              send=lambda to, subj, body, cc: sent.append((to, subj)), force=force)
     session.commit()
@@ -883,3 +883,104 @@ def test_a_contact_ghl_cannot_name_stays_unnamed_and_is_retried_later(session):
     session.commit()
     assert svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=Nobody(), force=True) == 0
     assert svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=FakeGHL(), force=True) == 1
+
+
+# ── "reached" = a staff call, text or email in the GHL conversation, not only a connected call (Kes 2026-11-10) ───────────────
+ROSE_UID, AI_UID = "0swBv9tBNeXeYXPYFBSx", "yIhCTptvoNLixaWkLcRd"
+STAFF_SET = {p["ghl_id"] for p in DIR} - {AI_UID}
+
+
+class FakeConv:
+    """GHL conversation reads: one conversation with the given messages."""
+
+    def __init__(self, msgs):
+        self.msgs, self.closed, self.reads = msgs, False, 0
+
+    def get_conversations_by_contact(self, cid, limit=5):
+        self.reads += 1
+        return [{"id": "conv1"}]
+
+    def get_conversation_messages(self, conv_id, limit=40):
+        return self.msgs
+
+    def close(self):
+        self.closed = True
+
+
+def msg(when, kind="TYPE_EMAIL", user=ROSE_UID, direction="outbound"):
+    return {"dateAdded": when, "messageType": kind, "userId": user, "direction": direction, "body": "x"}
+
+
+T0 = datetime(2026, 11, 6, 22, 22, tzinfo=timezone.utc)                    # when Michael Rivera's email arrived
+
+
+def test_staff_reach_counts_calls_texts_and_emails_by_staff_after_the_request_only():
+    conv = FakeConv([
+        msg("2026-11-06T21:59:00.000Z", "TYPE_SMS"),                        # before the request: not a reply to it
+        msg("2026-11-06T22:28:00.000Z", "TYPE_EMAIL"),                      # Rose's reply: counts
+        msg("2026-11-06T22:40:00.000Z", "TYPE_CALL"),
+        msg("2026-11-06T22:25:00.000Z", "TYPE_INTERNAL_COMMENT"),           # a note, not contact
+        msg("2026-11-06T22:26:00.000Z", "TYPE_EMAIL", user=AI_UID),         # the AI's id: never proof a person acted
+        msg("2026-11-06T22:27:00.000Z", "TYPE_EMAIL", user=None),           # automatic
+        msg("2026-11-06T22:29:00.000Z", "TYPE_EMAIL", direction="inbound"),
+    ])
+    at, via = svc.staff_reach_after(conv, "c1", T0, STAFF_SET)
+    assert (at, via) == (datetime(2026, 11, 6, 22, 28, tzinfo=timezone.utc), "email")
+    assert svc.staff_reach_after(FakeConv([msg("2026-11-06T22:26:00.000Z", user=AI_UID)]), "c1", T0, STAFF_SET) is None
+
+
+def test_update_contacted_marks_a_lead_reached_by_a_staff_email_and_remembers_how(session):
+    session.add(CallbackFollowup(id="mr", source="email", source_id="s-mr", contact_id="15BnRV4tPSvDZP2ZijqC", staff_key="roselen",
+                                 action="email_staff", reason="no_time", status="dry_run", approval_status="pending", lead_name="Michael Rivera",
+                                 created_at=T0))
+    session.commit()
+    conv = FakeConv([msg("2026-11-06T22:28:00.000Z", "TYPE_EMAIL")])
+    assert svc.update_contacted(session, SimpleNamespace(), T0 + timedelta(days=3), force=True, conv=conv) == 1
+    session.commit()
+    row = session.get(CallbackFollowup, "mr")
+    assert row.contacted_at.replace(tzinfo=timezone.utc) == datetime(2026, 11, 6, 22, 28, tzinfo=timezone.utc)
+    assert svc._detail_value(row.detail, "contacted_via") == "email"
+    assert svc.update_contacted(session, SimpleNamespace(), T0 + timedelta(days=3), force=True, conv=conv) == 0     # not marked twice
+
+
+def test_update_contacted_applies_to_every_row_and_skips_bare_phone_ids_and_unreadable_conversations(session):
+    for rid, cid in (("a", "realA"), ("b", "realB"), ("p", "+19728007667")):
+        session.add(CallbackFollowup(id=rid, source="call", source_id=f"s-{rid}", contact_id=cid, action="email_staff", reason="no_time",
+                                     status="dry_run", approval_status="pending", created_at=T0))
+    session.commit()
+
+    class Mixed(FakeConv):
+        def get_conversations_by_contact(self, cid, limit=5):
+            if cid == "realB":
+                raise RuntimeError("boom")
+            return super().get_conversations_by_contact(cid, limit)
+
+    conv = Mixed([msg("2026-11-06T22:30:00.000Z", "TYPE_SMS")])
+    assert svc.update_contacted(session, SimpleNamespace(), T0 + timedelta(days=1), force=True, conv=conv) == 1
+    session.commit()
+    got = {r.id: r.contacted_at for r in session.execute(select(CallbackFollowup)).scalars()}
+    assert got["a"] is not None and got["b"] is None and got["p"] is None            # B unreadable, P has no real contact id
+
+
+def test_a_staff_reply_seen_in_ghl_means_the_email_was_answered_and_creates_no_request(session):
+    add_inbound(session, "answered-in-ghl", 45)
+    replied = FakeConv([msg((NOW - timedelta(minutes=30)).isoformat(), "TYPE_EMAIL")])
+    out, sent = run_emails(session, ghl=FakeGHL(), conv=replied)
+    assert out["answered"] == 1 and out["handled"] == 0 and sent == []
+    assert session.execute(select(CallbackFollowup)).scalars().all() == []
+    session.execute(text("DELETE FROM inbound_messages"))
+    session.commit()
+    add_inbound(session, "not-answered", 45, contact="c2")
+    out2, sent2 = run_emails(session, ghl=FakeGHL(), conv=FakeConv([msg((NOW - timedelta(minutes=30)).isoformat(), "TYPE_EMAIL", user=AI_UID)]))
+    assert out2["handled"] == 1 and len(sent2) == 1                                # the AI's id does not count as a person replying
+
+
+def test_summary_lists_how_a_lead_was_reached(session):
+    shadow(session, req="", clear=False, sid="viaA")
+    row = session.execute(select(CallbackFollowup)).scalars().one()
+    row.contacted_at = NOW
+    row.detail = '{"contacted_via": "text"}'
+    session.commit()
+    with patch.object(svc, "_cfg", lambda s, st, key, default: default):
+        out = svc.get_summary(session, SimpleNamespace())
+    assert out["leads"][0]["contacted_via"] == "text" and out["counts"]["contacted"] == 1
