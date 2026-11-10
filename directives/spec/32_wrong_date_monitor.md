@@ -72,3 +72,10 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 - `Mark as Lead` does not resolve to a GHL field id (label mismatch) — pre-existing, separate.
 - Classification is keyword-heuristic; a false positive costs one Dismiss click.
 - Year-less configured dates are never auto-cleared.
+
+## Open House reminder and missing-date alert (2026-11-10)
+- Dates come from `app/core/orientation.py::OPEN_HOUSES` (Nov 19, Dec 3, Dec 17, 2026). To add one, edit that list and deploy.
+- One day after each Open House date, from 9 AM Central (sent late only if missed, up to 7 days), Cora emails `alert_email_to` plus jackie@colaberry.com: set up the next Eventbrite page, put the RSVP link and the next date in dashboard Settings, and remove the passed date from the hand-edited agents/prompts. If no later date exists, the email says so.
+- Alert `open_house_date_missing` (warning, to the same people): once a day from 9 AM Central while the Settings "next Open House date" is blank, not a full date, or passed, or while no date is ahead in the list. It starts the day after the reminder (the reminder covers the blank setting on day one).
+- Idempotent: one `app_config` row per send (`open_house_reminder:<date>`, `open_house_missing:<day>`). Send failures are never silent: these two emails use `raise_on_failure=True` on the shared mail helper; a failed send is retried each cycle (5 tries), one recipient at a time if the group send fails, and if every try fails or only some recipients got it, Kes gets a dashboard exception (`open_house_email_failed`) plus an email naming who missed it.
+- Code: `app/core/open_house_reminder.py`, `app/services/open_house_reminder.py`, wired in `alerting.py`; tests `tests/unit/test_open_house_reminder.py`.

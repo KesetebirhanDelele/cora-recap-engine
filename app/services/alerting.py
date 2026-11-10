@@ -44,9 +44,9 @@ Deduplication key: (alert_type, status='active').
 from __future__ import annotations
 
 import logging
-import time
 import re
 import smtplib
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -198,6 +198,12 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         logger.error("alerting: date_expiry failed: %s", exc)
 
     try:
+        from app.services.open_house_reminder import run_open_house_reminders
+        run_open_house_reminders(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: open_house_reminder failed: %s", exc)
+
+    try:
         from app.services.wrong_date_monitor import scan_wrong_dates
         scan_wrong_dates(session, settings, now)
     except Exception as exc:
@@ -255,7 +261,11 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         session.rollback()
         logger.error("alerting: content flag check failed: %s", exc)
     try:
-        from app.services.callback_followup import refresh_missing_names, run_unanswered_email_check, update_contacted
+        from app.services.callback_followup import (
+            refresh_missing_names,
+            run_unanswered_email_check,
+            update_contacted,
+        )
         run_unanswered_email_check(session, settings, now)
         update_contacted(session, settings, now)
         refresh_missing_names(session, settings, now)
@@ -1333,8 +1343,12 @@ def _smtp_send(
     log_label: str,
     cc_addrs: list[str] | None = None,
     extra_headers: dict[str, str] | None = None,
+    raise_on_failure: bool = False,
 ) -> None:
     """
+    raise_on_failure (default False = unchanged behaviour): re-raise instead of swallowing, and also raise when SMTP is disabled or
+    sender/recipients are missing, so a caller that must know a mail did not go out (Open House reminder) can react.
+
     Low-level SMTP send, shared by every alert email (generic system alerts
     and the friendly sales-queue template). Non-fatal: exceptions are
     logged, never raised. Does nothing if smtp_enabled is False or
@@ -1342,6 +1356,8 @@ def _smtp_send(
     """
     if not settings.smtp_enabled:
         logger.debug("alerting: SMTP disabled — skipping email for %s", log_label)
+        if raise_on_failure:
+            raise RuntimeError("SMTP is disabled")
         return
 
     from_addr = settings.alert_email_from
@@ -1352,6 +1368,8 @@ def _smtp_send(
             "alerting: ALERT_EMAIL_FROM or recipient list not configured; skipping email for %s",
             log_label,
         )
+        if raise_on_failure:
+            raise RuntimeError("sender or recipients not configured")
         return
 
     msg = MIMEMultipart("alternative")
@@ -1389,6 +1407,8 @@ def _smtp_send(
         )
     except Exception as exc:
         logger.error("alerting: SMTP send failed for %s: %s", log_label, exc)
+        if raise_on_failure:
+            raise
 
 
 def _send_alert_email(
@@ -1400,6 +1420,7 @@ def _send_alert_email(
     now: datetime,
     to_override: list[str] | None = None,
     is_resolution: bool = False,
+    raise_on_failure: bool = False,
 ) -> None:
     """
     Send a generic system-alert email (queue lag, exception spike,
@@ -1440,7 +1461,8 @@ def _send_alert_email(
 
     cc = [] if to_override is not None else [a.strip() for a in (getattr(settings, "alert_email_cc", None) or "").split(",") if a.strip()]
     _smtp_send(settings, to_addrs, subject, body, log_label=alert_type, cc_addrs=cc,
-               extra_headers=system_alert_headers(alert_type, severity, "resolved" if is_resolution else "active"))
+               extra_headers=system_alert_headers(alert_type, severity, "resolved" if is_resolution else "active"),
+               raise_on_failure=raise_on_failure)
 
 
 def send_exception_resolved_email(session: Session, settings: Any, exception_id: str, resolved_by: str, note: str = "") -> None:
