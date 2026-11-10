@@ -48,7 +48,7 @@ def _on(value: Any) -> bool:
 
 
 def _claim(session: Session, *, source: str, source_id: str, contact_id: str, staff: dict | None, plan: cf.Plan,
-           requested: str, dry: bool, lead: cf.Lead, summary: str, detail: dict) -> Any | None:
+           requested: str, dry: bool, lead: cf.Lead, summary: str, detail: dict, created_at: datetime | None = None) -> Any | None:
     """Insert the ledger row first. Returns None when this (source, id) was already handled. In a dry run the row waits on the
     dashboard as approval 'pending' (shadow week: Kes approves each genuine request)."""
     from app.models.callback_followup import CallbackFollowup
@@ -61,6 +61,8 @@ def _claim(session: Session, *, source: str, source_id: str, contact_id: str, st
         lead_name=(lead.name or "")[:200] or None, lead_phone=(lead.phone or "")[:40] or None, lead_email=(lead.email or "")[:200] or None,
         summary=(summary or "")[:2000] or None, plan_start=plan.start.isoformat() if plan.start else None,
         approval_status="pending" if dry else None)
+    if created_at is not None:                    # history load: dated at the original call / email, not at load time
+        row.created_at = created_at
     try:
         with session.begin_nested():
             session.add(row)
@@ -177,7 +179,7 @@ def follow_up(
     session: Session, settings: Any, *, source: str, source_id: str, contact_id: str, kind: str, target_name: str | None,
     callback_wanted: bool, time_is_clear: bool, requested_local: str, summary: str, lead_name: str = "", lead_phone: str = "",
     campaign: str = "", asked_for: str = "", flag_key: str, ghl: Any = None, now: datetime | None = None,
-    send: Callable[..., None] | None = None,
+    send: Callable[..., None] | None = None, created_at: datetime | None = None, notify_pending: bool = True,
 ) -> Any | None:
     """Decide, record and (flag on) act for ONE event. Returns the ledger row, or None when it was already handled.
     With the flag off (shadow week) the decision and the lead's details are recorded as 'dry_run' / approval 'pending' and
@@ -208,15 +210,17 @@ def follow_up(
                              staff=staff, free_slots=slots, now=now, tz_name=tz_name)
         lead = _lead(ghl, contact_id, lead_name, lead_phone, campaign)       # read-only: who it is, for the dashboard and the email
         row = _claim(session, source=source, source_id=source_id, contact_id=contact_id, staff=staff, plan=plan,
-                     requested=requested_local, dry=not enabled, lead=lead, summary=summary,
+                     requested=requested_local, dry=not enabled, lead=lead, summary=summary, created_at=created_at,
                      detail={"notify": [p["key"] for p in notify], "notify_names": [p["name"] for p in notify],
-                             "kind": kind, "target": target_name, "asked_for": asked_for, "campaign": campaign})
+                             "kind": kind, "target": target_name, "asked_for": asked_for, "campaign": campaign,
+                             "history": created_at is not None})
         if row is None:
             return None
         if not enabled:
             logger.info("callback_followup: DRY RUN %s %s -> %s (%s) notify=%s", source, source_id, plan.action, plan.reason,
                         [p["key"] for p in notify])
-            _notify_pending(session, settings, row, lead, notify, summary, send)
+            if notify_pending:
+                _notify_pending(session, settings, row, lead, notify, summary, send)
             return row
         _perform(session, settings, row, staff=staff, notify=notify, lead=lead, plan=plan, kind=kind, asked_for=asked_for,
                  summary=summary, requested_local=requested_local, ghl=ghl, send=send, tz_name=tz_name)
@@ -355,7 +359,8 @@ def get_summary(session: Session, settings: Any, limit: int = 100) -> dict[str, 
 
 
 def process_call(session: Session, settings: Any, call_event: Any, analysis: Any, *, contact_id: str, contact_phone: str,
-                 ghl: Any = None, now: datetime | None = None, send: Callable[..., None] | None = None) -> Any | None:
+                 ghl: Any = None, now: datetime | None = None, send: Callable[..., None] | None = None,
+                 created_at: datetime | None = None, notify_pending: bool = True) -> Any | None:
     """Failed-transfer follow-up for one analysed call. Returns None when no follow-up is needed (a human was not asked for, a
     transfer connected, or a callback was already booked on the call) or the call was already handled. Never raises."""
     try:
@@ -378,10 +383,56 @@ def process_call(session: Session, settings: Any, call_event: Any, analysis: Any
             time_is_clear=bool(getattr(analysis, "time_is_clear", False)),
             requested_local=requested, summary=summary,
             lead_name=call_event.lead_name or "", lead_phone=contact_phone, campaign=call_event.campaign_name or "",
-            asked_for=f"{kind} ({target})" if target else kind, flag_key="callback_followup_enabled", ghl=ghl, now=now, send=send)
+            asked_for=f"{kind} ({target})" if target else kind, flag_key="callback_followup_enabled", ghl=ghl, now=now, send=send,
+            created_at=created_at, notify_pending=notify_pending)
     except Exception as exc:
         logger.error("callback_followup: process_call failed for %s: %s", getattr(call_event, "call_id", "?"), exc)
         return None
+
+
+def backfill_calls(session: Session, settings: Any, days: int = 21, *, ghl: Any = None, analyze: Callable[..., Any] | None = None,
+                   now: datetime | None = None, send: Callable[..., None] | None = None) -> dict[str, int]:
+    """History load (Kes 2026-11-10): put the failed-transfer calls of the last `days` days on the dashboard card as pending,
+    dated at the call, with NO "waiting for approval" email. Approving a row still books / emails the staff member (the slot is
+    re-checked first, so an old time simply becomes the staff email). Calls already in the ledger are skipped. Needs one AI
+    analysis per call (about a cent each)."""
+    from sqlalchemy import Text, cast, or_, select
+
+    from app.core import transfer_recovery as tr
+    from app.models.call_event import CallEvent
+
+    now = now or datetime.now(timezone.utc)
+    stats = {"seen": 0, "added": 0, "not_a_follow_up": 0, "already_there": 0}
+    calls = session.execute(select(CallEvent).where(
+        CallEvent.start_time_utc >= now - timedelta(days=days),
+        or_(CallEvent.detected_intent == tr.HUMAN_REQUEST_INTENT,
+            cast(CallEvent.raw_payload_json, Text).like("%transfer_call_action_type%")),
+    ).order_by(CallEvent.start_time_utc)).scalars().all()
+    for ce in calls:
+        stats["seen"] += 1
+        ea = (ce.raw_payload_json or {}).get("executed_actions")
+        if not tr.needs_callback(ce.detected_intent, ea):
+            stats["not_a_follow_up"] += 1
+            continue
+        if session.execute(text("SELECT 1 FROM callback_followups WHERE source = 'call' AND source_id = :i"),
+                           {"i": ce.call_id or ce.id}).first():
+            stats["already_there"] += 1
+            continue
+        raw = ce.raw_payload_json or {}
+        phone = raw.get("phone_number_to") or raw.get("phone_number") or raw.get("phone") or ""
+        started = ce.start_time_utc if ce.start_time_utc.tzinfo else ce.start_time_utc.replace(tzinfo=timezone.utc)
+        if analyze is not None:
+            analysis = analyze(ce)
+        else:
+            from app.core.ai_message_generator import generate_ghl_call_analysis
+
+            analysis = generate_ghl_call_analysis(
+                transcript=ce.transcript or "", call_start_time_ms=int(started.timestamp() * 1000),
+                duration_seconds=ce.duration_seconds, contact_phone=phone, settings=settings, session=session)
+        row = process_call(session, settings, ce, analysis, contact_id=ce.contact_id or "", contact_phone=phone, ghl=ghl, now=now,
+                           send=send, created_at=started, notify_pending=False)
+        stats["added"] += 1 if row is not None else 0
+    return stats
 
 
 # ── unanswered lead emails ──────────────────────────────────────────────────
@@ -416,12 +467,16 @@ def analyze_email(settings: Any, body: str, now: datetime, *, _client: Any = Non
 
 def run_unanswered_email_check(session: Session, settings: Any, now: datetime | None = None, *, ghl: Any = None,
                                analyze: Callable[..., dict] | None = None, send: Callable[..., None] | None = None,
-                               force: bool = False) -> dict:
+                               force: bool = False, lookback: timedelta | None = None, notify_pending: bool = True,
+                               history: bool = False, limit: int | None = None) -> dict:
     """Lead emails (Conversations) with no outbound message after them for 30 business minutes -> one follow-up each.
 
     The alert cycle calls this every 60 s, but it only does work in the first two minutes of every `unanswered_email_check_minutes`
     (default 30) - Kes 2026-11-10: one look every 30 minutes is enough. So an email is acted on between 30 and 60 minutes after it
-    arrived (30 business minutes of waiting, then up to one more check interval). `force` skips the throttle (tests, manual runs)."""
+    arrived (30 business minutes of waiting, then up to one more check interval). `force` skips the throttle (tests, manual runs).
+    History load (Kes 2026-11-10): `lookback` widens the window, `notify_pending=False` sends no "waiting for approval" email, and
+    `history=True` dates each row at the email's arrival so the dashboard and the 'reached' check read correctly."""
+    cap = limit or MAX_EMAILS_PER_RUN
     now = now or datetime.now(timezone.utc)
     stats = {"seen": 0, "handled": 0, "skipped_internal": 0, "throttled": False}
     try:
@@ -438,7 +493,7 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
                           AND e.event_at > m.received_at)
           AND NOT EXISTS (SELECT 1 FROM callback_followups f WHERE f.source = 'email' AND f.source_id = m.external_id)
         ORDER BY m.received_at LIMIT :lim"""),
-        {"since": now - EMAIL_LOOKBACK, "cut": now - EMAIL_WAIT, "lim": MAX_EMAILS_PER_RUN * 3}).fetchall()
+        {"since": now - (lookback or EMAIL_LOOKBACK), "cut": now - EMAIL_WAIT, "lim": cap * 3}).fetchall()
     own_ghl = ghl is None
     if own_ghl and rows:
         from app.adapters.ghl import GHLClient
@@ -447,7 +502,7 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
     internal = ca.parse_internal_domains(_cfg(session, settings, "audit_internal_email_domains", None))
     try:
         for ext_id, contact_id, body, received_at in rows:
-            if stats["handled"] >= MAX_EMAILS_PER_RUN:
+            if stats["handled"] >= cap:
                 break
             stats["seen"] += 1
             if isinstance(received_at, str):                          # SQLite / raw drivers may hand back text
@@ -468,7 +523,8 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
                 time_is_clear=str(got.get("time_is_clear", "no")).lower() == "yes",
                 requested_local=cf.resolve_day_clock(got.get("requested_day"), got.get("requested_clock"), now) or "",
                 summary=summary, lead_name=lead.name,
-                lead_phone=lead.phone, asked_for="an email reply", flag_key="unanswered_email_enabled", ghl=ghl, now=now, send=send)
+                lead_phone=lead.phone, asked_for="an email reply", flag_key="unanswered_email_enabled", ghl=ghl, now=now, send=send,
+                created_at=received_at if history else None, notify_pending=notify_pending)
             if row is not None:
                 stats["handled"] += 1
     finally:

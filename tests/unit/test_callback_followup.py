@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core import callback_followup as cf
 from app.models.base import Base
+from app.models.call_event import CallEvent
 from app.models.callback_followup import CallbackFollowup
 from app.models.staff_call_quality import StaffCallQuality
 from app.services import callback_followup as svc
@@ -180,7 +181,7 @@ def test_business_due(received, now, due):
 @pytest.fixture()
 def session():
     engine = create_engine("sqlite://")
-    Base.metadata.create_all(engine, tables=[CallbackFollowup.__table__, StaffCallQuality.__table__])
+    Base.metadata.create_all(engine, tables=[CallbackFollowup.__table__, StaffCallQuality.__table__, CallEvent.__table__])
     with engine.begin() as c:     # production columns written by delivery_sync with raw SQL (the ORM model has no external_id)
         c.execute(text("CREATE TABLE channel_events (id TEXT, contact_id TEXT, kind TEXT, channel TEXT, event_at TIMESTAMP)"))
         c.execute(text("CREATE TABLE inbound_messages (id TEXT, contact_id TEXT, channel TEXT, body TEXT, received_at TIMESTAMP, "
@@ -565,3 +566,63 @@ def test_the_pending_notice_can_be_switched_off_and_never_blocks_the_row(session
                             kind="admissions", target_name="", callback_wanted=True, time_is_clear=False, requested_local="", summary="s",
                             flag_key="callback_followup_enabled", ghl=FakeGHL(), now=NOW, send=boom)
     assert row is not None and row.approval_status == "pending"                # a mail failure never loses the request
+
+
+# ── history load: last 3 weeks on the card, no "waiting for approval" email, still approvable (Kes 2026-11-10) ─────────────────
+SUCCESS = {"customer_support_bala": {"name": "customer_support_bala", "action_type": "transfer_call_action_type",
+                                     "return_value": '{"status": "transfer-completed"}', "error_message": ""}}
+
+
+def add_call(session, cid, days_ago, actions, intent="human_transfer_request"):
+    session.add(CallEvent(id=f"id-{cid}", call_id=cid, dedupe_key=f"dk-{cid}", lead_name="Hist Lead", campaign_name="New Lead",
+                          detected_intent=intent, start_time_utc=NOW - timedelta(days=days_ago, minutes=5),
+                          raw_payload_json={"executed_actions": actions, "phone_number_to": "+19725550100"}))
+    session.commit()
+
+
+def history(session, days=21, analyze=None):
+    sent = []
+    cfg = {"callback_followup_enabled": "false"}
+    an = analyze or (lambda ce: SimpleNamespace(purpose_summary="Asked for support.", requested_day="", requested_clock="",
+                                                 time_is_clear=False, call_detailed_summary=""))
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)):
+        out = svc.backfill_calls(session, SimpleNamespace(alert_email_to="kes@colaberry.com"), days=days, ghl=FakeGHL(), analyze=an, now=NOW,
+                                 send=lambda *a: sent.append(a))
+    session.commit()
+    return out, sent
+
+
+def test_history_adds_only_failed_transfers_dated_at_the_call_and_sends_no_email(session):
+    add_call(session, "old-fail", 10, FAILED)
+    add_call(session, "connected", 5, SUCCESS)
+    add_call(session, "too-old", 30, FAILED)
+    out, sent = history(session)
+    assert out["added"] == 1 and out["not_a_follow_up"] == 1 and sent == []          # no pending notice, nothing to staff
+    row = session.execute(select(CallbackFollowup)).scalars().one()
+    assert row.source_id == "old-fail" and row.approval_status == "pending" and row.status == "dry_run"
+    assert row.created_at.replace(tzinfo=timezone.utc) == NOW - timedelta(days=10, minutes=5) and '"history": true' in row.detail
+    assert row.staff_name == "Balakrishna K"                                             # the transfer action named him (bala)
+    out2, _ = history(session)                                                           # a rerun adds nothing
+    assert out2["added"] == 0 and out2["already_there"] == 1
+
+
+def test_a_history_row_can_still_be_approved_and_then_emails_the_staff_member(session):
+    add_call(session, "old-fail", 10, FAILED)
+    history(session)
+    row = session.execute(select(CallbackFollowup)).scalars().one()
+    out, sent = approve(session, row.id)
+    assert out["ok"] is True and out["status"] == "done" and len(sent) == 1 and sent[0][0] == ["balakrishna.k@colaberry.com"]
+
+
+def test_history_emails_are_dated_at_arrival_and_send_no_notice(session):
+    add_inbound(session, "old-mail", 60 * 24 * 9)                         # 9 days ago
+    sent = []
+    cfg = {"unanswered_email_enabled": "false"}
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)):
+        out = svc.run_unanswered_email_check(session, SimpleNamespace(alert_email_to="kes@colaberry.com"), NOW, ghl=FakeGHL(),
+                                             analyze=lambda b: {"purpose_summary": "Asks for a call."}, send=lambda *a: sent.append(a),
+                                             force=True, lookback=timedelta(days=21), notify_pending=False, history=True, limit=200)
+    session.commit()
+    assert out["handled"] == 1 and sent == []
+    row = session.execute(select(CallbackFollowup)).scalars().one()
+    assert row.created_at.replace(tzinfo=timezone.utc) == NOW - timedelta(days=9) and row.approval_status == "pending"
