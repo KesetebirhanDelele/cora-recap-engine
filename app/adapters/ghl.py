@@ -830,6 +830,50 @@ class GHLClient:
         logger.info("GHL create_contact | first_name=%r tags=%s", first_name, payload["tags"])
         return self._request("POST", "/contacts/", json=payload)
 
+    # ── Calendars (spec/50) ───────────────────────────────────────────────────
+
+    def get_free_slots(self, calendar_id: str, day_start: Any, day_end: Any, tz_name: str, user_id: str | None = None) -> list[str]:
+        """Open slots (ISO strings with offset) on a calendar between two aware datetimes. Read-only; needs calendars.readonly."""
+        self.settings.validate_for_ghl_reads()
+        params: dict[str, Any] = {
+            "startDate": int(day_start.timestamp() * 1000), "endDate": int(day_end.timestamp() * 1000), "timezone": tz_name,
+        }
+        if user_id:
+            params["userId"] = user_id
+        result = self._request("GET", f"/calendars/{calendar_id}/free-slots", params=params)
+        slots: list[str] = []
+        for value in result.values():
+            if isinstance(value, dict) and isinstance(value.get("slots"), list):
+                slots.extend(str(s) for s in value["slots"])
+        return slots
+
+    def create_appointment(
+        self,
+        *,
+        calendar_id: str,
+        contact_id: str,
+        assigned_user_id: str,
+        start: Any,
+        end: Any,
+        title: str,
+        mode_flags: Any = None,
+    ) -> dict:
+        """Book a confirmed appointment on a staff calendar (POST /calendars/events/appointments). GHL notifies the contact with the
+        calendar's own confirmation (that message carries the meeting link). Shadow-gated like every other write: with writes off the
+        payload is only logged and a {'shadow': True} dict is returned (callers must not treat that as booked)."""
+        payload = {
+            "calendarId": calendar_id, "locationId": self.settings.ghl_location_id, "contactId": contact_id,
+            "assignedUserId": assigned_user_id, "startTime": start.isoformat(), "endTime": end.isoformat(),
+            "title": title[:150], "appointmentStatus": "confirmed", "address": "Google Meet",
+            "ignoreDateRange": False, "toNotify": True,
+        }
+        writes_enabled = mode_flags.ghl_writes_enabled if mode_flags is not None else self.settings.ghl_writes_enabled
+        if not writes_enabled:
+            return self._shadow_write("create_appointment", contact_id, payload)
+        self.settings.validate_for_ghl_reads()
+        logger.info("GHL create_appointment | contact_id=%s calendar_id=%s", contact_id, calendar_id)
+        return self._request("POST", "/calendars/events/appointments", json=payload)
+
     # ── Shadow write helper ───────────────────────────────────────────────────
 
     def _shadow_write(self, operation: str, contact_id: str, payload: dict) -> dict:

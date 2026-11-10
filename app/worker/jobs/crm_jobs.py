@@ -257,6 +257,15 @@ def create_crm_task(job_id: str) -> None:
                     "call_event_id=%s kind=%s", call_event_id, _kind,
                 )
 
+            # ── Staff call-back follow-up (spec/50): book a reminder / email the staff member. Never blocks the task. ──
+            try:
+                from app.services import callback_followup as _cbf
+
+                _cbf.process_call(session, settings, call_event, analysis, contact_id=effective_contact_id,
+                                  contact_phone=contact_phone)
+            except Exception as _cbf_exc:
+                logger.error("create_crm_task: callback follow-up failed | call_event_id=%s: %s", call_event_id, _cbf_exc)
+
             # ── Fetch GHL contact (read — always live, used for field ID resolution) ──
             from app.adapters.ghl import GHLClient
 

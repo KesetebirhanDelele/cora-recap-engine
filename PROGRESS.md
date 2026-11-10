@@ -3021,3 +3021,11 @@ Supersedes the json-file cap described in the 2026-11-05 (night) disk-hygiene en
 - Checked: 216 related tests pass; full suite 2218 pass, 7 pre-existing unrelated failures. Real-model run on 12 representative messages: 0 mismatches (3 disclaimers cleared, 4 real claims kept, retired-course and "free" cases correct).
 - Known gap: claims the word list never matches ("land a job", "hired") are invisible to both checks.
 - Not done: commit, deploy (needs Kes's go); a page to browse content_ok records (query channel_events for now).
+
+## 2026-11-10 - Staff call-back follow-up and unanswered lead emails (spec/50) - built, NOT deployed
+- Built per Kes's decisions: failed-transfer calls and unanswered lead emails (30 business minutes) now get either a booked call-back reminder on the staff calendar (clear time + free slot) or one email to the staff member with lead details and a summary. Lead confirmation = GHL's own booking notification (has the Meet link). Both flags OFF by default (dry run ledger).
+- GHL key: calendars.readonly / calendars/events.readonly / calendars/events.write now live (verified: calendars list OK, a real test booking was made and read back). `/users/` still 401 (not needed).
+- Real-model check found the model cannot compute dates; design changed so the model copies day word + clock time and code resolves the date.
+- Checked: 66 new tests pass; full suite 2284 pass, 7 pre-existing unrelated failures. Real-model run on 7 representative calls (including the actual 2026-11-09 call): correct.
+- Not done: commit, deploy (migration 0034), dry-run review, enabling flags. Test appointment "TEST - Cora callback booking (Kes + Rose)" (Tue 2026-11-10 15:30 Central, id CsVdyLdeBGultXMhDbx4) must be cancelled by Kes.
+- 2026-11-10 (later): added the shadow-week dashboard (`/callback-followups`: tiles + lead list with name, email, phone, staff needed, summary) and per-row Approve / Not genuine (approval re-checks the calendar slot). Ledger columns added to migration 0034 (still undeployed). 83 tests in `tests/unit/test_callback_followup.py`; full suite 2301 pass + the same 7 unrelated failures; `tsc` clean. Unanswered-email check throttled to every 30 minutes (`unanswered_email_check_minutes`). Unnamed support requests go to the support person on shift, else the next to start.

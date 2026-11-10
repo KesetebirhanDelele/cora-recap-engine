@@ -18,6 +18,11 @@ Output JSON keys:
   ai_campaign             — "Yes" | "No"
   call_start_time_formatted — human-readable local timestamp
   task_due_date           — ISO 8601 with timezone offset
+  callback_wanted         — "yes" | "no" (spec/50)
+  requested_day           — the day the caller named (today | tomorrow | a weekday | MM-DD) or ""
+  requested_clock         — the clock time the caller named, 24-hour "HH:MM", or ""
+  time_is_clear           — "yes" | "no"
+  purpose_summary         — 1-2 sentences: who the caller is and why they called
 """
 from app.prompts.registry import register
 
@@ -42,7 +47,12 @@ Output ONLY a valid JSON object with exactly these keys — no text outside JSON
   "call_detailed_summary": "string (150-200 words, use emojis)",
   "ai_campaign": "Yes|No",
   "call_start_time_formatted": "string (e.g. July 20th, 2025 at 7:04 PM)",
-  "task_due_date": "string (ISO 8601 with timezone offset)"
+  "task_due_date": "string (ISO 8601 with timezone offset)",
+  "callback_wanted": "yes|no",
+  "requested_day": "string (today|tomorrow|monday..sunday|MM-DD, or empty string)",
+  "requested_clock": "string (HH:MM 24-hour, or empty string)",
+  "time_is_clear": "yes|no",
+  "purpose_summary": "string (1-2 sentences)"
 }
 
 Field rules:
@@ -111,6 +121,24 @@ call_detailed_summary:
 
 ai_campaign: "Yes" if lead_classification is warm_lead, cold_lead, or
   escalate_admissions. Otherwise "No".
+
+callback_wanted: "yes" if the caller asked to speak to a person or asked to be called back
+  (including when the agent could not transfer them). Otherwise "no".
+
+requested_day / requested_clock: what the CALLER said about WHEN to call back, copied, not worked out.
+  requested_day is the day word they used: "today", "tomorrow", a weekday name in lower case
+  ("thursday"), or a calendar date as "MM-DD" ("november 12th" -> "11-12"). requested_clock is
+  the clock time they stated as 24-hour "HH:MM" ("2 pm" -> "14:00", "10:30 in the morning" ->
+  "10:30"). Fill requested_clock ONLY when the caller stated an actual hour. "As soon as
+  possible", "now", "this afternoon", "morning", "later", "sometime", "next week" are NOT clock
+  times: return "". Fill requested_day only when they named a day. Never guess a day or a time
+  the caller did not say. Do NOT compute any date yourself.
+
+time_is_clear: "yes" only when BOTH requested_day and requested_clock are filled and nothing in
+  the call makes them doubtful (the caller did not change or retract it). Otherwise "no".
+
+purpose_summary: one or two plain sentences for a staff member who has not heard the call:
+  who the caller is (student, lead, parent) and what they wanted. No emojis.
 """
 
 _USER_TEMPLATE = """\

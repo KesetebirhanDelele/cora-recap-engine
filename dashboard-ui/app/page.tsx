@@ -29,6 +29,7 @@ const NAV_GROUPS: { label: string; category: NavCategory; items: NavItem[] }[] =
       { href: "/staff-call-quality",  title: "Staff Call Quality",  icon: "🎧", description: "Sales-rep & support-staff calls, transcribed & scored.", category: "analytics" },
       { href: "/ai-cold-lead-tagging", title: "AI Cold Lead Tagging", icon: "🏷️", description: "Daily tagging of stale leads — activity & backlog.", category: "analytics" },
       { href: "/explorer-queue", title: "Explorer Call Queue", icon: "📞", description: "Rose's ranked call list: queue size, who was called, nightly runs.", category: "analytics" },
+      { href: "/callback-followups", title: "Call-back Follow-ups", icon: "☎️", description: "Leads who asked for a person: bookings, staff alerts, who was reached, and approvals.", category: "analytics" },
       { href: "/signup-intake",       title: "Sign-up Intake",      icon: "🧲", description: "New sign-ups per day (Explorer vs Open House) and how many have an email or a phone.", category: "analytics" },
     ],
   },

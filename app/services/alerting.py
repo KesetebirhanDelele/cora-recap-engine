@@ -255,6 +255,14 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         session.rollback()
         logger.error("alerting: content flag check failed: %s", exc)
     try:
+        from app.services.callback_followup import run_unanswered_email_check, update_contacted
+        run_unanswered_email_check(session, settings, now)
+        update_contacted(session, settings, now)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        logger.error("alerting: unanswered-email follow-up failed: %s", exc)
+    try:
         from app.services.transfer_alert import run_transfer_failure_check
         run_transfer_failure_check(session, settings, now)
         session.commit()

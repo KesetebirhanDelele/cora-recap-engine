@@ -39,6 +39,7 @@ import type {
   StaffCallQualityResponse,
   TagAiColdLeadsRunsResponse,
   ExplorerQueueResponse,
+  CallbackFollowupResponse,
   VoicePerformanceResponse,
   WebhookFailuresResponse,
   WorkerActivityResponse,
@@ -392,6 +393,16 @@ export async function fetchExplorerQueue(limit?: number): Promise<ExplorerQueueR
   const params: Record<string, string> = {};
   if (limit) params.limit = String(limit);
   return get<ExplorerQueueResponse>("/dashboard/explorer-queue", params);
+}
+
+export async function fetchCallbackFollowups(limit?: number): Promise<CallbackFollowupResponse> {
+  const params: Record<string, string> = {};
+  if (limit) params.limit = String(limit);
+  return get<CallbackFollowupResponse>("/dashboard/callback-followups", params);
+}
+
+export async function decideCallbackFollowup(id: string, decision: "approve" | "reject"): Promise<{ ok: boolean; status: string }> {
+  return post<{ ok: boolean; status: string }>("/dashboard/actions/callback-followup", { id, decision });
 }
 
 export async function fetchIntentCalls(options: {

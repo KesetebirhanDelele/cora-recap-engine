@@ -64,6 +64,12 @@ class GhlCallAnalysisResult:
     ai_campaign: str                # "Yes" or "No"
     call_start_time_formatted: str
     task_due_date: str              # ISO 8601
+    # spec/50: does the caller want a person to call back, and did they state a clear time?
+    callback_wanted: bool = False
+    requested_day: str = ""         # what the caller said: today | tomorrow | weekday | MM-DD (Cora resolves the date in code)
+    requested_clock: str = ""       # "HH:MM" 24-hour as stated, or ""
+    time_is_clear: bool = False
+    purpose_summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -407,6 +413,11 @@ def generate_ghl_call_analysis(
             ai_campaign=result.get("ai_campaign", "No").strip(),
             call_start_time_formatted=result.get("call_start_time_formatted", "").strip(),
             task_due_date=result.get("task_due_date", "").strip(),
+            callback_wanted=str(result.get("callback_wanted", "no")).strip().lower() == "yes",
+            requested_day=str(result.get("requested_day", "") or "").strip().lower(),
+            requested_clock=str(result.get("requested_clock", "") or "").strip(),
+            time_is_clear=str(result.get("time_is_clear", "no")).strip().lower() == "yes",
+            purpose_summary=str(result.get("purpose_summary", "") or "").strip(),
         )
 
     except Exception as exc:

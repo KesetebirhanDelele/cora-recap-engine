@@ -774,3 +774,46 @@ export interface WebhookFailuresResponse {
   window_hours: number;
   recorded_at:  string;
 }
+
+// ── Staff call-back follow-ups (spec/50) ─────────────────────────────────────
+export interface CallbackFollowupLead {
+  id: string;
+  source: "call" | "email";
+  lead_name: string | null;
+  lead_email: string | null;
+  lead_phone: string | null;
+  staff_name: string | null;
+  summary: string | null;
+  action: "book" | "email_staff";
+  reason: string;
+  status: string;
+  approval_status: "pending" | "approved" | "rejected" | null;
+  requested_time: string | null;
+  plan_start: string | null;
+  created_at: string | null;
+  contacted_at: string | null;
+  contact_id: string | null;
+}
+
+export interface CallbackFollowupCounts {
+  requests: number;
+  requests_7d: number;
+  from_calls: number;
+  from_emails: number;
+  booking_planned: number;
+  email_planned: number;
+  pending_approval: number;
+  approved: number;
+  rejected: number;
+  booked: number;
+  staff_notified: number;
+  failed: number;
+  contacted: number;
+}
+
+export interface CallbackFollowupResponse {
+  counts: CallbackFollowupCounts;
+  leads: CallbackFollowupLead[];
+  calls_enabled: boolean;
+  emails_enabled: boolean;
+}

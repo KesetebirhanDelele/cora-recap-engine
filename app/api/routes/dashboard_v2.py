@@ -321,6 +321,40 @@ def get_explorer_queue(
     return out
 
 
+@router.get("/callback-followups")
+def get_callback_followups(
+    limit: int = Query(default=100, le=300),
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Staff call-back follow-ups (spec/50): counts, the lead list, and whether the switches are on (shadow week = off)."""
+    from app.config import get_settings as _get_settings
+    from app.services.callback_followup import get_summary
+
+    return get_summary(session, _get_settings(), limit=limit)
+
+
+class CallbackFollowupDecision(BaseModel):
+    id: str
+    decision: str   # approve | reject
+
+
+@router.post("/actions/callback-followup")
+def action_callback_followup(
+    body: CallbackFollowupDecision,
+    auth: DashboardAuth,
+    session: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """Shadow week: approve (do the planned booking / staff email now) or reject (not genuine) one pending follow-up."""
+    from app.config import get_settings as _get_settings
+    from app.services.callback_followup import decide_row
+
+    out = decide_row(session, _get_settings(), body.id, body.decision, auth["operator_id"])
+    session.commit()
+    if not out.get("ok"):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=out.get("error", "could not decide"))
+    return out
+
+
 @router.get("/intent-calls")
 def get_intent_calls(
     intent: str = Query(..., description="detected_intent value to drill into"),
