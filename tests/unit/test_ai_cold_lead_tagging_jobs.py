@@ -23,6 +23,7 @@ Covers:
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 from app.worker.jobs.ai_cold_lead_tagging_jobs import ai_cold_lead_tagging_scan_job
@@ -119,5 +120,70 @@ def test_exception_path_fails_job_and_still_reschedules(
     mock_create_exc.assert_called_once()
     mock_complete.assert_not_called()
     # Regression guard (spec/29): a crashed cycle must not leave the job
-    # unscheduled — _reschedule runs in `finally` regardless of outcome.
-    mock_schedule.assert_called_once()
+    # unscheduled — _reschedule runs in `finally` regardless of outcome. A normal failed run schedules the daily chain
+    # AND exactly one 30-minute retry.
+    assert mock_schedule.call_count == 2
+    retry = [c for c in mock_schedule.call_args_list if (c.kwargs.get("payload") or {}).get("_retry")]
+    assert len(retry) == 1
+    assert (retry[0].kwargs["run_at"] - datetime.now(tz=timezone.utc)).total_seconds() <= 1800 + 5
+    added = [c.args[0] for c in session.add.call_args_list]
+    assert any(getattr(a, "status", None) == "failed" and a.error_message == "boom" for a in added)   # failure is in the run history
+
+
+
+@patch("app.worker.scheduler.schedule_job")
+@patch("app.services.ai_cold_lead_tagging.run_tagging_cycle", side_effect=RuntimeError("still down"))
+@patch("app.worker.exceptions.create_exception")
+@patch("app.worker.claim.fail_job")
+@patch("app.worker.claim.mark_running")
+@patch("app.worker.claim.claim_job")
+@patch("app.worker.claim.get_worker_id", return_value="worker-test")
+@patch("app.db.get_sync_session")
+@patch("app.config.get_settings")
+def test_a_failed_retry_does_not_retry_again_or_start_a_second_daily_chain(
+    mock_get_settings, mock_get_session, mock_get_worker_id, mock_claim, mock_mark_running, mock_fail, mock_create_exc,
+    mock_run_cycle, mock_schedule,
+):
+    session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = session
+    job = _mock_job()
+    job.payload_json = {"_scheduled_by": "retry", "_retry": True}
+    mock_claim.return_value = job
+
+    ai_cold_lead_tagging_scan_job("job-retry")
+
+    mock_fail.assert_called_once()
+    mock_create_exc.assert_called_once()          # still alerts
+    mock_schedule.assert_not_called()             # no second retry, no extra daily chain
+
+
+@patch("app.worker.scheduler.schedule_job")
+@patch("app.services.ai_cold_lead_tagging.run_tagging_cycle")
+@patch("app.worker.claim.complete_job")
+@patch("app.worker.claim.mark_running")
+@patch("app.worker.claim.claim_job")
+@patch("app.worker.claim.get_worker_id", return_value="worker-test")
+@patch("app.db.get_sync_session")
+@patch("app.config.get_settings")
+def test_a_successful_retry_does_not_start_a_second_daily_chain(
+    mock_get_settings, mock_get_session, mock_get_worker_id, mock_claim, mock_mark_running, mock_complete, mock_run_cycle, mock_schedule,
+):
+    session = MagicMock()
+    mock_get_session.return_value.__enter__.return_value = session
+    job = _mock_job()
+    job.payload_json = {"_retry": True}
+    mock_claim.return_value = job
+
+    ai_cold_lead_tagging_scan_job("job-retry")
+
+    mock_complete.assert_called_once()
+    mock_schedule.assert_not_called()
+
+
+def test_startup_check_counts_a_running_job():
+    import inspect
+
+    from app.worker.jobs import ai_cold_lead_tagging_jobs as m
+
+    src = inspect.getsource(m.start_ai_cold_lead_tagging_scanner)
+    assert "'pending', 'claimed', 'running'" in src

@@ -50,6 +50,8 @@ def ai_cold_lead_tagging_scan_job(job_id: str) -> None:
 
         mark_running(session, job)
         session.commit()
+        payload = getattr(job, "payload_json", None)
+        is_retry = isinstance(payload, dict) and payload.get("_retry") is True
 
         try:
             from app.services.ai_cold_lead_tagging import run_tagging_cycle
@@ -69,6 +71,9 @@ def ai_cold_lead_tagging_scan_job(job_id: str) -> None:
             # against, just via a different trigger (DB error, not a crash).
             session.rollback()
             fail_job(session, job, reason=str(exc))
+            _record_failed_run(session, settings, exc)
+            if not is_retry:
+                _schedule_retry(session)      # one retry only: a failed retry waits for the next daily run
             create_exception(
                 session,
                 type="ai_cold_lead_tagging_scan_failed",
@@ -79,8 +84,39 @@ def ai_cold_lead_tagging_scan_job(job_id: str) -> None:
             )
             session.commit()
         finally:
-            _reschedule(session)
+            if not is_retry:                  # a retry is a one-off; the daily chain already has its own next run
+                _reschedule(session)
             session.commit()
+
+
+RETRY_DELAY_SECONDS = 1800  # one retry, 30 minutes after a failed scan
+
+
+def _record_failed_run(session: Session, settings: Any, exc: Exception) -> None:
+    """The failed run's own history row is rolled back with the failed transaction, so write a fresh one: the dashboard run
+    history must show every failure, not only the alert."""
+    import uuid
+
+    from app.models.tag_ai_cold_leads_run import TagAiColdLeadsRun
+
+    try:
+        now = datetime.now(tz=timezone.utc)
+        session.add(TagAiColdLeadsRun(id=str(uuid.uuid4()), started_at=now, finished_at=now, status="failed", dry_run=False,
+                                      error_message=str(exc)[:2000]))
+        session.flush()
+    except Exception as err:
+        logger.error("ai_cold_lead_tagging_scan: could not record the failed run: %s", err)
+
+
+def _schedule_retry(session: Session) -> None:
+    from app.worker.scheduler import schedule_job
+
+    schedule_job(
+        session=session, job_type=_JOB_TYPE, entity_type="system", entity_id=_JOB_TYPE,
+        run_at=datetime.now(tz=timezone.utc) + timedelta(seconds=RETRY_DELAY_SECONDS),
+        payload={"_scheduled_by": "retry", "_retry": True},
+    )
+    logger.info("ai_cold_lead_tagging_scan: one retry scheduled in %ds", RETRY_DELAY_SECONDS)
 
 
 def _reschedule(session: Session) -> None:
@@ -106,13 +142,13 @@ def start_ai_cold_lead_tagging_scanner() -> None:
     with get_sync_session() as session:
         existing = session.execute(text("""
             SELECT id FROM scheduled_jobs
-            WHERE job_type = :job_type AND status = 'pending'
+            WHERE job_type = :job_type AND status IN ('pending', 'claimed', 'running')
             LIMIT 1
         """), {"job_type": _JOB_TYPE}).fetchone()
 
         if existing:
             logger.info(
-                "start_ai_cold_lead_tagging_scanner: job already pending (id=%s) — skipping", existing[0],
+                "start_ai_cold_lead_tagging_scanner: job already pending or running (id=%s) — skipping", existing[0],
             )
             return
 
