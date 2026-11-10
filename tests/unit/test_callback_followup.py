@@ -143,14 +143,56 @@ def test_everything_else_is_a_staff_email_never_a_guess(req, clear, slots, staff
 
 
 # ── staff email ─────────────────────────────────────────────────────────────
-def test_staff_email_has_the_lead_details_summary_and_no_transcript():
-    lead = cf.Lead(name="Jacqulyn T", phone="+19728007667", email="j@example.com", campaign="New Lead")
+def test_staff_email_stands_on_its_own_and_has_no_call_id(session=None):
+    lead = cf.Lead(name="Jacqulyn Hale", phone="+19728007667", email="", campaign="New Lead")
     plan = cf.Plan(cf.EMAIL_STAFF, "no_time")
-    subject, body = cf.build_staff_email(plan=plan, lead=lead, staff_names=["Roselen Flores"], source="call", source_id="e5b7413f",
-                                         summary="Lead wants to talk to admissions about the program.", asked_for="support")
-    assert subject == "Please call back: Jacqulyn T"
-    for must in ("Hi Roselen", "+19728007667", "j@example.com", "New Lead", "No call-back time was given", "talk to admissions", "call e5b7413f"):
-        assert must in body
+    subject, body = cf.build_staff_email(
+        plan=plan, lead=lead, staff_names=["Roselen Flores"], source="call", source_id="e5b7413f-2508-4aba-b274-292a8eeb2d1b",
+        summary="Jacqulyn wants to explore admissions and asked for a call-back.", asked_for="support",
+        what_happened="Cora's AI assistant called them. They asked to speak with a person. The live transfer failed.",
+        timing_note="today, as soon as possible")
+    assert subject == "Please call back Jacqulyn Hale: asked to speak with a person"
+    for must in ("Hi Roselen", "Jacqulyn Hale asked to speak with a person and nobody has called them back yet", "WHO", "Phone: +19728007667",
+                 "Email: not on file", "Lead type: New Lead", "WHAT HAPPENED", "The live transfer failed", "WHAT THEY WANT",
+                 "explore admissions", "When they want the call: today, as soon as possible", "WHAT TO DO",
+                 "Call Jacqulyn Hale at +19728007667 as soon as you can (today, as soon as possible)."):
+        assert must in body, must
+    for never in ("e5b7413f", "A lead", "No call-back time was given", "Asked for"):
+        assert never not in body and never not in subject, never
+
+
+def test_an_unknown_name_falls_back_to_the_phone_number_never_to_a_lead():
+    subject, body = cf.build_staff_email(plan=cf.Plan(cf.EMAIL_STAFF, "no_time"), lead=cf.Lead(phone="+19728007667"),
+                                         staff_names=["Roselen Flores"], source="call", summary="s")
+    assert subject == "Please call back +19728007667: asked to speak with a person" and "Name: +19728007667" in body
+
+
+# the real action log of the 2026-11-09 New Lead call e5b7413f: support transfer refused, then the booking failed
+REAL_ACTIONS = {
+    "customer_support_bala": {"name": "customer_support_bala", "action_type": "transfer_call_action_type",
+                              "return_value": '{"failed_reason": "transfer_outside_availability", "status": "transfer-failed-connection-error"}',
+                              "error_message": "error"},
+    "action_ghl_create_booking": {"name": "action_ghl_create_booking", "action_type": "ghl_booking_action_type",
+                                  "return_value": '{"booking_id": null, "status": "error"}',
+                                  "error_message": "GHL appointments API error: The slot you have selected is no longer available."},
+}
+
+
+def test_the_call_outcome_text_says_what_happened_on_the_real_call():
+    text_ = cf.describe_call_outcome(REAL_ACTIONS, started=datetime(2026, 11, 9, 22, 14, tzinfo=timezone.utc), direction="outbound",
+                                     campaign="New Lead", directory=DIR)
+    assert text_ == ("Cora's AI assistant (New Lead campaign) called them on Monday Nov 9 at 4:14 PM Central. "
+                     "They asked to speak with a person. The live transfer to the support line (Balakrishna K) failed: nobody was "
+                     "available at that time (outside working hours). The AI then offered a call-back, but the booking attempt failed. "
+                     "No call-back is confirmed.")
+
+
+def test_call_outcome_variants():
+    busy = {"customer_support_balamurali": {"name": "customer_support_balamurali", "action_type": "transfer_call_action_type",
+                                            "return_value": '{"failed_reason": "destination_busy"}', "error_message": "error"}}
+    t = cf.describe_call_outcome(busy, started=None, direction="inbound", campaign=None, directory=DIR)
+    assert t.startswith("They called Colaberry. They asked to speak with a person.") and "(Balamurali Kasula) failed: the line was busy" in t
+    assert "booking attempt failed" not in t
 
 
 def test_booked_email_names_the_time():
@@ -158,7 +200,8 @@ def test_booked_email_names_the_time():
     plan = cf.Plan(cf.BOOK, "clear_time_free_slot", start=start, end=start + timedelta(minutes=30))
     subject, body = cf.build_staff_email(plan=plan, lead=cf.Lead(name="Sam"), staff_names=["Taiwo Oludimimu"], source="email",
                                          source_id="m1", summary="s")
-    assert "booked" in subject.lower() and "Tuesday Nov 10 at 3:30 PM" in subject and "booked a call-back reminder" in body
+    assert subject == "Call-back booked: Sam - Tuesday Nov 10 at 3:30 PM CST"
+    assert "booked on your calendar for Tuesday Nov 10 at 3:30 PM CST" in body and "A reminder is on your calendar." in body
 
 
 # ── 30 business minutes ─────────────────────────────────────────────────────
@@ -210,6 +253,10 @@ class FakeGHL:
 
     def get_contact(self, cid):
         return {"contact": {"firstName": "Jacqulyn", "lastName": "T", "phone": "+19728007667", "email": self.email}}
+
+    def search_contact_by_phone(self, phone):
+        self.phone_searches = getattr(self, "phone_searches", []) + [phone]
+        return {"id": "REALID1", "firstName": "jacqulyn", "lastName": "hale", "phone": phone, "email": None}
 
     def close(self):
         pass
@@ -352,7 +399,7 @@ def run_emails(session, ghl=None, analyze=None, enabled=True, now=NOW, force=Tru
 def test_email_unanswered_for_over_30_business_minutes_alerts_rose_once(session):
     add_inbound(session, "m1", 45)                         # Monday 15:30 Central, now 16:15
     out, sent = run_emails(session)
-    assert out["handled"] == 1 and sent == [(["roselen@colaberry.com"], "Please call back: Jacqulyn T")]
+    assert out["handled"] == 1 and sent == [(["roselen@colaberry.com"], "Please call back Jacqulyn T: emailed Colaberry and has had no reply")]
     out2, sent2 = run_emails(session)                      # next hour: no duplicate
     assert out2["handled"] == 0 and sent2 == []
 
@@ -484,7 +531,7 @@ def test_approval_rechecks_the_slot_and_falls_back_to_the_staff_email(session):
 def test_approving_an_email_only_row_sends_the_staff_email(session):
     row, _ = shadow(session, req="", clear=False, kind="admissions", target="")
     out, sent = approve(session, row.id)
-    assert out["status"] == "done" and sent == [(["roselen@colaberry.com"], "Please call back: Jacqulyn T")]
+    assert out["status"] == "done" and sent == [(["roselen@colaberry.com"], "Please call back Jacqulyn T: asked to speak with a person")]
 
 
 def test_rejecting_closes_the_row_and_sends_nothing(session):
@@ -673,3 +720,136 @@ def test_an_unhelpful_analysis_falls_back_to_the_team_the_transfer_aimed_at(sess
     assert row.staff_key == "balakrishna"
     row2 = routed(session, {})                              # an older analysis without the fields at all
     assert row2 is None or row2.staff_key == "balakrishna"
+
+
+# ── a call whose contact_id is just the caller's phone number (not linked to a contact) ─────────────────────────────────────────
+def test_a_phone_number_contact_id_is_resolved_to_the_real_contact_name_and_id(session):
+    ghl = FakeGHL(slots=[slot(10, 15, 30)])
+    sent = []
+    cfg = {"callback_followup_enabled": "true"}
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)),             patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        row = svc.follow_up(session, SimpleNamespace(alert_email_to=""), source="call", source_id="phone-id", contact_id="+19728007667",
+                            kind="admissions", target_name="", callback_wanted=True, time_is_clear=True, requested_local="2026-11-10T15:30",
+                            summary="s", flag_key="callback_followup_enabled", ghl=ghl, now=NOW, send=lambda to, subj, body, cc: sent.append(body))
+    assert ghl.phone_searches == ["+19728007667"]
+    assert row.lead_name == "Jacqulyn Hale" and row.lead_phone == "+19728007667" and row.contact_id == "REALID1"
+    assert ghl.booked[0]["contact_id"] == "REALID1"                          # booked against the real contact, not the phone number
+    assert "Name: Jacqulyn Hale" in sent[0]
+
+
+def test_a_missing_contact_id_falls_back_to_the_calls_own_phone_and_a_failed_lookup_keeps_what_we_have(session):
+    class NoHit(FakeGHL):
+        def search_contact_by_phone(self, phone):
+            return None
+
+    ghl = FakeGHL()
+    lead = svc._lead(ghl, "", "", "972-800-7667", "New Lead")
+    assert lead.name == "Jacqulyn Hale" and lead.contact_id == "REALID1"
+    lead2 = svc._lead(NoHit(), "+19728007667", "", "", "New Lead")
+    assert (lead2.name, lead2.contact_id, lead2.phone) == ("", "+19728007667", "+19728007667")
+    assert svc._pretty("mcDonald Smith") == "mcDonald Smith" and svc._pretty("JOHN DOE") == "John Doe"
+
+
+def test_end_to_end_the_2026_11_09_call_gives_rose_an_email_that_explains_everything(session):
+    call = SimpleNamespace(call_id="e5b7413f", id="ce1", detected_intent="human_transfer_request", lead_name=None, campaign_name="New Lead",
+                           direction="outbound", start_time_utc=datetime(2026, 11, 9, 22, 14, tzinfo=timezone.utc),
+                           raw_payload_json={"executed_actions": REAL_ACTIONS, "phone_number_to": "+19728007667"})
+    analysis = SimpleNamespace(purpose_summary="Jacqulyn wants to explore admissions opportunities at Colaberry and asked for a call-back.",
+                               requested_day="today", requested_clock="", time_is_clear=False, call_detailed_summary="",
+                               timing_note="today, as soon as possible", assign_to="0swBv9tBNeXeYXPYFBSx", lead_classification="warm_lead")
+    cfg = {"callback_followup_enabled": "false"}
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)):
+        row = svc.process_call(session, SimpleNamespace(alert_email_to="kes@colaberry.com"), call, analysis, contact_id="+19728007667",
+                               contact_phone="+19728007667", ghl=FakeGHL(), now=NOW, notify_pending=False)
+    session.commit()
+    assert row.staff_key == "roselen" and row.lead_name == "Jacqulyn Hale" and row.contact_id == "REALID1"
+    bodies = []
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)), \
+            patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        out = svc.decide_row(session, SimpleNamespace(alert_email_to="kes@colaberry.com"), row.id, "approve", "kes", ghl=FakeGHL(),
+                             send=lambda to, subj, body, cc: bodies.append((subj, body)), now=NOW)
+    assert out["ok"] is True
+    subject, body = bodies[0]
+    assert subject == "Please call back Jacqulyn Hale: asked to speak with a person"
+    for must in ("Hi Roselen,", "Name: Jacqulyn Hale", "Phone: +19728007667", "Lead type: New Lead",
+                 "Cora's AI assistant (New Lead campaign) called them on Monday Nov 9 at 4:14 PM Central.",
+                 "The live transfer to the support line (Balakrishna K) failed", "the booking attempt failed",
+                 "Jacqulyn wants to explore admissions opportunities", "When they want the call: today, as soon as possible",
+                 "Call Jacqulyn Hale at +19728007667 as soon as you can (today, as soon as possible)."):
+        assert must in body, must
+    assert "e5b7413f" not in body and "A lead" not in body
+
+
+def test_the_unanswered_email_says_what_the_person_wrote(session):
+    add_inbound(session, "m9", 45, body="Hello, I paid last week but still cannot see my class. Please call me tomorrow afternoon.")
+    bodies = []
+    cfg = {"unanswered_email_enabled": "true"}
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)), \
+            patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        svc.run_unanswered_email_check(session, SimpleNamespace(alert_email_to=""), NOW, ghl=FakeGHL(), force=True,
+                                       analyze=lambda b: {"purpose_summary": "A student paid but cannot see their class.",
+                                                          "timing_note": "tomorrow afternoon"},
+                                       send=lambda to, subj, body, cc: bodies.append(body))
+    body = bodies[0]
+    for must in ("Jacqulyn T emailed Colaberry and nobody has replied yet", "They emailed Colaberry on Monday Nov 9 at 3:30 PM Central.",
+                 "Nobody has replied in over 30 business minutes.", "I paid last week but still cannot see my class",
+                 "A student paid but cannot see their class.", "When they want the call: tomorrow afternoon"):
+        assert must in body, must
+
+
+# ── rows saved BEFORE the current format are brought up to date when approved (Kes 2026-11-10) ──────────────────────────────────
+def old_style_row(session, source, source_id, **kw):
+    """A pending row as the first version stored it: no name, a phone number as contact id, no 'what happened', no timing note."""
+    import json as _json
+
+    row = CallbackFollowup(id=f"old-{source_id}", source=source, source_id=source_id, contact_id="+19728007667", staff_key="roselen",
+                           staff_name="Roselen Flores", action="email_staff", reason="no_time", status="dry_run", approval_status="pending",
+                           lead_phone="+19728007667", summary="Jacqulyn wants to explore admissions.",
+                           detail=_json.dumps({"notify": ["roselen"], "kind": "admissions", "campaign": "New Lead", "asked_for": "admissions"}), **kw)
+    session.add(row)
+    session.commit()
+    return row
+
+
+def test_an_old_call_row_is_sent_in_the_current_format_when_approved(session):
+    session.add(CallEvent(id="ce-old", call_id="e5b7413f", dedupe_key="dk-old", lead_name=None, campaign_name="New Lead", direction="outbound",
+                          detected_intent="human_transfer_request", start_time_utc=datetime(2026, 11, 9, 22, 14, tzinfo=timezone.utc),
+                          raw_payload_json={"executed_actions": REAL_ACTIONS}))
+    row = old_style_row(session, "call", "e5b7413f")
+    bodies = []
+    with patch.object(svc, "_cfg", lambda s, st, key, default: {}.get(key, default)), \
+            patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        out = svc.decide_row(session, SimpleNamespace(alert_email_to=""), row.id, "approve", "kes", ghl=FakeGHL(),
+                             send=lambda to, subj, body, cc: bodies.append((subj, body)), now=NOW)
+    assert out["ok"] is True
+    subject, body = bodies[0]
+    assert subject == "Please call back Jacqulyn Hale: asked to speak with a person"
+    for must in ("Name: Jacqulyn Hale", "WHAT HAPPENED", "The live transfer to the support line (Balakrishna K) failed",
+                 "the booking attempt failed", "WHAT TO DO"):
+        assert must in body, must
+    assert "e5b7413f" not in body and "A lead" not in body
+    session.refresh(row)
+    assert row.lead_name == "Jacqulyn Hale" and row.contact_id == "REALID1"
+
+
+def test_an_old_email_row_is_sent_in_the_current_format_when_approved(session):
+    add_inbound(session, "m-old", 60 * 24 * 3, body="Hello, I paid but cannot see my class.")
+    row = old_style_row(session, "email", "m-old")
+    bodies = []
+    with patch.object(svc, "_cfg", lambda s, st, key, default: {}.get(key, default)), \
+            patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        svc.decide_row(session, SimpleNamespace(alert_email_to=""), row.id, "approve", "kes", ghl=FakeGHL(),
+                       send=lambda to, subj, body, cc: bodies.append((subj, body)), now=NOW)
+    subject, body = bodies[0]
+    assert subject == "Please call back Jacqulyn Hale: emailed Colaberry and has had no reply"
+    assert "They emailed Colaberry on" in body and "I paid but cannot see my class" in body and "Nobody has replied in over 30 business minutes" in body
+
+
+def test_an_old_row_whose_source_is_gone_is_still_sent_not_lost(session):
+    row = old_style_row(session, "call", "no-such-call")
+    bodies = []
+    with patch.object(svc, "_cfg", lambda s, st, key, default: {}.get(key, default)), \
+            patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        out = svc.decide_row(session, SimpleNamespace(alert_email_to=""), row.id, "approve", "kes", ghl=FakeGHL(),
+                             send=lambda to, subj, body, cc: bodies.append(body), now=NOW)
+    assert out["status"] == "done" and "No details were recorded." in bodies[0] and "Name: Jacqulyn Hale" in bodies[0]

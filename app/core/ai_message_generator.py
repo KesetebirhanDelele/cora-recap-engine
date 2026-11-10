@@ -70,6 +70,7 @@ class GhlCallAnalysisResult:
     requested_clock: str = ""       # "HH:MM" 24-hour as stated, or ""
     time_is_clear: bool = False
     purpose_summary: str = ""
+    timing_note: str = ""           # the caller's own words about when to call back ("today, as soon as possible")
 
 
 @dataclass(frozen=True)
@@ -418,6 +419,7 @@ def generate_ghl_call_analysis(
             requested_clock=str(result.get("requested_clock", "") or "").strip(),
             time_is_clear=str(result.get("time_is_clear", "no")).strip().lower() == "yes",
             purpose_summary=str(result.get("purpose_summary", "") or "").strip(),
+            timing_note=str(result.get("timing_note", "") or "").strip(),
         )
 
     except Exception as exc:

@@ -23,6 +23,7 @@ Output JSON keys:
   requested_clock         — the clock time the caller named, 24-hour "HH:MM", or ""
   time_is_clear           — "yes" | "no"
   purpose_summary         — 1-2 sentences: who the caller is and why they called
+  timing_note             — what the caller said about WHEN they want the call, in their words, or ""
 """
 from app.prompts.registry import register
 
@@ -52,7 +53,8 @@ Output ONLY a valid JSON object with exactly these keys — no text outside JSON
   "requested_day": "string (today|tomorrow|monday..sunday|MM-DD, or empty string)",
   "requested_clock": "string (HH:MM 24-hour, or empty string)",
   "time_is_clear": "yes|no",
-  "purpose_summary": "string (1-2 sentences)"
+  "purpose_summary": "string (1-2 sentences)",
+  "timing_note": "string (the caller's own words about when to call back, or empty string)"
 }
 
 Field rules:
@@ -138,7 +140,12 @@ time_is_clear: "yes" only when BOTH requested_day and requested_clock are filled
   the call makes them doubtful (the caller did not change or retract it). Otherwise "no".
 
 purpose_summary: one or two plain sentences for a staff member who has not heard the call:
-  who the caller is (student, lead, parent) and what they wanted. No emojis.
+  who the caller is (student, lead, parent) and what they wanted. Use the caller's name if it was
+  said. Write "they", not "he" or "she". No emojis.
+
+timing_note: what the caller said about WHEN they want to be called, short and in plain words
+  ("today, as soon as possible", "tomorrow afternoon", "Thursday at 10:30"). Empty string if they
+  said nothing about timing. This is shown to staff as written; it is not used to book.
 """
 
 _USER_TEMPLATE = """\

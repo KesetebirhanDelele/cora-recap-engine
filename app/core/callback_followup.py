@@ -221,33 +221,87 @@ class Lead:
     contact_id: str = ""
 
 
-def build_staff_email(*, plan: Plan, lead: Lead, staff_names: list[str], source: str, source_id: str, summary: str,
-                      asked_for: str = "", requested_local: str = "", tz_name: str = DEFAULT_TZ) -> tuple[str, str]:
-    """(subject, plain-text body) for the staff member. No secrets, no transcript: a short summary plus the lead's own contact details."""
-    who = lead.name.strip() or "A lead"
+_TRANSFER_WHY = {
+    "transfer_outside_availability": "nobody was available at that time (outside working hours)",
+    "destination_busy": "the line was busy or not answered",
+    "transfer_blocked_by_carrier": "the phone carrier blocked the transfer",
+}
+
+
+def _team_label(kind: str, target_name: str | None, directory: list[dict[str, Any]]) -> str:
+    tokens = {t for t in (target_name or "").lower().replace("-", "_").split("_") if t}
+    for p in directory:
+        if tokens & {a.lower() for a in p.get("aliases", [])}:
+            return f"{p['name']}"
+    return {"admissions": "admissions", "ipbc": "payments", "support": "support"}.get(kind, "a staff member")
+
+
+def describe_call_outcome(executed_actions: Any, *, started: datetime | None, direction: str | None, campaign: str | None,
+                          directory: list[dict[str, Any]], tz_name: str = DEFAULT_TZ) -> str:
+    """Plain-language 'what happened on the call' for the staff member, from the call's own action log: who called whom, that a
+    person was asked for, which transfer failed and why, and whether the booking attempt failed too."""
+    from app.core import transfer_recovery as tr
+    from app.core.intent_detection import _extract_executed_actions
+
+    flags = _extract_executed_actions(executed_actions)
+    when = ""
+    if started is not None:
+        when = started.astimezone(ZoneInfo(tz_name)).strftime(" on %A %b %d at %I:%M %p Central").replace(" 0", " ")
+    camp = f" ({campaign} campaign)" if campaign else ""
+    first = (f"They called Colaberry{when}." if (direction or "").lower() == "inbound"
+             else f"Cora's AI assistant{camp} called them{when}.")
+    parts = [first, "They asked to speak with a person."]
+    if flags["transfer_failed"]:
+        who = _team_label(tr.target_kind(executed_actions), flags["transfer_target"], directory)
+        line = "support line" if tr.target_kind(executed_actions) == "support" else "team"
+        why = _TRANSFER_WHY.get(flags["transfer_reason"], "it did not connect")
+        parts.append(f"The live transfer to the {line} ({who}) failed: {why}.")
+    booking_failed = False
+    items = executed_actions.values() if isinstance(executed_actions, dict) else (executed_actions or [])
+    for it in items:
+        if isinstance(it, dict) and it.get("action_type") == "ghl_booking_action_type" and (it.get("error_message") or "").strip():
+            booking_failed = True
+    parts.append("The AI then offered a call-back" + (", but the booking attempt failed." if booking_failed else ".")
+                 + " No call-back is confirmed.")
+    return " ".join(parts)
+
+
+def build_staff_email(*, plan: Plan, lead: Lead, staff_names: list[str], source: str, source_id: str = "", summary: str,
+                      asked_for: str = "", requested_local: str = "", tz_name: str = DEFAULT_TZ, what_happened: str = "",
+                      timing_note: str = "") -> tuple[str, str]:
+    """(subject, plain-text body) for the staff member. It must stand on its own: who the person is, what happened, what they want,
+    when, and what to do. No call id, no secrets, no transcript. The person's own phone and email are the lead's details."""
+    who = lead.name.strip() or lead.phone or "a caller"
     when = ""
     if plan.start is not None:
         when = plan.start.astimezone(ZoneInfo(tz_name)).strftime("%A %b %d at %I:%M %p %Z").replace(" 0", " ")
+    why_short = "asked to speak with a person" if source == "call" else "emailed Colaberry and has had no reply"
     if plan.action == BOOK:
         subject = f"Call-back booked: {who} - {when}"
-        head = f"Cora booked a call-back reminder on your calendar for {when}. Please call {who} then."
+        head = f"A call-back with {who} is booked on your calendar for {when}."
     else:
-        subject = f"Please call back: {who}"
-        head = f"{who} asked for a call back and needs a person to follow up. Please call them as soon as you can."
-    lines = [
-        f"Hi {' / '.join(n.split(' ')[0] for n in staff_names) or 'team'},", "", head, "",
-        f"Name: {who}", f"Phone: {lead.phone or 'not on file'}", f"Email: {lead.email or 'not on file'}",
-    ]
+        subject = f"Please call back {who}: {why_short}"
+        head = (f"{who} asked to speak with a person and nobody has called them back yet." if source == "call"
+                else f"{who} emailed Colaberry and nobody has replied yet.") + " Please call them as soon as you can."
+    lines = [f"Hi {' / '.join(n.split(' ')[0] for n in staff_names) or 'team'},", "", head, "", "WHO",
+             f"Name: {who}", f"Phone: {lead.phone or 'not on file'}", f"Email: {lead.email or 'not on file'}"]
     if lead.campaign:
-        lines.append(f"Campaign: {lead.campaign}")
-    if asked_for:
-        lines.append(f"Asked for: {asked_for}")
-    if requested_local and plan.action != BOOK:
-        lines.append(f"Time mentioned: {requested_local} (Central) - {_REASON_TEXT.get(plan.reason, '')}")
-    elif plan.action != BOOK:
-        lines.append(f"Time: {_REASON_TEXT.get(plan.reason, '')}")
-    lines += ["", "Why they called / wrote:", (summary or "No summary available.").strip(), "",
-              f"Source: {source} {source_id}", "This is an automated message from Cora."]
+        lines.append(f"Lead type: {lead.campaign}")
+    lines += ["", "WHAT HAPPENED", (what_happened or "No details were recorded.").strip(), "", "WHAT THEY WANT",
+              (summary or "No summary available.").strip()]
+    if timing_note:
+        lines.append(f"When they want the call: {timing_note}")
+    elif requested_local and plan.action != BOOK:
+        lines.append(f"Time named: {requested_local} (Central) - {_REASON_TEXT.get(plan.reason, '')}")
+    lines += ["", "WHAT TO DO"]
+    if plan.action == BOOK:
+        lines.append(f"Call {who} at {lead.phone or 'the number above'} at {when}. A reminder is on your calendar.")
+    else:
+        asap = f" ({timing_note})" if timing_note else ""
+        lines.append(f"Call {who} at {lead.phone or 'the number above'} as soon as you can{asap}.")
+        if plan.reason in ("slot_taken", "booking_failed", "calendar_unreadable"):
+            lines.append(_REASON_TEXT.get(plan.reason, ""))
+    lines += ["", "Sent automatically by Cora."]
     return subject, "\n".join(lines)
 
 
