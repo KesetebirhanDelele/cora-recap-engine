@@ -255,9 +255,10 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         session.rollback()
         logger.error("alerting: content flag check failed: %s", exc)
     try:
-        from app.services.callback_followup import run_unanswered_email_check, update_contacted
+        from app.services.callback_followup import refresh_missing_names, run_unanswered_email_check, update_contacted
         run_unanswered_email_check(session, settings, now)
         update_contacted(session, settings, now)
+        refresh_missing_names(session, settings, now)
         session.commit()
     except Exception as exc:
         session.rollback()

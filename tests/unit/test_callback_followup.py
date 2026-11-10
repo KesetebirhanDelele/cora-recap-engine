@@ -853,3 +853,33 @@ def test_an_old_row_whose_source_is_gone_is_still_sent_not_lost(session):
         out = svc.decide_row(session, SimpleNamespace(alert_email_to=""), row.id, "approve", "kes", ghl=FakeGHL(),
                              send=lambda to, subj, body, cc: bodies.append(body), now=NOW)
     assert out["status"] == "done" and "No details were recorded." in bodies[0] and "Name: Jacqulyn Hale" in bodies[0]
+
+
+# ── a row that still has no name gets the name GHL holds (approved / rejected rows are never reloaded) ────────────────────────
+def test_rows_without_a_name_are_filled_in_from_ghl_for_every_status(session):
+    for rid, appr, status in (("n1", "approved", "done"), ("n2", "rejected", "dry_run"), ("n3", "pending", "dry_run")):
+        session.add(CallbackFollowup(id=rid, source="call", source_id=f"s-{rid}", contact_id="+19728007667", staff_key="roselen",
+                                     action="email_staff", reason="no_time", status=status, approval_status=appr, lead_phone="+19728007667"))
+    session.add(CallbackFollowup(id="named", source="call", source_id="s-named", contact_id="c9", action="email_staff", reason="no_time",
+                                 status="dry_run", approval_status="pending", lead_name="Already Named"))
+    session.commit()
+    ghl = FakeGHL()
+    n = svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=ghl, force=True)
+    session.commit()
+    assert n == 3 and len(ghl.phone_searches) == 3                                   # the named row is never touched or re-read
+    names = {r.id: (r.lead_name, r.contact_id) for r in session.execute(select(CallbackFollowup)).scalars()}
+    assert names["n1"] == ("Jacqulyn Hale", "REALID1") and names["n2"][0] == "Jacqulyn Hale" and names["named"] == ("Already Named", "c9")
+    assert svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=ghl, force=True) == 0          # nothing left to do
+    assert svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=ghl, force=False) == 0         # throttled at :15
+
+
+def test_a_contact_ghl_cannot_name_stays_unnamed_and_is_retried_later(session):
+    class Nobody(FakeGHL):
+        def search_contact_by_phone(self, phone):
+            return None
+
+    session.add(CallbackFollowup(id="x1", source="call", source_id="s-x1", contact_id="+10000000000", action="email_staff", reason="no_time",
+                                 status="dry_run", approval_status="pending", lead_phone="+10000000000"))
+    session.commit()
+    assert svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=Nobody(), force=True) == 0
+    assert svc.refresh_missing_names(session, SimpleNamespace(), NOW, ghl=FakeGHL(), force=True) == 1

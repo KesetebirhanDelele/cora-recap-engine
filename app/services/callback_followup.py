@@ -361,6 +361,48 @@ def decide_row(session: Session, settings: Any, row_id: str, decision: str, oper
             ghl.close()
 
 
+def refresh_missing_names(session: Session, settings: Any, now: datetime | None = None, *, ghl: Any = None, force: bool = False,
+                          limit: int = 20) -> int:
+    """Any row still without a name (approved or rejected rows are never re-created by a reload, and a GHL contact may get its name
+    after the request) is looked up in GHL again, so the dashboard shows the name GHL holds. Same 30-minute rhythm as the other
+    checks. Read-only on GHL; updates only this ledger's display fields. Returns the number of rows filled in."""
+    from sqlalchemy import select
+
+    from app.models.callback_followup import CallbackFollowup
+
+    now = now or datetime.now(timezone.utc)
+    try:
+        every = max(1, int(_cfg(session, settings, "unanswered_email_check_minutes", "30") or 30))
+    except (TypeError, ValueError):
+        every = 30
+    if not force and now.minute % every >= 2:
+        return 0
+    rows = session.execute(select(CallbackFollowup).where(
+        (CallbackFollowup.lead_name.is_(None)) | (CallbackFollowup.lead_name == ""),
+        CallbackFollowup.created_at >= now - timedelta(days=60)).limit(limit)).scalars().all()
+    if not rows:
+        return 0
+    own_ghl = ghl is None
+    if own_ghl:
+        from app.adapters.ghl import GHLClient
+
+        ghl = GHLClient(settings=settings)
+    filled = 0
+    try:
+        for row in rows:
+            lead = _lead(ghl, row.contact_id or "", "", row.lead_phone or "", "")
+            if lead.name:
+                row.lead_name = lead.name[:200]
+                row.lead_email = (lead.email or row.lead_email or "")[:200] or None
+                row.lead_phone = (lead.phone or row.lead_phone or "")[:40] or None
+                row.contact_id = (lead.contact_id or row.contact_id or "")[:100] or None
+                filled += 1
+    finally:
+        if own_ghl:
+            ghl.close()
+    return filled
+
+
 def update_contacted(session: Session, settings: Any, now: datetime | None = None, *, force: bool = False) -> int:
     """Mark follow-ups whose lead was reached: a CONNECTED staff call to that contact after the request was recorded. Same
     30-minute rhythm as the email check. Returns the number newly marked."""
