@@ -204,6 +204,12 @@ def evaluate_alerts(session: Session, settings: Any) -> None:
         logger.error("alerting: open_house_reminder failed: %s", exc)
 
     try:
+        from app.services.audit_digest import run_audit_digest
+        run_audit_digest(session, settings, now)
+    except Exception as exc:
+        logger.error("alerting: audit_digest failed: %s", exc)
+
+    try:
         from app.services.wrong_date_monitor import scan_wrong_dates
         scan_wrong_dates(session, settings, now)
     except Exception as exc:

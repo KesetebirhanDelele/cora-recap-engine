@@ -82,7 +82,9 @@ def _deliver(send: Callable[[list[str]], None], to: list[str]) -> tuple[list[str
         return ok, bad, err
 
 
-def _tell_kes(session: Session, settings: Any, what: str, failed: list[str], error: str) -> None:
+def _tell_kes(session: Session, settings: Any, what: str, failed: list[str], error: str,
+              subject: str = "Cora could not send an Open House email",
+              tail: str = "The Open House reminder or alert did not go out to the people listed. Please tell them by hand.") -> None:
     """Dashboard exception (always) plus an email to Kes (it may fail too; the dashboard record still stands)."""
     from app.services.alerting import _smtp_send
     from app.worker.exceptions import create_exception
@@ -96,27 +98,26 @@ def _tell_kes(session: Session, settings: Any, what: str, failed: list[str], err
         logger.error("open_house_reminder: could not record the failure: %s", exc)
     kes = [a.strip() for a in (getattr(settings, "alert_email_to", None) or "").split(",") if a.strip()]
     try:
-        _smtp_send(settings, [a for a in kes if a not in failed] or kes, "Cora could not send an Open House email",
-                   msg + "\n\nThe Open House reminder or alert did not go out to the people listed. Please tell them by hand.",
+        _smtp_send(settings, [a for a in kes if a not in failed] or kes, subject, msg + "\n\n" + tail,
                    log_label="open_house_email_failed", raise_on_failure=True)
     except Exception as exc:
         logger.error("open_house_reminder: failure notice email also failed: %s", exc)
 
 
 def _send_once(session: Session, settings: Any, key: str, what: str, to: list[str],
-               send: Callable[[list[str]], None], now: datetime) -> bool:
+               send: Callable[[list[str]], None], now: datetime, notice: dict | None = None) -> bool:
     """Claim, deliver, and handle failure. True if at least one recipient got it."""
     if not _claim(session, key, now):
         return False
     ok, bad, err = _deliver(send, to)
     if ok:
         if bad:                                         # partly delivered: keep the claim (no duplicates), tell Kes who missed out
-            _tell_kes(session, settings, what, bad, err)
+            _tell_kes(session, settings, what, bad, err, **(notice or {}))
         return True
     attempts = _bump_failures(session, key, now)
     logger.error("open_house_reminder: %s failed (attempt %d/%d): %s", what, attempts, MAX_ATTEMPTS, err)
     if attempts >= MAX_ATTEMPTS:                        # give up visibly: keep the claim so it does not loop forever
-        _tell_kes(session, settings, what, bad, err)
+        _tell_kes(session, settings, what, bad, err, **(notice or {}))
     else:
         _release(session, key)                          # retry next cycle
     return False

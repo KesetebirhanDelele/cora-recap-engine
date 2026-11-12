@@ -110,7 +110,7 @@ def test_the_disclaimer_is_cleared_with_no_alert_and_a_record_with_both_results(
     flags, oks = _run(DISCLAIMER, cj.NOT_OFFERING)
     assert flags == []                                                   # no content_flag row -> no alert, no email
     ok = next(e for e in oks if e["kind"] == "content_ok")
-    assert ok["detail"]["terms"] == ["job placement"] and ok["detail"]["votes"] == ["not_offering", "not_offering"]
+    assert "job placement" in ok["detail"]["terms"] and ok["detail"]["votes"] == ["not_offering", "not_offering"]
     assert ok["detail"]["reason"] == "why"
 
 
@@ -145,3 +145,28 @@ def test_flag_line_uses_the_checks_text_for_texts_and_voice():
         voice = ch._flag_line(None, ("call9", "c1", "voice", "free", "ghl_voice_ai", NOW, detail))
     assert "word filter: job placement | meaning check: could not tell" in sms
     assert "word filter: free | meaning check: could not tell" in voice
+
+
+# ── widened employment words (Ali, approved 2026-11-11): the word check must reach the meaning check ─
+ALI_EXAMPLE = "we don't guarantee placement, but everyone gets hired"
+
+
+def test_ali_example_is_now_flagged_by_the_word_check_and_stays_flagged_when_the_judge_says_offers():
+    flags, oks = _run(ALI_EXAMPLE, cj.OFFERS)
+    assert len(flags) == 1 and not [o for o in oks if o["kind"] == "content_ok"]
+    assert flags[0]["detail"]["terms"] == ["placement", "hired"] and flags[0]["detail"]["llm_verdict"] == cj.OFFERS
+
+
+def test_a_plain_denial_with_a_new_word_is_cleared_and_logged_with_enough_text_for_the_digest():
+    long_denial = "The certification helps you prepare for AI roles, but we do not guarantee jobs. " + "More about the program. " * 20
+    flags, oks = _run(long_denial, cj.NOT_OFFERING)
+    assert flags == []
+    ok = next(e for e in oks if e["kind"] == "content_ok")
+    assert ok["detail"]["terms"] == ["jobs"]
+    assert len(ok["detail"]["snippet"]) > 160 and ok["detail"]["snippet"].startswith("The certification")   # digest needs more than 160
+    assert len(ok["detail"]["snippet"]) <= ds.CLEARED_TEXT_CHARS
+
+
+def test_the_bare_word_job_still_does_not_flag_a_message():
+    flags, oks = _run("This 12-week program is designed to fit around your full-time job.", cj.OFFERS)
+    assert flags == [] and oks == []                         # step 1 never fired, so nothing reached the judge

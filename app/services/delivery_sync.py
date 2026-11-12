@@ -31,6 +31,7 @@ SYNC_KEY = "delivery_sync"
 RUN_BUDGET_SECONDS = 24.0
 MAX_CONVERSATIONS_PER_RUN = 80
 PAGE = 30
+CLEARED_TEXT_CHARS = 700     # how much of a cleared message is kept for the daily digest (content_ok rows)
 _monotonic = time.monotonic
 
 
@@ -256,7 +257,8 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
 
         body = m.get("body")
         scan = ca.strip_brand(body, ca.parse_brand_phrases(cfg("brand_phrases", None)))
-        hits = ca.forbidden_in(scan, offer.parse_terms(cfg("offer_forbidden_terms", None)))
+        hits = ca.forbidden_in(scan, ca.audit_terms(offer.parse_terms(cfg("offer_forbidden_terms", None)),
+                                                     cfg("audit_extra_employment_terms", None)))
         verdict = None
         meaning: dict = {}
         if hits and ca.is_staff_sender(m, ca.staff_user_ids(cfg("admissions_assistants", None), cfg("ipbc_assistants", None), cfg("support_staff_roster", None),
@@ -298,7 +300,9 @@ def _flag_content(session: Session, settings: Any, m: dict, channel: str, cid: s
                               status_raw=None, outcome=None, error=None, event_at=at, now=now,
                               source=str(m.get("source") or "?")[:30],
                               detail={"terms": cleared_terms, "verdict": verdict, "votes": meaning.get("votes"),
-                                      "reason": meaning.get("reason"), "snippet": (body or "")[:160]})
+                                      "reason": meaning.get("reason"),
+                                      # the daily digest shows what was cleared, so keep enough of the text to judge it
+                                      "snippet": ca.visible_text(body or "")[:CLEARED_TEXT_CHARS]})
         if hits:
             detail = {"terms": hits, "snippet": (body or "")[:160]}
             if verdict:

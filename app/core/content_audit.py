@@ -24,7 +24,21 @@ _ACK = re.compile(r"(?i)\b(unsubscrib\w+|stop messaging|will stop|no longer (?:r
 
 
 _TAGS = re.compile(r"(?s)<(?:style|script)\b.*?</(?:style|script)>|<[^>]+>")
-_EMPLOYMENT_TERM = re.compile(r"(?i)employment|placement|job guarantee|guaranteed job|hiring rate")
+_EMPLOYMENT_TERM = re.compile(
+    r"(?i)employment|placement|job guarantee|guaranteed job|hiring rate|\bjobs?\b|\bhir(?:e|es|ed|ing)\b")
+
+# Extra employment words for the AUDIT only (Ali, approved 2026-11-11). The old list only matched fixed phrases such as "job placement",
+# so "we don't guarantee placement, but everyone gets hired" was never flagged and never reached the meaning check.
+# NOT included on purpose: the bare word "job". A 7-day replay flagged 256 of 855 sent messages with it, 254 of them the sentence
+# "balancing a full-time job". These words are added to the audit's list only: the generation gate (sms_gate / ai_message_generator)
+# keeps using offer_forbidden_terms unchanged. Override or switch off with app_config `audit_extra_employment_terms` ("" = off).
+AUDIT_EXTRA_EMPLOYMENT_TERMS = "placement,hire,hired,hiring,jobs,guarantee a job"
+
+
+def audit_terms(base: tuple[str, ...], extra_raw: str | None = None) -> tuple[str, ...]:
+    """The audit's word list: the configured forbidden terms plus the extra employment words (no duplicates, order kept)."""
+    extra = offer.parse_terms(AUDIT_EXTRA_EMPLOYMENT_TERMS if extra_raw is None else extra_raw)
+    return tuple(base) + tuple(t for t in extra if t not in base)
 
 
 def forbidden_in(body: str | None, terms: tuple[str, ...]) -> list[str]:
