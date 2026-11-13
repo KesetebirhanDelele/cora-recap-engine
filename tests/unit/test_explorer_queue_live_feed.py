@@ -197,3 +197,21 @@ def test_feed_at_the_limit_is_flagged_capped_and_below_it_is_not(session):
 def test_token_fingerprint_is_not_hardcoded_in_source():
     root = pathlib.Path(__file__).resolve().parents[2]
     assert "6b6b3af000c0" not in (root / "app" / "services" / "explorer_queue_feed.py").read_text(encoding="utf-8")
+
+
+def test_bucket_check_classifies_each_row_without_writing():
+    from app.services.explorer_queue_feed import parse_feed_payload
+    from execution.explorer_queue_bucket_check import classify
+    rows = parse_feed_payload(payload(0) | {"rows": [
+        _row(1, None), _row(2, GOOD + "2"), _row(3, OTHER), _row(4, GOOD + "4"), _row(5, GOOD + "5")]}).rows
+
+    def lookup(cid):
+        if cid == "CID4" or cid.endswith("4"):
+            return {"contact": {"tags": [], "customFields": [{"id": "A", "value": "Yes"}]}}
+        if cid.endswith("5"):
+            raise RuntimeError("boom")
+        return {"contact": {"tags": [], "customFields": []}}
+
+    got = classify(rows, _settings(), lookup)
+    assert [(r, b) for r, _e, b in got] == [
+        (1, "skip_no_contact"), (2, "tag"), (3, "skip_wrong_subacct"), (4, "skip_ai_campaign"), (5, "unreadable")]
