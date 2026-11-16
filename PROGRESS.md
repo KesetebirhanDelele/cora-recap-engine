@@ -3081,3 +3081,9 @@ Ali's answers: the five hand-edited surfaces carry NO dates (agreed). Open House
 - [ ] Flip the Dec-1 flag (outbound agents + dashboard wording).
 - [ ] Hand-edit the five surfaces to the standing wording: "Open Houses are held the 1st and 3rd Thursday of every month at 6:30 PM Central. Join the next one" + the fixed RSVP link. Orientation stays "first Monday, 6:30 to 8:00 PM Central".
 - [ ] Check: Jackie's controls work; fixed link lands on the Dec 3 page; Dec 3 Open House is the next day.
+
+## 2026-11-16 - wrong-date false alarm fixed and deployed
+- Alert 8c87d3d8 (lead +16463777364) was a false positive: an Open House date (Nov 19, correct) after the word "classes" was read as a class start while none is scheduled. Cora wrote the email; GHL only delivered it.
+- Fix (b1352e2, merged into feat/ghl-call-conversation-sync, Hetzner rebuilt): rule engine keeps such a date as an Open House date; AI judge prompt has no-class-scheduled examples; every judge verdict + reasons is logged (`date_judge: verdict=`).
+- Verified live: the real email no longer flags in the production worker. Not verified: the AI judge replayed on it; check `docker compose logs | grep date_judge` after the next flagged message.
+- Alert 8c87d3d8 still needs a Dismiss on the Wrong Dates page (do not send the correction).
