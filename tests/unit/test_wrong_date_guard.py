@@ -208,3 +208,30 @@ def test_html_list_with_a_wrong_date_is_still_caught():
 
 def test_br_and_paragraph_breaks_separate_facts():
     assert _check("Class starts Nov 12<br>Open house Oct 29<br/>We will call you Oct 6") == []
+
+
+# ── regression 2026-11-16: "...next Open House to learn more about the live classes on <date>" ──
+
+REAL_NOV16_EMAIL = (
+    "Alternatively, you can also join us for our next Open House to learn more about the live classes "
+    "on November 19, 2026. You can RSVP here.")
+
+
+def test_open_house_date_after_the_word_classes_is_an_open_house_date():
+    # No class scheduled (""), Open House = Nov 19: the email is correct and must not alert.
+    assert _check(REAL_NOV16_EMAIL, cls="", oh="November 19, 2026") == []
+
+
+def test_same_sentence_still_flags_a_wrong_open_house_date():
+    wrong = _check(REAL_NOV16_EMAIL, cls="", oh="November 26, 2026")
+    assert [w.kind for w in wrong] == [KIND_OPEN_HOUSE]
+
+
+@pytest.mark.parametrize("body", [
+    "Our next class starts November 19, 2026.",
+    "Join our Open House to learn more; the live classes start on November 19, 2026.",
+    "Come to the Open House, then classes begin November 19, 2026.",
+])
+def test_a_class_start_date_is_still_flagged_when_no_class_is_scheduled(body):
+    wrong = _check(body, cls="", oh="November 19, 2026")
+    assert [w.kind for w in wrong] == [KIND_CLASS]

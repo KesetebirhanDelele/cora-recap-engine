@@ -79,3 +79,11 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 - Alert `open_house_date_missing` (warning, to the same people): once a day from 9 AM Central while the Settings "next Open House date" is blank, not a full date, or passed, or while no date is ahead in the list. It starts the day after the reminder (the reminder covers the blank setting on day one).
 - Idempotent: one `app_config` row per send (`open_house_reminder:<date>`, `open_house_missing:<day>`). Send failures are never silent: these two emails use `raise_on_failure=True` on the shared mail helper; a failed send is retried each cycle (5 tries), one recipient at a time if the group send fails, and if every try fails or only some recipients got it, Kes gets a dashboard exception (`open_house_email_failed`) plus an email naming who missed it.
 - Code: `app/core/open_house_reminder.py`, `app/services/open_house_reminder.py`, wired in `alerting.py`; tests `tests/unit/test_open_house_reminder.py`.
+
+## 2026-11-16 false alarm: Open House date next to the word "classes"
+- Cause: "...next Open House to learn more about the live classes on November 19, 2026" - the nearest-keyword rule took the
+  Open House date for a class start; with no class scheduled it alerted. The AI check did not clear it.
+- Fix: the rule engine now keeps a date as an Open House date when an Open House keyword comes first and only a bare
+  "class/classes" (no start/begin/cohort/kick-off/launch word) sits between it and the date. The AI judge prompt gained
+  no-class-scheduled examples, and every verdict plus the model's reasons is now logged (`date_judge: verdict=...`).
+- Regression tests: tests/unit/test_wrong_date_guard.py (REAL_NOV16_EMAIL and the three must-still-flag cases).

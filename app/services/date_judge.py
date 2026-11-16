@@ -43,7 +43,13 @@ _PROMPT = (
     "- 'Join our Open House on November 12, 2026.' -> wrong\n"
     "- 'Classes start October 29.' -> wrong\n"
     "- 'Our next class starts July 16, 2026.' -> wrong\n"
-    "- 'We will call you on October 20 to finish up.' -> correct"
+    "- 'We will call you on October 20 to finish up.' -> correct\n"
+    "Examples when NOTHING is scheduled for the class start (truth: class start blank; Open House November 19, 2026):\n"
+    "- 'Join us for our next Open House to learn more about the live classes on November 19, 2026.' -> correct (the date is the "
+    "Open House; 'classes' is only the topic)\n"
+    "- 'Our next class starts November 19, 2026.' -> wrong (no class is scheduled)\n"
+    "- 'Open House on November 26, 2026.' -> wrong (not the Open House date)\n"
+    "Decide from what the date is attached to in the sentence, not from the rule engine's label, which is often mistaken."
 )
 
 
@@ -64,7 +70,7 @@ def review(settings: Any, message_id: str, subject: str | None, body: str, flagg
             f"Subject: {subject or '(none)'}\n"
             f"Message: {body[:MAX_BODY_CHARS]}")
         client = OpenAIClient(settings=settings)
-        votes = []
+        votes, reasons = [], []
         for _ in range(VOTES):
             out = client.chat_completion(
                 [{"role": "system", "content": _PROMPT}, {"role": "user", "content": user}],
@@ -72,10 +78,13 @@ def review(settings: Any, message_id: str, subject: str | None, body: str, flagg
                 response_format={"type": "json_object"}, max_tokens=120)
             vote = str(out.get("verdict", UNCLEAR)).strip().lower()
             votes.append(vote if vote in (CORRECT, WRONG, UNCLEAR) else UNCLEAR)
+            reasons.append(str(out.get("reason", ""))[:200])
     except Exception as exc:
         logger.warning("date_judge: LLM unavailable, incident stays open: %s", exc)
         return UNCLEAR                                  # not cached: try again next cycle
     verdict = CORRECT if all(v == CORRECT for v in votes) else WRONG if WRONG in votes else UNCLEAR
+    logger.info("date_judge: verdict=%s votes=%s reasons=%s | message=%s flagged=%s",
+                verdict, votes, reasons, message_id, flagged_txt)
     _cache[message_id] = verdict
     if len(_cache) > _CACHE_MAX:
         _cache.popitem(last=False)

@@ -78,6 +78,7 @@ _OPEN_HOUSE_KW = re.compile(
     r"\bopen[\s-]?house\b|\binfo(?:rmation)?\s+session\b|\brsvp\b|\bwebinar\b|\beventbrite\b",
     re.IGNORECASE,
 )
+_START_WORDS = re.compile(r"\bstart(?:s|ed|ing)?\b|\bbegin(?:s|ning)?\b|\bkick(?:s|ing)?[\s-]?off\b|\blaunch\w*|\bcommenc\w*|\bcohort\b", re.IGNORECASE)
 _ORIENTATION_KW = re.compile(r"\borientation\b", re.IGNORECASE)
 _APPOINTMENT_KW = re.compile(
     r"\bappointment\b|\bcall(?:ing)?\s+(?:you|back)\b|\bcall\s*-?back\b|\bcallback\b"
@@ -197,6 +198,16 @@ def _nearest_kind(sentence: str, start: int, end: int) -> str:
                 dist = 0
             if best_dist is None or dist < best_dist:
                 best_kind, best_dist = kind, dist
+    if best_kind == KIND_CLASS:
+        # "...our next Open House to learn more about the live classes on November 19" - the date belongs to the Open House;
+        # "classes" is only what is being learned about. Applies only when an Open House keyword comes BEFORE the date, the
+        # class word sits between it and the date, and nothing in between says a class starts/begins (those stay class dates).
+        oh_before = [m for m in _OPEN_HOUSE_KW.finditer(sentence) if m.end() <= start]
+        if oh_before:
+            oh_end = oh_before[-1].end()
+            between = sentence[oh_end:start]
+            if _CLASS_KW.search(between) and not _START_WORDS.search(between):
+                return KIND_OPEN_HOUSE
     return best_kind
 
 
