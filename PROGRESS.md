@@ -3087,3 +3087,9 @@ Ali's answers: the five hand-edited surfaces carry NO dates (agreed). Open House
 - Fix (b1352e2, merged into feat/ghl-call-conversation-sync, Hetzner rebuilt): rule engine keeps such a date as an Open House date; AI judge prompt has no-class-scheduled examples; every judge verdict + reasons is logged (`date_judge: verdict=`).
 - Verified live: the real email no longer flags in the production worker. Not verified: the AI judge replayed on it; check `docker compose logs | grep date_judge` after the next flagged message.
 - Alert 8c87d3d8 still needs a Dismiss on the Wrong Dates page (do not send the correction).
+
+## 2026-11-17 - callback alert read our own quoted email; fixed and deployed
+- Incident: lead (cnc2435) replied "Stop" to the Open House invite. GHL's message LIST returns our quoted email as an inbound email's body, so Cora told Rose the lead wanted to attend (row 995c341e, approved on the dashboard, staff email sent).
+- Fix (663db48 + ac206ef, merged into feat/ghl-call-conversation-sync, Hetzner rebuilt): reads the message itself, keeps only the lead's words, skips leads whose reply opens with a stop request or who texted STOP after. The staff email goes to the staff member only (CC to the alert address is opt-in: `callback_followup_cc_alert_address`). The shadow-week "waiting for approval" notice still goes to the alert address.
+- Verified live: replaying the real message through the deployed code reads "Stop Best regards, Elijah Choy" and flags it as a stop request. The first deploy missed it (sign-off on the same line); ac206ef fixed that.
+- Not done: Rose has not been told to ignore the old alert (Kes to tell her). The GHL list-body quirk may also affect other inbound-email readers (opt-out handling, content audit) - not checked.
