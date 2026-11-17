@@ -39,3 +39,20 @@ def test_a_real_question_is_not_a_stop_request():
 def test_other_bare_stop_words_count():
     for w in ("STOP", "Unsubscribe", "stop all", "opt out"):
         assert er.is_stop_request(w + "\n" + QUOTED) is True
+
+
+def test_live_shape_stop_and_sign_off_on_one_line_is_a_stop_request():
+    # What the deployed code really read on 2026-11-17: tags had put "Stop" and the sign-off on one line.
+    assert er.is_stop_request("<div>Stop<span> Best regards, Elijah Choy</span></div>" + QUOTED) is True
+    assert er.is_stop_request("Stop Best regards, Elijah Choy") is True
+
+
+def test_stop_calling_me_and_please_unsubscribe_are_stop_requests():
+    for t in ("Stop calling me", "Please stop emailing me", "please unsubscribe", "Stop. Thanks", "Remove me from your list"):
+        assert er.is_stop_request(t + "\n" + QUOTED) is True, t
+
+
+def test_stop_words_inside_a_real_request_are_not_stop_requests():
+    for t in ("Stop by tomorrow for the Open House?", "Please don't stop calling me", "I can't stop thinking about the program",
+              "Can you stop the payment plan?", "Interested - please call"):
+        assert er.is_stop_request(t + "\n" + QUOTED) is False, t

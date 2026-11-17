@@ -45,7 +45,24 @@ def reply_text(body: str | None) -> str:
     return head if head else text
 
 
+# "Stop", "please unsubscribe", "stop calling me", "Stop Best regards, Name" (tags can put the sign-off on the same line).
+# Deliberately NOT matched: "stop by tomorrow", "don't stop calling me" - only a stop word that opens the reply and is followed
+# by nothing, a sign-off, or a "calling / emailing / texting me" phrase.
+_STOP_OPENING = re.compile(
+    r"^\W*(?:please\s+)?(?:stop\s?all|stop|unsubscribe|opt[\s-]?out|remove\s+me)\b"
+    r"(?P<rest>.*)$", re.IGNORECASE | re.DOTALL)
+_STOP_REST_OK = re.compile(
+    r"^[\W_]*(?:$|(?:best\s+)?regards\b|thanks?\b|thank\s+you\b|sincerely\b|sent\s+from\b|cheers\b|"
+    r"(?:calling|call|emailing|email|texting|text|messaging|sending|contacting|contact)\b|me\b|now\b|please\b|all\b|from\b)",
+    re.IGNORECASE)
+
+
 def is_stop_request(body: str | None) -> bool:
-    """True when the lead's own words open with a bare stop word ("Stop", "Unsubscribe", ...), ignoring a sign-off below it."""
-    first = next((ln for ln in reply_text(body).splitlines() if ln.strip()), "")
-    return is_stop_reply(first)
+    """True when the lead's own words OPEN with a stop request ("Stop", "Unsubscribe", "Stop calling me", ...), even with a
+    sign-off after it or on the same line."""
+    text_ = reply_text(body)
+    first = next((ln for ln in text_.splitlines() if ln.strip()), "")
+    if is_stop_reply(first):
+        return True
+    m = _STOP_OPENING.match(first)
+    return bool(m and _STOP_REST_OK.match(m.group("rest")))
