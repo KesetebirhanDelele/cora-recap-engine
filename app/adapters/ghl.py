@@ -408,6 +408,14 @@ class GHLClient:
         result = self._request("GET", "/conversations/search", params=params)
         return result.get("conversations", [])
 
+    def get_message(self, message_id: str) -> dict:
+        """One conversation message by its id (conversations-scoped token). For an inbound email this is what the lead
+        actually wrote with our quoted email below it; the conversation LIST carries our own quoted text instead
+        (confirmed live 2026-11-17). Raises on failure - callers decide how to degrade."""
+        self.settings.validate_for_ghl_reads()
+        result = self._request("GET", f"/conversations/messages/{message_id}") or {}
+        return result.get("message", result)
+
     def get_email_status(self, email_message_id: str) -> str | None:
         """
         Provider status of one outbound email (delivered / opened / bounced ...).

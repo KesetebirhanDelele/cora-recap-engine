@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 
 from app.core import callback_followup as cf
 from app.core import content_audit as ca
+from app.core import email_reply as em
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,10 @@ def _perform(session: Session, settings: Any, row: Any, *, staff: dict | None, n
                                          requested_local=requested_local, tz_name=tz_name, what_happened=what_happened,
                                          timing_note=timing_note)
     to = [p["email"] for p in notify]
-    cc = [a.strip() for a in (getattr(settings, "alert_email_to", None) or "").split(",") if a.strip()]
+    # The staff member gets this email and nobody else (Kes 2026-11-17: it must reach Rose, not Kes's Gmail). Copying the alert
+    # address is opt-in: app_config `callback_followup_cc_alert_address` = true.
+    cc = ([a.strip() for a in (getattr(settings, "alert_email_to", None) or "").split(",") if a.strip()]
+          if _on(_cfg(session, settings, "callback_followup_cc_alert_address", "false")) else [])
     try:
         if send is None:
             from app.services.alerting import _smtp_send, system_alert_headers
@@ -662,6 +666,29 @@ def analyze_email(settings: Any, body: str, now: datetime, *, _client: Any = Non
         return {}
 
 
+def _lead_reply(conv: Any, message_id: str, stored_body: str | None) -> str:
+    """What the lead actually wrote. The stored body comes from the conversation LIST, which for an inbound email carries our own
+    quoted email (2026-11-17: a lead replied "Stop" and the alert read our Open House invite as their words). Read the message
+    itself and cut the quoted original; if it cannot be read, cut the quote from the stored body."""
+    try:
+        if conv is not None:
+            full = conv.get_message(message_id)
+            text_ = em.reply_text(str(full.get("body") or ""))
+            if text_:
+                return text_
+    except Exception as exc:
+        logger.warning("callback_followup: could not read email %s, using the stored text: %s", message_id, exc)
+    return em.reply_text(stored_body)
+
+
+def _stopped_since(session: Session, contact_id: str, after: datetime) -> bool:
+    """The lead sent a bare STOP / UNSUBSCRIBE text or email at or after this email (any channel)."""
+    rows = session.execute(
+        text("SELECT body FROM inbound_messages WHERE contact_id = :c AND received_at >= :t ORDER BY received_at DESC LIMIT 20"),
+        {"c": contact_id, "t": after}).fetchall()
+    return any(em.is_stop_request(r[0]) for r in rows)
+
+
 def run_unanswered_email_check(session: Session, settings: Any, now: datetime | None = None, *, ghl: Any = None, conv: Any = None,
                                analyze: Callable[..., dict] | None = None, send: Callable[..., None] | None = None,
                                force: bool = False, lookback: timedelta | None = None, notify_pending: bool = True,
@@ -675,7 +702,7 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
     `history=True` dates each row at the email's arrival so the dashboard and the 'reached' check read correctly."""
     cap = limit or MAX_EMAILS_PER_RUN
     now = now or datetime.now(timezone.utc)
-    stats = {"seen": 0, "handled": 0, "skipped_internal": 0, "answered": 0, "throttled": False}
+    stats = {"seen": 0, "handled": 0, "skipped_internal": 0, "skipped_opt_out": 0, "answered": 0, "throttled": False}
     try:
         every = max(1, int(_cfg(session, settings, "unanswered_email_check_minutes", "30") or 30))
     except (TypeError, ValueError):
@@ -725,6 +752,10 @@ def run_unanswered_email_check(session: Session, settings: Any, now: datetime | 
                     continue
             except Exception as exc:                                  # unreadable: flag it rather than lose a real request
                 logger.warning("callback_followup: could not read conversation of %s: %s", contact_id, exc)
+            body = _lead_reply(conv, ext_id, body)                    # the lead's own words, not our quoted email under them
+            if em.is_stop_request(body) or _stopped_since(session, contact_id, received_at):
+                stats["skipped_opt_out"] += 1                         # they asked us to stop: nobody should call them back
+                continue
             got = (analyze or (lambda b: analyze_email(settings, b, now)))(body or "")
             summary = str(got.get("purpose_summary") or "").strip() or (body or "").strip()[:300]
             happened = _email_what_happened(body, received_at)

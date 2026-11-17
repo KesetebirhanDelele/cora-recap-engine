@@ -292,7 +292,7 @@ def test_no_time_means_no_booking_and_one_staff_email(session):                 
     ghl = FakeGHL()
     row, sent = run(session, ghl, req="", clear=False, kind="admissions", target="")
     assert row.action == "email_staff" and row.reason == "no_time" and ghl.booked == [] and ghl.slot_calls == 0
-    assert len(sent) == 1 and sent[0][0] == ["roselen@colaberry.com"] and sent[0][3] == ["kes@colaberry.com"]
+    assert len(sent) == 1 and sent[0][0] == ["roselen@colaberry.com"] and sent[0][3] == []   # Rose only; no copy to the alert address (Kes 2026-11-17)
 
 
 def test_taken_slot_unreadable_calendar_and_failed_booking_all_fall_back_to_the_staff_email(session):
@@ -984,3 +984,65 @@ def test_summary_lists_how_a_lead_was_reached(session):
     with patch.object(svc, "_cfg", lambda s, st, key, default: default):
         out = svc.get_summary(session, SimpleNamespace())
     assert out["leads"][0]["contacted_via"] == "text" and out["counts"]["contacted"] == 1
+
+
+# ── 2026-11-17: a lead replied "Stop" to the Open House invite and Rose was told they wanted to attend ────────────────────────
+QUOTE = ("On Nov 17, 2026, at 12:25 PM, Colaberry Admissions Team <admissions@colaberry.com> wrote:\n"
+         "Hello Future AI Architect, Join us for the Colaberry AI Systems Architect Accelerator Open House on November 19, 2026.")
+
+
+class ReplyConv(FakeConv):
+    """FakeConv that can also return the message itself (what the lead really wrote, with our email quoted below)."""
+
+    def __init__(self, full_body):
+        super().__init__([])
+        self.full_body = full_body
+
+    def get_message(self, message_id):
+        if isinstance(self.full_body, Exception):
+            raise self.full_body
+        return {"id": message_id, "body": self.full_body}
+
+
+def test_a_stop_reply_is_not_a_callback_request_even_though_the_stored_text_is_our_quoted_invite(session):
+    add_inbound(session, "stop1", 45, body="Hello Future AI Architect, Join us for the Open House on November 19, 2026.")
+    out, sent = run_emails(session, conv=ReplyConv("Stop\nBest regards,\nElijah Choy\n" + QUOTE),
+                           analyze=lambda b: pytest.fail("a stop reply must never be analysed"))
+    assert out["skipped_opt_out"] == 1 and out["handled"] == 0 and sent == []
+    assert session.execute(select(CallbackFollowup)).scalars().all() == []
+
+
+def test_a_real_reply_is_analysed_without_our_quoted_email(session):
+    add_inbound(session, "real1", 45, body="Hello Future AI Architect, Join us for the Open House.")
+    seen = []
+    out, sent = run_emails(session, conv=ReplyConv("Please call me about the program\n" + QUOTE),
+                           analyze=lambda b: seen.append(b) or {"purpose_summary": "Asks for a call.", "callback_wanted": "yes"})
+    assert out["handled"] == 1 and len(sent) == 1
+    assert seen == ["Please call me about the program"]
+    row = session.execute(select(CallbackFollowup)).scalars().one()
+    assert "Open House" not in row.detail and "Please call me" in row.detail
+
+
+def test_a_stop_text_after_the_email_also_means_no_callback(session):
+    add_inbound(session, "txt1", 45, body="Can someone call me?")
+    session.execute(text("INSERT INTO inbound_messages VALUES ('i-sms', 'c1', 'sms', 'STOP', :t, 'sms1')"), {"t": NOW - timedelta(minutes=44)})
+    session.commit()
+    out, sent = run_emails(session, conv=ReplyConv("Can someone call me?"))
+    assert out["skipped_opt_out"] == 1 and sent == []
+
+
+def test_when_the_message_cannot_be_read_the_stored_text_is_still_cut_of_its_quote(session):
+    add_inbound(session, "fb1", 45, body="Stop\n" + QUOTE)
+    out, sent = run_emails(session, conv=ReplyConv(RuntimeError("boom")))
+    assert out["skipped_opt_out"] == 1 and sent == []
+
+
+def test_the_staff_email_is_copied_to_the_alert_address_only_when_switched_on(session):
+    cfg = {"callback_followup_enabled": "true", "callback_followup_cc_alert_address": "true"}
+    sent = []
+    with patch.object(svc, "_cfg", lambda s, st, key, default: cfg.get(key, default)),             patch("app.core.mode_flags.get_mode_flags", return_value=SimpleNamespace(ghl_writes_enabled=True)):
+        svc.follow_up(session, SimpleNamespace(alert_email_to="kes@colaberry.com"), source="call", source_id="cc1", contact_id="c1",
+                      kind="admissions", target_name="", callback_wanted=True, time_is_clear=False, requested_local="",
+                      summary="x", flag_key="callback_followup_enabled", ghl=FakeGHL(), now=NOW,
+                      send=lambda to, subj, body, cc: sent.append((to, cc)))
+    assert sent == [(["roselen@colaberry.com"], ["kes@colaberry.com"])]
