@@ -3093,3 +3093,12 @@ Ali's answers: the five hand-edited surfaces carry NO dates (agreed). Open House
 - Fix (663db48 + ac206ef, merged into feat/ghl-call-conversation-sync, Hetzner rebuilt): reads the message itself, keeps only the lead's words, skips leads whose reply opens with a stop request or who texted STOP after. The staff email goes to the staff member only (CC to the alert address is opt-in: `callback_followup_cc_alert_address`). The shadow-week "waiting for approval" notice still goes to the alert address.
 - Verified live: replaying the real message through the deployed code reads "Stop Best regards, Elijah Choy" and flags it as a stop request. The first deploy missed it (sign-off on the same line); ac206ef fixed that.
 - Not done: Rose has not been told to ignore the old alert (Kes to tell her). The GHL list-body quirk may also affect other inbound-email readers (opt-out handling, content audit) - not checked.
+
+## 2026-11-17 - support@colaberry.com copies to Ali set up in Zendesk (outside Cora)
+- Finding: support@colaberry.com is active and runs on Zendesk (brand "Colaberry Careers"), not GHL. Kes's test email got auto-reply ticket 20336912.
+- Ali's ask: see what comes into support@ and what goes out. Done in Zendesk by Kes: two email targets to ali@colaberry.com ("Ali copy", "Ali copy - replies") and two triggers in category "Copy Ali" ("Copy to Ali - incoming": ticket created; "Copy to Ali - replies sent": ticket updated + public comment + current user is an agent). A first version keyed on "assignee is current user" would have missed replies by other agents; replaced.
+- Verified: test emails from both targets reached Kes's inbox with the right subjects ("Support ticket 20331986: ..." and "REPLY SENT - ticket 20331986: ..."). NOT verified: the end-to-end path with a real email and a real agent reply, and that both triggers show Active.
+- Known gap: a student's own follow-up reply is not copied (only new tickets and agent replies). A third trigger can add it if Ali wants it.
+- Draft email to Ali with the summary saved in Kes's Gmail (not confirmed sent).
+- Config how-to: `docs/zendesk-support-copy-to-ali.md`.
+- Also this session: wrote a note for Ali on the 75-second call spacing (why the Synthflow call-record webhook does not drop silently); the file is scratch only, not in the repo.
