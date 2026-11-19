@@ -258,3 +258,14 @@ obligation on the first "connected" call) and the dashboard "connected" counts s
 (expect ~60 contacts, not 322) -> only then one real push with Ali.
 **Tests:** `tests/unit/test_human_answer_judge.py` (label mapping, fail-safe, bounded/idempotent/retry, reached rule, scan
 hook, inbound), voicemail does not drain a contact, push excludes voicemail/inbound/unjudged, job order judge -> push -> tag.
+
+## Addendum 2026-11-19 (late) - daily push re-sends the trailing 8 days
+Ali's note: his write is forward-only and unmatched rows are dropped, so a contact who becomes an Explorer learner a few
+days AFTER Rose's call never receives that call's time (looks like nobody spoke to them). Fix (Kes: build it, no need to
+ask Ali): every daily run sends the trailing 8 days (`DAILY_WINDOW_DAYS`; his suppression looks back 7, +1 margin). First
+ever push stays 14 days; after an outage the window reaches back to one day before the last success, never past 14.
+Repeats are harmless (forward-only). A contact who joins his list more than 8 days after the call is not covered, which
+also cannot change suppression. Trade-off noted by Kes: a fresh Explorer sign-up right after Rose's call is then
+suppressed for the rest of the 7 days (a product rule that is Ali's to change). Operator tool: `--days N` overrides the
+window; `--send` now prints the unmatched GHL ids (ids only) because Ali cannot read them from his logs.
+Tests: window logic, 6-day-old call re-sent next day and dropped at 9 days, unmatched ids collected.

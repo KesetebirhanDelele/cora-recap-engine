@@ -121,14 +121,18 @@ def test_naive_and_non_utc_times_are_written_as_utc():
 
 # ── window ───────────────────────────────────────────────────────────────────────
 
-def test_first_push_is_trailing_14_days_then_one_day_before_last_success():
+def test_first_push_is_14_days_then_every_run_resends_the_trailing_8_days():
     assert eca.window_start(None, NOW) == NOW - timedelta(days=14)
-    last = NOW - timedelta(days=1)
-    assert eca.window_start(last, NOW) == last - timedelta(days=1)
+    assert eca.window_start(NOW - timedelta(days=1), NOW) == NOW - timedelta(days=8)
 
 
-def test_a_very_old_last_success_never_widens_past_14_days():
+def test_after_an_outage_the_window_reaches_back_to_the_last_success_but_never_past_14_days():
+    assert eca.window_start(NOW - timedelta(days=10), NOW) == NOW - timedelta(days=11)
     assert eca.window_start(NOW - timedelta(days=90), NOW) == NOW - timedelta(days=14)
+
+
+def test_operator_override_days_wins():
+    assert eca.window_start(NOW - timedelta(days=1), NOW, 14) == NOW - timedelta(days=14)
 
 
 # ── sending ──────────────────────────────────────────────────────────────────────
@@ -159,7 +163,29 @@ def test_push_sends_bearer_body_and_records_success(session):
     assert session.get(AppConfig, eca.LAST_OK_KEY).value == eca.iso_z(NOW)
 
 
-def test_second_run_resends_from_a_day_before_the_last_success(session):
+def test_a_call_six_days_old_is_resent_so_a_late_joiner_still_gets_it(session):
+    call(session, "A", NOW - timedelta(days=6))
+    bodies = []
+
+    def handler(req):
+        bodies.append(json.loads(req.content))
+        return httpx.Response(200, json=OK)
+
+    eca.push_contact_activity(session, settings(), now=NOW, client=client_with(handler))
+    eca.push_contact_activity(session, settings(), now=NOW + timedelta(days=1), client=client_with(handler))
+    assert [len(b["rows"]) for b in bodies] == [1, 1]            # re-sent the next day
+    eca.push_contact_activity(session, settings(), now=NOW + timedelta(days=3), client=client_with(handler))
+    assert len(bodies) == 2                                        # 9 days old: out of the window, nothing to send
+
+
+def test_unmatched_ids_are_collected_for_the_operator(session):
+    call(session, "A", NOW - timedelta(days=1))
+    out = {**OK, "unmatched": 1, "unmatched_ghl_contact_ids": ["ZZZ"]}
+    res = eca.push_contact_activity(session, settings(), now=NOW, client=client_with(lambda r: httpx.Response(200, json=out)))
+    assert res.unmatched_ids == ["ZZZ"]
+
+
+def test_second_run_resends_inside_the_window(session):
     call(session, "A", NOW - timedelta(days=1))
     eca.push_contact_activity(session, settings(), now=NOW, client=client_with(lambda r: httpx.Response(200, json=OK)))
     later = NOW + timedelta(days=1)
@@ -170,7 +196,7 @@ def test_second_run_resends_from_a_day_before_the_last_success(session):
         return httpx.Response(200, json=OK)
 
     eca.push_contact_activity(session, settings(), now=later, client=client_with(handler))
-    assert [r["ghl_contact_id"] for r in bodies[0]["rows"]] == ["A"]  # inside the one-day overlap -> re-sent, harmless
+    assert [r["ghl_contact_id"] for r in bodies[0]["rows"]] == ["A"]  # inside the 8-day window -> re-sent, harmless
 
 
 def test_large_file_goes_in_batches_and_counts_add_up(session):

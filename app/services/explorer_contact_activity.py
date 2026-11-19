@@ -16,8 +16,8 @@ Contract (Ali, 2026-11-17/18):
   * the same file twice is safe (he only ever moves a timestamp forward), so resending is harmless.
 
 Rules here: connected calls only (a no-answer stays in his pool); the FIRST push is the trailing
-14 days (his suppression window is 7); after that each run re-sends from one day before the last
-success, so a missed day or a late file self-heals. Off by default (app_config
+14 days; after that every run re-sends the trailing 8 days (his suppression window is 7), so a missed day self-heals
+and a contact who joins his list a few days after the call still gets the time. Off by default (app_config
 explorer_contact_activity_enabled). Never logs the token or contact ids.
 """
 from __future__ import annotations
@@ -37,7 +37,11 @@ SOURCE = "ghl-rose-calls"
 ENABLED_KEY = "explorer_contact_activity_enabled"
 LAST_OK_KEY = "explorer_contact_activity_last_success_at"
 FIRST_PUSH_DAYS = 14
-OVERLAP = timedelta(days=1)
+# Every daily run re-sends the trailing 8 days of live conversations (Kes, 2026-11-19). Ali's suppression looks back
+# 7 days and his write is forward-only, so repeats are harmless; the repeat is what lets a contact who becomes an
+# Explorer learner a few days AFTER Rose's call still receive that call's time (his unmatched rows are dropped).
+DAILY_WINDOW_DAYS = 8
+OVERLAP = timedelta(days=1)  # extra margin back from the last success after an outage
 BATCH_SIZE = 500
 CLOCK_MARGIN = timedelta(seconds=30)  # never send a time Ali could call "future" (his tolerance is 5 min)
 RETRIES = 2  # extra attempts on a 5xx / network error
@@ -66,6 +70,7 @@ class PushResult:
     batches: int = 0
     skipped_reason: str | None = None
     unmatched_sample: list[str] = field(default_factory=list)
+    unmatched_ids: list[str] = field(default_factory=list)  # full ids, for the operator tool only; never logged
 
 
 def _utc(dt: datetime) -> datetime:
@@ -77,12 +82,16 @@ def iso_z(dt: datetime) -> str:
     return _utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def window_start(last_success: datetime | None, now: datetime) -> datetime:
-    """First push = trailing 14 days. Later pushes = one day before the last success (idempotent overlap)."""
+def window_start(last_success: datetime | None, now: datetime, days: int | None = None) -> datetime:
+    """days given (operator override) = trailing N days. First push (no success yet) = trailing 14 days. Normal
+    daily run = trailing 8 days; after an outage it reaches back to one day before the last success, never past 14."""
     now = _utc(now)
+    if days is not None:
+        return now - timedelta(days=days)
     if last_success is None:
         return now - timedelta(days=FIRST_PUSH_DAYS)
-    return max(_utc(last_success) - OVERLAP, now - timedelta(days=FIRST_PUSH_DAYS))
+    daily = now - timedelta(days=DAILY_WINDOW_DAYS)
+    return max(min(_utc(last_success) - OVERLAP, daily), now - timedelta(days=FIRST_PUSH_DAYS))
 
 
 def rep_ids(settings: Any) -> tuple[str, ...]:
@@ -189,7 +198,7 @@ def _parse(resp: Any) -> dict[str, Any]:
 
 def push_contact_activity(
     session: Session, settings: Any, *, now: datetime | None = None, client: Any = None,
-    dry_run: bool = False,
+    dry_run: bool = False, window_days: int | None = None,
 ) -> PushResult:
     """Build and send the file. dry_run builds only (nothing sent, nothing recorded). Not gated here: the caller
     checks enabled()."""
@@ -202,7 +211,7 @@ def push_contact_activity(
         last_ok = datetime.fromisoformat(raw) if raw else None
     except ValueError:
         last_ok = None
-    start = window_start(last_ok, now)
+    start = window_start(last_ok, now, window_days)
     rows = build_rows(session, start, end, rep_ids(settings))
     res = PushResult(window_start=start, window_end=end, rows=len(rows))
     if dry_run:
@@ -222,6 +231,7 @@ def push_contact_activity(
         res.batches += 1
         for k in ("received", "matched", "unmatched", "written", "unchanged", "rejected_future"):
             setattr(res, k, getattr(res, k) + int(data.get(k) or 0))
+        res.unmatched_ids += [str(x) for x in (data.get("unmatched_ghl_contact_ids") or [])]
         if len(res.unmatched_sample) < 5:
             res.unmatched_sample += [str(x)[:6] + "…" for x in (data.get("unmatched_ghl_contact_ids") or [])][:5]
     res.sent = True
