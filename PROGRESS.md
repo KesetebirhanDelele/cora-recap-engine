@@ -3136,3 +3136,9 @@ Supersedes the "built locally / not deployed / ON HOLD" notes above (2026-11-18 
 - **Next:** (1) Kes sends the draft; (2) Ali reads the 31 unmatched and confirms the 28 written; (3) switch the daily push on; (4) Ali turns tagging on (first run roughly 119 leads before the voicemail correction - expect it to change); (5) Rose's Smart List filter confirmation before the first tagging run.
 - **Kes decided to do afterwards (same voicemail flaw, still live):** callback follow-up (closes a callback obligation after the first "connected" call, `callback_followup.py`) and dashboard "connected" counts. Not changed.
 - **Housekeeping:** delete the Downloads CSVs holding names/phones (explorer_v2_with_names_KES_ONLY.csv and the older review files). Server holds /tmp/explorer_dryrun*.csv (contact ids only).
+
+## 2026-11-19 (late) - Zendesk copies confirmed working by Ali; one rename pending
+- Ali confirmed both kinds of copy arrive (3 incoming, 2 REPLY SENT, ticket numbers match, incl. Kes's own test 20336914). Removed from the "not yet confirmed" list; `docs/zendesk-support-copy-to-ali.md` updated.
+- His one request: rename the Zendesk sender "Colaberry Careers" to "Colaberry Support" (support@ carries job applications and general inquiries). Zendesk admin change by Kes, NOT done yet. Nothing in the repo or Cora depends on the name.
+- UPDATE 2026-11-19: Kes renamed the Zendesk sender to "Colaberry Support" and confirmed it worked. `docs/zendesk-support-copy-to-ali.md` marked done. Reply to Ali's 3:09 PM EST email (support@ copies confirmed) drafted in Kes's Gmail.
+- Also confirmed from Gmail: Kes SENT the Explorer correction reply (00:00 UTC) and the "first file sent: 59 rows, 28 matched" email (01:59 UTC) to Ali on 2026-11-19. Awaiting Ali's read of the 31 unmatched.

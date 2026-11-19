@@ -59,12 +59,14 @@ Why condition 3 matters: an earlier version used "Ticket > Assignee > Is > (curr
 ## Known limits
 
 - Auto-replies and spam sent to support@ also create tickets, so Ali's copies include them.
-- Copies show the sender name "Colaberry Careers" (the Zendesk brand).
+- Copies (and every mail Zendesk sends from support@) show the sender name from the Zendesk brand. It was "Colaberry Careers"; Ali asked on 2026-11-19 for "Colaberry Support" because support@ carries job applications and general inquiries alike. Renamed on 2026-11-19 (see Status below).
 - Internal notes are not copied (Comment must be Public).
 - If a student replies, Zendesk records it as an update, but Trigger B ignores it because the current user is not an agent. Student follow-ups are therefore not copied; only new tickets are.
 - To also see student follow-ups, add a third trigger: Ticket is Updated, Comment is Public, Current user is not (agent), same action as Trigger A.
 - The two targets send to Ali only. They do not give him a Zendesk login. If he wants to search tickets himself, add him under Admin Center > People > Team members.
 
-## Status at time of writing
+## Status
 
-Delivery from both targets confirmed (test emails received). The end-to-end test through the triggers with a real email and a real agent reply was **not yet run** on 2026-11-17.
+- 2026-11-17: delivery from both targets confirmed (test emails received).
+- 2026-11-19: **end-to-end confirmed by Ali.** He received three incoming copies and two REPLY SENT copies with matching ticket numbers, including Kes's own test (ticket 20336914: inbound 10:21 PM, agent reply 11:45 PM Central). Ticket 20336915 (a job application) had no reply copy yet, which just means it was still open.
+- 2026-11-19: Ali's only requested change: rename the sender from "Colaberry Careers" to "Colaberry Support". A careers-specific identity, if wanted later, belongs on its own address. **Done 2026-11-19:** Kes renamed it in Zendesk and confirmed it worked; Ali was told by email. (Zendesk admin setting, nothing in this repo.)
