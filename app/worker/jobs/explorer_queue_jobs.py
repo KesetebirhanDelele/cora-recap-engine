@@ -51,9 +51,33 @@ def explorer_queue_sync_job(job_id: str) -> None:
         session.commit()
 
         try:
+            from app.services import explorer_contact_activity as eca
             from app.services.explorer_queue import run_explorer_queue_cycle
-            # mode="apply": still a no-op unless explorer_queue_tagging_enabled is on.
-            run_explorer_queue_cycle(session, settings, mode="apply")
+
+            # Push "who staff reached" to Ali BEFORE tagging, so his pool already excludes them when we tag.
+            # Off by default. If the push fails, tagging is skipped this cycle (a stale pool would hand Rose
+            # people she just spoke to) and an exception is raised for the dashboard.
+            push_ok = True
+            if eca.enabled(session, settings):
+                try:
+                    eca.push_contact_activity(session, settings)
+                    session.commit()
+                except Exception as exc:
+                    push_ok = False
+                    session.rollback()
+                    logger.error("explorer_contact_activity: push failed: %s", exc)
+                    create_exception(
+                        session,
+                        type="explorer_contact_activity_failed",
+                        context={"job_id": job.id, "error": str(exc)[:300]},
+                        severity="warning",
+                        entity_type="system",
+                        entity_id="explorer_contact_activity",
+                    )
+                    session.commit()
+            if push_ok:
+                # mode="apply": still a no-op unless explorer_queue_tagging_enabled is on.
+                run_explorer_queue_cycle(session, settings, mode="apply")
             complete_job(session, job)
             session.commit()
         except Exception as exc:

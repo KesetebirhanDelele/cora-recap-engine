@@ -188,3 +188,42 @@ anything touching Eventbrite or `rsvps`; any sending.
 ## Tried against live GHL that did not work
 
 Nothing yet. Add every failed attempt here as it happens, so nobody retries it.
+
+## Addendum 2026-11-18 - daily "who staff reached" push to Ali (built, OFF)
+
+**Why:** Ali's pool suppression ignores anyone contacted in the last 7 days, but the column it reads
+(`explorer_journey_profiles.last_contacted_at`, learner side) is empty. The CRM-side `leads.last_contacted_at` is a
+different column that the queue never reads, so we do NOT write it ourselves: we hand Ali the rows and he maps them.
+
+**Contract (Ali, 2026-11-17/18):** `POST https://enterprise.colaberry.ai/api/v1/explorer-growth/contact-activity`,
+`Authorization: Bearer <CORA_SERVICE_TOKEN>` (same token as the outreach feed), body
+`{"source":"ghl-rose-calls","rows":[{"ghl_contact_id","last_connected_call_at"}]}`. Reply:
+`received / matched / unmatched / written / unchanged / rejected_future / unmatched_ghl_contact_ids (cap 100)`.
+`matched`/`unmatched` count our contact ids; `written`/`unchanged` count his profiles (one id can move two profiles).
+Timestamp without an offset = 400; unknown body key = 400; more than 5 min in the future = refused. Resending the same
+file is safe (he only moves a timestamp forward). Do not copy the URL out of his emails: his mailer rewrote it once to
+a tracker. Config holds the full https URL; the client refuses a non-https value and never follows a redirect.
+
+**Musts**
+- Connected calls only (`staff_call_quality.call_connected`); a no-answer stays in his pool. Rose only (Kes, 2026-11-18): rows are limited to
+  GHL user ids in setting `explorer_contact_activity_rep_user_ids` (default Roselen `0swBv9tBNeXeYXPYFBSx`; empty = all staff).
+- One row per contact: the latest connected call time, UTC, trailing `Z`. Calls after now-30s are never sent.
+- First push = trailing 14 days (his window is 7); afterwards from one day before the last success (self-heals a missed day).
+- The push runs before tagging in `explorer_queue_sync`. If it fails, tagging is skipped for that cycle (a stale pool would
+  hand Rose people she just spoke to) and `explorer_contact_activity_failed` is raised.
+- Success is recorded (`app_config.explorer_contact_activity_last_success_at`) only after every batch (500 rows) was accepted.
+
+**Must-nots:** no write to any GHL field; never log the token or contact ids; never retry a 4xx; never mark success on failure.
+
+**Switches (off by default):** `app_config.explorer_contact_activity_enabled`; env `EXPLORER_CONTACT_ACTIVITY_URL`
+(+ existing `CORA_SERVICE_TOKEN`). Operator tool: `execution/explorer_contact_activity_push.py` (dry-run file by default,
+`--send` for the deliberate first 14-day push that Ali wants to check with us).
+
+**Escalate:** a 400 (contract drift), 401/403 (token), or `rejected_future` > 0 (clock skew). Unmatched is NOT a fault: Ali
+says 16 of the pool's 192 have no GHL contact id on his side (764 of 1,082 across the whole population).
+
+**Go-live order:** (1) deploy dark, (2) dry-run file, (3) send ONE real file together with Ali, he checks what it wrote,
+(4) enable the daily flag, (5) only then does Ali switch tagging on.
+
+**Tests:** `tests/unit/test_explorer_contact_activity.py` (26): file contents, no-answer/blank/out-of-window cases, window,
+dry run, batching, retry/no-retry, failure never marks success, redirect/https guard, job ordering and skip-on-failure.

@@ -268,6 +268,12 @@ class Settings(BaseSettings):
     # Ali, never printed). While explorer_queue_feed_path is set it takes precedence.
     explorer_queue_feed_url: str = ""
     cora_service_token: str = ""
+    # Daily "who staff reached" push to Ali (spec/49 addendum). Full https URL of his contact-activity endpoint;
+    # empty = not configured. Gated separately by app_config explorer_contact_activity_enabled (default off).
+    explorer_contact_activity_url: str = ""
+    # Whose connected calls are pushed (comma-separated GHL user ids). Kes 2026-11-18: Rose only
+    # (Roselen Flores). Empty = all staff.
+    explorer_contact_activity_rep_user_ids: str = "0swBv9tBNeXeYXPYFBSx"
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"

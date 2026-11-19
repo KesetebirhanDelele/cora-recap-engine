@@ -3102,3 +3102,14 @@ Ali's answers: the five hand-edited surfaces carry NO dates (agreed). Open House
 - Draft email to Ali with the summary saved in Kes's Gmail (not confirmed sent).
 - Config how-to: `docs/zendesk-support-copy-to-ali.md`.
 - Also this session: wrote a note for Ali on the 75-second call spacing (why the Synthflow call-record webhook does not drop silently); the file is scratch only, not in the repo.
+
+## 2026-11-18 - daily "who staff reached" push to Ali: built locally, OFF, not deployed
+- Ali's endpoint is live (use `enterprise.colaberry.ai/api/v1/explorer-growth/contact-activity` with https; the URL in his first email was rewritten by his mailer to a tracker). Branch `feat/explorer-contact-activity-push`.
+- Built: `app/services/explorer_contact_activity.py` (file builder + client), a pre-tagging step in `explorer_queue_sync`, `execution/explorer_contact_activity_push.py` (dry-run / `--send`), setting `explorer_contact_activity_url`, spec/49 addendum, 26 new tests (all pass). Full unit suite: 2485 pass, 7 fail - the same 7 fail on the untouched branch (admin routes, cadence cap, ghl task payload, inbound task), so not caused by this.
+- Production sizing (read-only): all staff trailing 14 days = 482 connected calls / 370 contacts (superseded by the Rose-only decision below: 366 calls / 320 contacts).
+- NOT done: not committed, not deployed, nothing sent to Ali, flag off, URL not in the server env. Next: Kes approves -> commit/merge -> Hetzner rebuild -> dry-run file -> one real file with Ali -> enable flag -> Ali turns tagging on.
+- Decision (Kes, 2026-11-18): ROSE ONLY. Rows limited to Roselen's GHL user id via setting `explorer_contact_activity_rep_user_ids` (empty = all staff). Prod check: Rose = 366 connected calls / 320 contacts in 14 days; calls with no rep recorded (65) are excluded. 28 tests pass.
+- Not changed: Ali's agent "Edu: Cory" is separate from Cora's; no Cora call-request endpoint is being built (Ali agreed).
+- Draft reply to Ali saved in Kes's Gmail (unsent at time of writing): acknowledges the URL fix, states Rose only, first file = trailing 14 days, then daily; asks when he can watch the first real file. Nothing for Ali to build.
+- Deploy order (nothing waits on Ali until step 4): 1) commit/merge/Hetzner rebuild with the push OFF (no behaviour change); 2) set `EXPLORER_CONTACT_ACTIVITY_URL` in the server env (never print the token); 3) dry-run file inspected by Kes; 4) with Ali watching, ONE real `--send`; Ali checks what it wrote; 5) switch `explorer_contact_activity_enabled` on; 6) Ali turns tagging on.
+- Tests: 28 pass (new file); full suite not re-run after the Rose-only change.
