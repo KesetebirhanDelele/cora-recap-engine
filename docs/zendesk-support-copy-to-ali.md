@@ -50,6 +50,17 @@ Both are in a trigger category called **Copy Ali**.
 
 Why condition 3 matters: an earlier version used "Ticket > Assignee > Is > (current user)". That only fires when the ticket's own assignee replies, so replies by any other agent would be missed. "Current user is (agent)" fires for any agent and ignores the student's own replies.
 
+**Trigger C: "Copy to Ali - lead/student replies"** (created by Kes 2026-11-19; Ali asked to verify receipt on his side)
+- Third target first: Title "Ali copy - follow-ups", Email target, ali@colaberry.com, Subject `FOLLOW-UP from lead - ticket {{ticket.id}}: {{ticket.title}}`. Test target, then save.
+- Conditions (meet ALL):
+  1. Ticket > Ticket > Is > Updated
+  2. Ticket > Comment > Is > Public
+  3. Ticket details > Current user > Is not > (agent)
+- Action: Notify by > Target > "Ali copy - follow-ups"
+- Message: `FOLLOW-UP from {{ticket.requester.email}}: {{ticket.latest_comment_formatted}}`
+- Put it in the Copy Ali category. Test: reply to a ticket from the outside address; Ali should receive "FOLLOW-UP from lead - ticket <id>: ...".
+- Watch for: automatic replies (out-of-office) from a lead's mailbox will also be copied.
+
 ## How to check it works
 
 1. Send an email to support@colaberry.com from any outside address. Ali should receive "Support ticket <id>: ..." with the real message text.
@@ -62,11 +73,12 @@ Why condition 3 matters: an earlier version used "Ticket > Assignee > Is > (curr
 - Copies (and every mail Zendesk sends from support@) show the sender name from the Zendesk brand. It was "Colaberry Careers"; Ali asked on 2026-11-19 for "Colaberry Support" because support@ carries job applications and general inquiries alike. Renamed on 2026-11-19 (see Status below).
 - Internal notes are not copied (Comment must be Public).
 - If a student replies, Zendesk records it as an update, but Trigger B ignores it because the current user is not an agent. Student follow-ups are therefore not copied; only new tickets are.
-- To also see student follow-ups, add a third trigger: Ticket is Updated, Comment is Public, Current user is not (agent), same action as Trigger A.
+- Student follow-ups: see Trigger C below (added so Ali sees replies from the lead or student too).
 - The two targets send to Ali only. They do not give him a Zendesk login. If he wants to search tickets himself, add him under Admin Center > People > Team members.
 
 ## Status
 
 - 2026-11-17: delivery from both targets confirmed (test emails received).
 - 2026-11-19: **end-to-end confirmed by Ali.** He received three incoming copies and two REPLY SENT copies with matching ticket numbers, including Kes's own test (ticket 20336914: inbound 10:21 PM, agent reply 11:45 PM Central). Ticket 20336915 (a job application) had no reply copy yet, which just means it was still open.
+- 2026-11-19: **Trigger C and the target "Ali copy - follow-ups" created by Kes** so lead/student replies are copied too. Ali told by email what to verify (FOLLOW-UP arrives with the right ticket id, no duplicates, no copy of agent replies). Not confirmed by Ali yet.
 - 2026-11-19: Ali's only requested change: rename the sender from "Colaberry Careers" to "Colaberry Support". A careers-specific identity, if wanted later, belongs on its own address. **Done 2026-11-19:** Kes renamed it in Zendesk and confirmed it worked; Ali was told by email. (Zendesk admin setting, nothing in this repo.)
