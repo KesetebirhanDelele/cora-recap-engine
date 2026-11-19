@@ -35,12 +35,12 @@ def session():
 _n = 0
 
 
-def call(session, cid, when, connected=True, rep="R1"):
+def call(session, cid, when, connected=True, rep="R1", human=True, direction="outbound"):
     global _n
     _n += 1
     session.add(StaffCallQuality(
         id=f"id{_n}", ghl_message_id=f"m{_n}", ghl_contact_id=cid, rep_user_id=rep, call_time=when,
-        call_connected=connected))
+        call_connected=connected, direction=direction, answered_by_human=human))
     session.commit()
 
 
@@ -82,6 +82,22 @@ def test_real_settings_default_is_rose_only():
     from app.config.settings import Settings
 
     assert eca.rep_ids(Settings()) == ("0swBv9tBNeXeYXPYFBSx",)
+
+
+def test_voicemail_unjudged_and_inbound_calls_are_never_sent(session):
+    call(session, "VM", NOW - timedelta(days=1), human=False)          # left a voicemail (judge says no live person)
+    call(session, "UNJUDGED", NOW - timedelta(days=1), human=None)     # not judged yet / judge failed
+    call(session, "INBOUND", NOW - timedelta(days=1), direction="inbound")  # lead called in, not staff reaching them
+    call(session, "NODIR", NOW - timedelta(days=1), direction=None)
+    call(session, "REAL", NOW - timedelta(days=1))
+    assert [r["ghl_contact_id"] for r in eca.build_rows(session, NOW - timedelta(days=14), NOW)] == ["REAL"]
+
+
+def test_a_voicemail_after_a_real_conversation_does_not_move_the_time(session):
+    call(session, "A", NOW - timedelta(days=3))                  # real conversation
+    call(session, "A", NOW - timedelta(days=1), human=False)     # later voicemail must not count
+    rows = eca.build_rows(session, NOW - timedelta(days=14), NOW)
+    assert rows == [{"ghl_contact_id": "A", "last_connected_call_at": "2026-11-15T12:00:00Z"}]
 
 
 def test_no_answer_is_never_sent_and_blank_ids_are_dropped(session):
@@ -262,7 +278,7 @@ def test_off_by_default_and_on_when_flag_set(session):
 
 # ── worker ordering: push first; a failed push skips tagging ──────────────────────
 
-def _run_job(monkeypatch, *, enabled, push_raises):
+def _run_job(monkeypatch, *, enabled, push_raises, judge_raises=False):
     from contextlib import contextmanager
     from unittest.mock import MagicMock
 
@@ -294,6 +310,16 @@ def _run_job(monkeypatch, *, enabled, push_raises):
             raise eca.ContactActivityError("boom")
 
     monkeypatch.setattr(eca, "push_contact_activity", fake_push)
+
+    import app.core.human_answer_judge as hj
+
+    def fake_judge(*a, **k):
+        order.append("judge")
+        if judge_raises:
+            raise RuntimeError("openai down")
+        return {"judged": 0, "human": 0, "not_human": 0, "failed": 0}
+
+    monkeypatch.setattr(hj, "judge_pending", fake_judge)
     monkeypatch.setattr(queue, "run_explorer_queue_cycle", lambda *a, **k: order.append("tag"))
     jobs.explorer_queue_sync_job("j1")
     return order, created
@@ -301,14 +327,19 @@ def _run_job(monkeypatch, *, enabled, push_raises):
 
 def test_job_pushes_before_tagging(monkeypatch):
     order, created = _run_job(monkeypatch, enabled=True, push_raises=False)
-    assert order == ["push", "tag"] and created == []
+    assert order == ["judge", "push", "tag"] and created == []
 
 
 def test_job_skips_tagging_and_raises_exception_when_push_fails(monkeypatch):
     order, created = _run_job(monkeypatch, enabled=True, push_raises=True)
-    assert order == ["push"] and created == ["explorer_contact_activity_failed"]
+    assert order == ["judge", "push"] and created == ["explorer_contact_activity_failed"]
 
 
 def test_job_does_not_push_when_switched_off(monkeypatch):
     order, created = _run_job(monkeypatch, enabled=False, push_raises=False)
-    assert order == ["tag"] and created == []
+    assert order == ["judge", "tag"] and created == []
+
+
+def test_a_failing_judge_never_stops_the_job(monkeypatch):
+    order, created = _run_job(monkeypatch, enabled=True, push_raises=False, judge_raises=True)
+    assert order == ["judge", "push", "tag"] and created == []

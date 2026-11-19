@@ -497,7 +497,7 @@ def test_lead_name_and_phone_populated_from_contact(session):
     with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
         mock_oai_instance = MagicMock()
         mock_oai_instance.chat_completion.side_effect = [
-            {"conversation_type": "support"}, {"overall_score": 70, "summary": "ok"},
+            {"label": "human"}, {"conversation_type": "support"}, {"overall_score": 70, "summary": "ok"},
         ]
         MockOAI.return_value = mock_oai_instance
 
@@ -571,8 +571,9 @@ def test_ai_fallback_classification_used_when_no_known_signals(session):
 
     with patch("app.adapters.openai_client.OpenAIClient") as MockOAI:
         mock_oai_instance = MagicMock()
-        # First chat_completion call = AI classification; second = scoring
+        # First = live-person judge; second = AI classification; third = scoring
         mock_oai_instance.chat_completion.side_effect = [
+            {"label": "human"},
             {"conversation_type": "support"},
             {"overall_score": 70, "summary": "Handled ok."},
         ]
@@ -611,4 +612,5 @@ def test_other_conversation_type_not_scored(session):
     row = session.scalars(select(StaffCallQuality).where(StaffCallQuality.ghl_message_id == "msg-other")).one()
     assert row.conversation_type == "other"
     assert row.quality_score is None
-    mock_oai_instance.chat_completion.assert_not_called()
+    # Only the live-person judge call is made; no classification and no scoring for "other".
+    assert mock_oai_instance.chat_completion.call_count == 1

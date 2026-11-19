@@ -324,6 +324,15 @@ def _process_call_message(
         session.add(row)
         return
 
+    # ── Live person vs voicemail (spec/49 addendum). Outbound only; None = judge failed, retried later. ─────
+    if row.direction == "outbound":
+        from app.core.human_answer_judge import judge_human_answer
+
+        row.answered_by_human = judge_human_answer(
+            transcript_text, OpenAIClient(settings=settings),
+            getattr(settings, "openai_model_human_answer", None) or "gpt-4o-mini",
+        )
+
     # ── Classification ──────────────────────────────────────────────────────
     try:
         # GHL wraps this response ({"contact": {...}}) — every other caller

@@ -203,6 +203,7 @@ class Settings(BaseSettings):
     openai_model_consent_detector: str = "gpt-4o-mini"
     openai_model_content_audit: str = "gpt-4o-mini"   # decline-vs-offer judge for the GHL content audit (spec/35)
     openai_model_vm_content: str = "gpt-4o-mini"
+    openai_model_human_answer: str = "gpt-4o-mini"    # live-person-vs-voicemail judge for staff calls (spec/49 addendum)
     openai_model_call_transcription: str = "whisper-1"
     openai_timeout_seconds: int = 60
     openai_retry_max: int = 1

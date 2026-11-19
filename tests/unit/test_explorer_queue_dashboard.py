@@ -30,7 +30,7 @@ def _contact(s, cid, score, drained=False, reason="connected_call", hold=False):
 
 def _call(s, cid, when, connected=False):
     s.add(StaffCallQuality(id=str(uuid.uuid4()), ghl_message_id=str(uuid.uuid4()), ghl_contact_id=cid,
-                           call_time=when, call_connected=connected))
+                           call_time=when, call_connected=connected, direction="outbound", answered_by_human=connected))
 
 
 def test_empty_tables_return_zeros():

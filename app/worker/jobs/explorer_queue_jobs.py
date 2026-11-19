@@ -57,6 +57,19 @@ def explorer_queue_sync_job(job_id: str) -> None:
             # Push "who staff reached" to Ali BEFORE tagging, so his pool already excludes them when we tag.
             # Off by default. If the push fails, tagging is skipped this cycle (a stale pool would hand Rose
             # people she just spoke to) and an exception is raised for the dashboard.
+            # First judge any outbound connected call that has no live-person verdict yet (voicemail vs real
+            # conversation), so the push and the tag drain both rest on it. Bounded, safe to rerun; a failure
+            # leaves rows unjudged (they do not count) and never stops the job.
+            try:
+                from app.core.human_answer_judge import judge_pending
+
+                counts = judge_pending(session, settings, since=datetime.now(tz=timezone.utc) - timedelta(days=30))
+                session.commit()
+                if counts["judged"] or counts["failed"]:
+                    logger.info("explorer_queue_sync: human-answer judge %s", counts)
+            except Exception as exc:
+                session.rollback()
+                logger.warning("explorer_queue_sync: human-answer judge step failed: %s", exc)
             push_ok = True
             if eca.enabled(session, settings):
                 try:

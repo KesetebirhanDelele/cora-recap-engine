@@ -227,3 +227,34 @@ says 16 of the pool's 192 have no GHL contact id on his side (764 of 1,082 acros
 
 **Tests:** `tests/unit/test_explorer_contact_activity.py` (26): file contents, no-answer/blank/out-of-window cases, window,
 dry run, batching, retry/no-retry, failure never marks success, redirect/https guard, job ordering and skip-on-failure.
+
+## Addendum 2026-11-19 - "connected" must mean a live person answered (voicemail fix, built, not deployed)
+
+**Problem (found by Kes):** `staff_call_quality.call_connected` = status completed AND duration >= 20 s. A voicemail the
+rep leaves a message on counts. Production check (read-only, Rose, 15 days): 409 connected calls, 329 voicemail, 80 human;
+only 59 of 330 contacts in the 14-day window had a real outbound conversation. This hit both the push to Ali and the
+tag drain (removing `ent-priority-call` / adding `ent-out-connected-call` after a "connected" call).
+
+**Fix:** new nullable column `staff_call_quality.answered_by_human` (migration 0035): TRUE live person, FALSE voicemail /
+recording / unclear, NULL not judged yet. Judge = `app/core/human_answer_judge.py` (gpt-4o-mini, setting
+`openai_model_human_answer`), run (1) at scan time for outbound connected calls and (2) as the first step of each nightly
+`explorer_queue_sync` (bounded to 300 newest unjudged outbound calls in the last 30 days, so failures self-heal).
+The single shared rule is `reached_conditions()`: call_connected AND direction = 'outbound' AND answered_by_human IS TRUE.
+It is used by the push to Ali (`build_rows`) and by the tag drain (`explorer_queue.py` last-connected lookup).
+
+**Musts:** judge error -> NULL (retried, never counts); "unclear" -> FALSE; empty transcript -> FALSE; inbound calls are never
+judged and never count (a lead calling Cora's AI back is not "staff reached them"); a later voicemail never moves the time of
+an earlier real conversation.
+**Must-nots:** never write to GHL or the learner table from this; never log transcripts, names or phones; the judge step
+must never stop the nightly job.
+**Why fail-safe this way:** a voicemail wrongly counted hides a lead from the rep for 7 days; a real conversation wrongly
+missed only means the rep may re-call someone.
+
+**Not changed (same flaw, different live features - needs Kes's decision):** `callback_followup.py` (closes a callback
+obligation on the first "connected" call) and the dashboard "connected" counts still use `call_connected`.
+
+**Go-live order:** deploy (migration 0035 runs; judge step is a no-op until calls exist) -> `backfill_human_answer` dry run
+-> `--apply --days 30` -> check counts (expect roughly 80% of Rose's connected calls to be voicemail) -> dry-run push file
+(expect ~60 contacts, not 322) -> only then one real push with Ali.
+**Tests:** `tests/unit/test_human_answer_judge.py` (label mapping, fail-safe, bounded/idempotent/retry, reached rule, scan
+hook, inbound), voicemail does not drain a contact, push excludes voicemail/inbound/unjudged, job order judge -> push -> tag.

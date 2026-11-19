@@ -55,6 +55,12 @@ class StaffCallQuality(Base):
     # only calls, which get no rubric score (nothing to judge conversation
     # quality on). True only for calls with an actual recording.
     call_connected: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # answered_by_human (spec/49 addendum, 2026-11-19): call_connected only means "completed, >= 20 s" and is
+    # TRUE for a voicemail the rep left a message on. This is the transcript judge's verdict that a live person
+    # on the lead's end took part. NULL = not judged yet (or the judge failed; retried later), FALSE = voicemail /
+    # recording / unclear, TRUE = live person. Only outbound calls are judged. Use
+    # app.core.human_answer_judge.reached_conditions() to ask "did staff really reach this contact".
+    answered_by_human: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     # ── Routing: sales (lead) vs support (student) vs other ───────────────────
     # conversation_type: "sales" | "support" | "other" | "unknown"

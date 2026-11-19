@@ -96,10 +96,11 @@ def build_rows(
 ) -> list[dict[str, str]]:
     """One row per GHL contact: the latest CONNECTED call inside [start, end] by the given staff (empty = all).
     Sorted for a stable file."""
+    from app.core.human_answer_judge import reached_conditions
     from app.models.staff_call_quality import StaffCallQuality as S
 
     conds = [
-        S.call_connected.is_(True),
+        *reached_conditions(S),
         S.call_time >= start,
         S.call_time <= end,
         S.ghl_contact_id.is_not(None),

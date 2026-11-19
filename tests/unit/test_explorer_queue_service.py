@@ -63,7 +63,7 @@ def run(session, mode="apply", fl=None, client=None, lookup=None, now=T0, st=Non
 def add_call(session, cid, when, connected):
     session.add(StaffCallQuality(
         id=str(uuid.uuid4()), ghl_message_id=str(uuid.uuid4()), ghl_contact_id=cid,
-        call_time=when, call_connected=connected,
+        call_time=when, call_connected=connected, direction="outbound", answered_by_human=connected,
     ))
     session.commit()
 
@@ -143,6 +143,21 @@ def test_connected_call_adds_exit_tag_keeps_priority_and_is_not_repeated(session
     r3, c3 = run(session, lookup=lambda cid: {"contact": {"tags": tags}}, now=T0 + timedelta(days=2))
     assert r3.contacts_untagged == 0
     assert not any(a.args[0] == "CIDONE" and a.args[1].startswith("ent-out-") for a in c3.add_contact_tag.call_args_list)
+
+
+def test_voicemail_and_unjudged_calls_do_not_drain_a_contact(session):
+    run(session)
+    # A voicemail the rep left (connected by duration, judge says no live person) and a not-yet-judged call.
+    for cid, verdict in (("CIDONE", False), ("CIDTWO", None)):
+        session.add(StaffCallQuality(
+            id=str(uuid.uuid4()), ghl_message_id=str(uuid.uuid4()), ghl_contact_id=cid,
+            call_time=T0 + timedelta(hours=6), call_connected=True, direction="outbound", answered_by_human=verdict))
+    session.commit()
+    tags = ["ent-priority-call", "ent-src-campus-ranking"]
+    r, c = run(session, lookup=lambda cid: {"contact": {"tags": tags}}, now=T0 + timedelta(days=1))
+    assert not any(a.args[1].startswith("ent-out-") for a in c.add_contact_tag.call_args_list)
+    assert session.get(ExplorerQueueContact, "CIDONE").drained_at is None
+    assert session.get(ExplorerQueueContact, "CIDTWO").drained_at is None
 
 
 def test_rose_outcome_tag_records_reason_without_any_ghl_write_for_that_contact(session):

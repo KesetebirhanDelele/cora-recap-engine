@@ -29,6 +29,7 @@ from typing import Any, Callable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.human_answer_judge import reached_conditions
 from app.services import explorer_queue_logic as L
 from app.services.explorer_queue_feed import ExplorerFeed, FeedNotConfigured, FeedRow, build_feed
 
@@ -150,7 +151,7 @@ def run_explorer_queue_cycle(
         if all_ids:
             for cid, ts in session.execute(
                 select(StaffCallQuality.ghl_contact_id, func.max(StaffCallQuality.call_time))
-                .where(StaffCallQuality.ghl_contact_id.in_(all_ids), StaffCallQuality.call_connected.is_(True))
+                .where(StaffCallQuality.ghl_contact_id.in_(all_ids), *reached_conditions(StaffCallQuality))
                 .group_by(StaffCallQuality.ghl_contact_id)
             ):
                 last_connected[cid] = ts
