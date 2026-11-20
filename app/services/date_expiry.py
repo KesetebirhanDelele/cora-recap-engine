@@ -85,7 +85,7 @@ def _notify(settings: Any, key: str, label: str, value: str, now: datetime) -> N
 
     message = (
         f"The {label} ({value}) has passed and was cleared automatically. Messages now invite "
-        "leads to start learning for free at https://training.colaberry.com/start-free instead of mentioning a date. "
+        "leads to start learning for $0 (no card needed) at https://training.colaberry.com/start-free instead of mentioning a date. "
         "Set the next date in dashboard Settings when one is scheduled."
     )
     try:

@@ -62,6 +62,9 @@ def test_clears_only_dates_that_have_passed(session, settings):
     assert email.call_args.kwargs["alert_type"] == "date_setting_expired"
     assert "November 12, 2026" in email.call_args.kwargs["message"]
     assert "https://training.colaberry.com/start-free" in email.call_args.kwargs["message"]
+    # The word "free" is not allowed in our wording (TWC rule); only the link's own address may contain it.
+    msg = email.call_args.kwargs["message"].replace("https://training.colaberry.com/start-free", "")
+    assert "free" not in msg.lower() and "$0" in msg
     assert session.execute(text(
         "SELECT COUNT(*) FROM audit_log WHERE action='config_expired' AND entity_id='next_class_start'")).scalar() == 1
     assert session.execute(text(
