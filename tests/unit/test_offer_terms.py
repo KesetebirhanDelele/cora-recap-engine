@@ -69,6 +69,12 @@ def test_other_terms_are_unchanged():
     assert offer.forbidden_hits("Forward Deployed AI Engineer Accelerator", TERMS) == []
 
 
+def test_retired_course_name_is_blocked():
+    assert offer.forbidden_hits("the AI Systems Architect Accelerator", TERMS) == ["ai systems architect"]
+    assert offer.forbidden_hits("an AI systems architect role", TERMS) == ["ai systems architect"]
+    assert offer.forbidden_hits("the Anthropic Architect Certification", TERMS) == []
+
+
 def test_free_is_a_hard_term_never_left_to_the_decline_judge():
     assert ca.is_hard_term("free") and ca.is_hard_term("placement rate")
     assert not ca.is_hard_term("bootcamp") and not ca.is_hard_term("freedom")

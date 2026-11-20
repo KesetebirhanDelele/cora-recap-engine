@@ -32,6 +32,8 @@ DEFAULT_OFFER_FACTS = (
 DEFAULT_FORBIDDEN_TERMS = (
     "data analytics,data analyst,data science,bootcamp,boot camp,power bi,tableau,sql,excel,"
     "full stack,full-stack,cybersecurity,cyber security,business intelligence,"
+    # Kes 2026-11-20: the course is now the Forward Deployed AI Engineer Accelerator; the old name is retired.
+    "ai systems architect,"
     # Ali 2026-10-04: "free" is not allowed as a standalone claim (TWC advertising rule for a licensed career school).
     # "feel free to ..." and "free time" are not claims and are excepted in forbidden_hits().
     "free,"
