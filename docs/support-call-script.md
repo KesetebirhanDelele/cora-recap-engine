@@ -1,5 +1,5 @@
 Talk track for Customer Support staff taking calls from current students/leads for the
-**AI Systems Architect Accelerator**. Unlike the sales script, this isn't a fixed pitch — it's a
+**Forward Deployed AI Engineer Accelerator**. Unlike the sales script, this isn't a fixed pitch — it's a
 method for handling whatever the caller actually needs, well.
 
 > **Engineering note:** these calls are recorded via GHL's native dialer, transcribed, and scored

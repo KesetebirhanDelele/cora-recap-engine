@@ -14,7 +14,7 @@ from app.services import delivery_sync as ds
 
 NOW = datetime(2026, 10, 12, 16, 10, tzinfo=timezone.utc)
 OLU_REPLY = ("Colaberry is no longer enrolling new students in the Data Analytics bootcamp. Instead, we offer the "
-             "AI Systems Architect Accelerator - a hands-on, 12-week online program.")
+             "Forward Deployed AI Engineer Accelerator - a hands-on, 12-week online program.")
 
 
 @pytest.fixture(autouse=True)
@@ -145,7 +145,7 @@ def test_budget_is_spent_per_judgement():
 
 
 def test_clean_message_makes_no_llm_call_and_no_flag():
-    events, calls = _run("Hi, thanks for your interest in the AI Systems Architect Accelerator", verdict=cj.DECLINES)
+    events, calls = _run("Hi, thanks for your interest in the Forward Deployed AI Engineer Accelerator", verdict=cj.DECLINES)
     assert events == [] and calls == []
 
 

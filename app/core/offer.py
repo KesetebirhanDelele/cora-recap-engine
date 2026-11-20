@@ -1,7 +1,7 @@
 """
 What Colaberry currently offers - pure, no I/O (spec/37).
 
-Decision (Kes, 2026-10-01): the ONLY course on offer is the AI Systems Architect Accelerator. Outgoing text and
+Decision (Kes, 2026-10-01): the ONLY course on offer is the Forward Deployed AI Engineer Accelerator. Outgoing text and
 email must never offer or name any other course. Facts below follow docs/colaberry-knowledge-base.md (the
 source of truth for Cora); every value can be overridden in app_config without a deploy:
   offer_name, offer_facts, offer_forbidden_terms
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 
-DEFAULT_OFFER_NAME = "AI Systems Architect Accelerator"
+DEFAULT_OFFER_NAME = "Forward Deployed AI Engineer Accelerator"
 
 DEFAULT_OFFER_FACTS = (
     "A 12-week online program for working professionals who want to design, build and govern AI-powered systems. "

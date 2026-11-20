@@ -4,7 +4,7 @@ from __future__ import annotations
 from app.core import email_reply as er
 
 QUOTED = ("On Nov 17, 2026, at 12:25 PM, Colaberry Admissions Team &lt;admissions@colaberry.com&gt; wrote:\n"
-          "Hello Future AI Architect,\nJoin us for the Colaberry AI Systems Architect Accelerator Open House.\nNovember 19, 2026")
+          "Hello Future AI Architect,\nJoin us for the Colaberry Forward Deployed AI Engineer Accelerator Open House.\nNovember 19, 2026")
 REAL = "Stop\nBest regards,\nElijah Choy\n" + QUOTED
 
 

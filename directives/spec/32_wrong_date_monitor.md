@@ -67,7 +67,7 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
 `tests/unit/test_wrong_date_guard.py`, `test_schedule_context.py`, `test_sms_eligibility.py` (pure, always run) and the DB-backed `test_wrong_date_monitor.py`, `test_wrong_date_bulk.py`, `test_wrong_date_safeguards.py`, `test_wrong_date_channels.py`, `test_date_expiry.py` (opt-in: `WRONG_DATE_TEST_DATABASE_URL=… pytest …`, throwaway Postgres only). Covers: detection incl. appointment dates, blank/expired semantics, channel gating, per-channel ledgers/caps, DND/STOP/no-address blocks, replied/window holds, TCPA vs email windows, pacing only between real sends, fail-closed, claim/rollback, test-send allow-list, routes.
 
 ## Known limits / open items
-- Only messages in `outbound_messages` are checked. GHL-native automations (e.g. the "Exciting news! Colaberry's AI Systems Architect Accelerator…" SMS) are invisible to this monitor.
+- Only messages in `outbound_messages` are checked. GHL-native automations (e.g. the "Exciting news! Colaberry's Forward Deployed AI Engineer Accelerator…" SMS) are invisible to this monitor.
 - First correction run (86 emails, 2026-10-01) went out under the swapped workflow: subject AND body both carried the full correction text (dates correct, subject long). Not re-sent. Regular Cora follow-ups were affected by the same swap until the GHL fix.
 - `Mark as Lead` does not resolve to a GHL field id (label mismatch) — pre-existing, separate.
 - Classification is keyword-heuristic; a false positive costs one Dismiss click.

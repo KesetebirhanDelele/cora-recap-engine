@@ -30,7 +30,7 @@ _MIN_CONNECTED_DURATION_SECONDS = 20
 
 _SALES_RUBRIC_PROMPT = """\
 You are scoring a phone call between a Colaberry sales/admissions \
-representative and a prospective lead for the "AI Systems Architect \
+representative and a prospective lead for the "Forward Deployed AI Engineer \
 Accelerator" program. Score the representative's performance, not the \
 lead's.
 

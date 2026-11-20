@@ -287,7 +287,7 @@ def generate_vm_sms(
     except Exception as exc:
         logger.warning("generate_vm_sms: AI failed, using fallback | contact_id=%s: %s", context.contact_id, exc)
     if not brand:
-        brand = {"brand_name": "Colaberry", "offer_name": "AI Systems Architect Accelerator",
+        brand = {"brand_name": "Colaberry", "offer_name": "Forward Deployed AI Engineer Accelerator",
                  "unsubscribe_text": "Text STOP to stop alerts"}
     return _sms_notice_fallback(context, brand)
 

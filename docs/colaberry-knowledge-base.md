@@ -1,4 +1,4 @@
-# Colaberry Knowledge Base — AI Systems Architect Accelerator
+# Colaberry Knowledge Base — Forward Deployed AI Engineer Accelerator
 
 _Source of truth for Cora (AI Admissions Assistant). Each section is written to stand on its own so it can be retrieved and quoted independently._
 
@@ -8,15 +8,15 @@ _Source of truth for Cora (AI Admissions Assistant). Each section is written to 
 
 ## About Colaberry
 
-Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **AI Systems Architect Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com** — use this by default, including for a cold lead (previously interested, did not enroll) who says they're now ready to enroll. For a prospect who is still undecided or exploring before committing — cold leads default to this state until they say otherwise — offer the explorer no-commitment preview at **training.colaberry.com/start-free** instead.
+Colaberry is an AI-powered career transformation platform that helps working professionals gain real-world AI skills through mentorship and project-based learning. Colaberry's current program is the **Forward Deployed AI Engineer Accelerator**, a 12-week online course. Colaberry also provides ongoing payment and account support to students already enrolled in its legacy Data Analytics bootcamp. The Colaberry training website is **training.colaberry.com** — use this by default, including for a cold lead (previously interested, did not enroll) who says they're now ready to enroll. For a prospect who is still undecided or exploring before committing — cold leads default to this state until they say otherwise — offer the explorer no-commitment preview at **training.colaberry.com/start-free** instead.
 
 ---
 
-## AI Systems Architect Accelerator — Overview
+## Forward Deployed AI Engineer Accelerator — Overview
 
-The AI Systems Architect Accelerator is a 12-week (approximately 3-month) online program for working professionals who want to move beyond simply using AI and instead design, build, and govern AI-powered systems. The program is hands-on from day one, combining live instructor-led sessions with project-based learning, mentorship, an internship, and certification preparation.
+The Forward Deployed AI Engineer Accelerator is a 12-week (approximately 3-month) online program for working professionals who want to move beyond simply using AI and instead design, build, and govern AI-powered systems. The program is hands-on from day one, combining live instructor-led sessions with project-based learning, mentorship, an internship, and certification preparation.
 
-The AI Systems Architect Accelerator is built to fit around a full-time job: it requires about 4 hours of scheduled live class time per week, plus additional time for hands-on projects and a capstone.
+The Forward Deployed AI Engineer Accelerator is built to fit around a full-time job: it requires about 4 hours of scheduled live class time per week, plus additional time for hands-on projects and a capstone.
 
 ---
 
@@ -32,17 +32,17 @@ The AI Systems Architect Accelerator is built to fit around a full-time job: it 
 | Start date | None. Enrollment is self-paced, in monthly batches: you start as soon as you enroll. There is NO class start date. |
 | Orientation | First Monday of the month after you join, 6:30 to 8:00 PM Central. Next: Thursday, November 12; then Monday, December 7; Monday, January 4; Monday, February 1 |
 
-All live sessions in the AI Systems Architect Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create an account at training.colaberry.com/start-free and begin exploring the material immediately.
+All live sessions in the Forward Deployed AI Engineer Accelerator are recorded, so a learner who misses a session can catch up. Enrollment is rolling: a prospective student can create an account at training.colaberry.com/start-free and begin exploring the material immediately.
 
 **Orientation (enrolled students):** Orientation is the only dated event for enrolled students: the first Monday of the month after you join, 6:30 to 8:00 PM Central. The next orientation is Thursday, November 12; after that Monday, December 7, Monday, January 4, and Monday, February 1, then the first Monday of every month. Never state or guess any other orientation date, and never say there is a class start date or a cohort start.
 
-**Open House (people exploring):** The next Open House is November 19, 2026; the ones after it are December 3 and December 17, 2026. The Open House is for people still exploring; it is NOT a class and NOT orientation. RSVP: https://www.eventbrite.com/e/colaberry-ai-systems-architect-accelerator-open-house-tickets-2004289439668 (offer to send the link; never read it aloud). Never state, guess or promise any other Open House date. When none is left ahead, say the next date is still to be determined and offer no RSVP. If someone asks about "live classes" or when classes meet, do not give the Open House date: classes are self-paced and start when you enroll.
+**Open House (people exploring):** The next Open House is December 3, 2026; the one after it is December 17, 2026. The Open House is for people still exploring; it is NOT a class and NOT orientation. RSVP: https://www.eventbrite.com/e/colaberry-forward-deployed-ai-engineer-accelerator-open-house-tickets-2004289647289 (offer to send the link; never read it aloud). Never state, guess or promise any other Open House date. When none is left ahead, say the next date is still to be determined and offer no RSVP. If someone asks about "live classes" or when classes meet, do not give the Open House date: classes are self-paced and start when you enroll.
 
 ---
 
 ## Curriculum
 
-The AI Systems Architect Accelerator is organized into four 3-week intensives:
+The Forward Deployed AI Engineer Accelerator is organized into four 3-week intensives:
 
 | Weeks | Intensive | Focus |
 |---|---|---|
@@ -57,15 +57,15 @@ Weeks 10–12 include a capstone project that each learner presents at a live Ex
 
 ## Tools & Certification
 
-Learners in the AI Systems Architect Accelerator work hands-on with **Claude Code, the Claude API, Model Context Protocol (MCP), Docker, and GitHub**.
+Learners in the Forward Deployed AI Engineer Accelerator work hands-on with **Claude Code, the Claude API, Model Context Protocol (MCP), Docker, and GitHub**.
 
-Preparation for the **Anthropic Architect Certification (CCA-F)** is built into the AI Systems Architect Accelerator curriculum. The certification exam itself is administered by Anthropic.
+Preparation for the **Anthropic Architect Certification (CCA-F)** is built into the Forward Deployed AI Engineer Accelerator curriculum. The certification exam itself is administered by Anthropic.
 
 ---
 
 ## Pricing
 
-The AI Systems Architect Accelerator offers an explorer plan and two paid full-access plans:
+The Forward Deployed AI Engineer Accelerator offers an explorer plan and two paid full-access plans:
 
 | Plan | Price | Billing | What's included |
 |---|---|---|---|
@@ -79,18 +79,18 @@ A learner can move between the Explorer plan and the paid plans at any time. Onc
 
 ## Additional Costs — Anthropic Tooling
 
-Beyond the Colaberry plan price, students in the AI Systems Architect Accelerator pay a small tooling cost **directly to Anthropic** — not to Colaberry. This is approximately:
+Beyond the Colaberry plan price, students in the Forward Deployed AI Engineer Accelerator pay a small tooling cost **directly to Anthropic** — not to Colaberry. This is approximately:
 
 - **~$20 / month** for Claude Code
 - **~$10 / month** for Claude API usage while building projects
 
-That is roughly **$30 per month total**, paid directly to Anthropic. These tools are required because the AI Systems Architect Accelerator is hands-on and has learners build real projects with Claude Code and the Claude API.
+That is roughly **$30 per month total**, paid directly to Anthropic. These tools are required because the Forward Deployed AI Engineer Accelerator is hands-on and has learners build real projects with Claude Code and the Claude API.
 
 ---
 
 ## Scholarships & Affordability
 
-Scholarships are **not currently available** for the AI Systems Architect Accelerator. If cost is a concern, a prospective student can start with the **Explorer plan** at $0 per month (preview access, no payment, no commitment, no card), or ask to be connected with the Colaberry Admissions team to discuss options.
+Scholarships are **not currently available** for the Forward Deployed AI Engineer Accelerator. If cost is a concern, a prospective student can start with the **Explorer plan** at $0 per month (preview access, no payment, no commitment, no card), or ask to be connected with the Colaberry Admissions team to discuss options.
 
 ---
 
@@ -106,13 +106,13 @@ A caller who is ready to enroll directly can be connected to the Colaberry Admis
 
 ## Eligibility
 
-Learners must be **at least 18 years old** to enroll in the AI Systems Architect Accelerator. A prospective student who is under 18 is thanked warmly and their interest is noted for the future.
+Learners must be **at least 18 years old** to enroll in the Forward Deployed AI Engineer Accelerator. A prospective student who is under 18 is thanked warmly and their interest is noted for the future.
 
 ---
 
 ## Admissions Calls
 
-Colaberry can schedule a short call with an **Admissions Advisor** for the AI Systems Architect Accelerator. On that call, the advisor walks the prospective student through the full program, answers final questions, and helps them get set up — whether they start with the Explorer plan or go straight to full access.
+Colaberry can schedule a short call with an **Admissions Advisor** for the Forward Deployed AI Engineer Accelerator. On that call, the advisor walks the prospective student through the full program, answers final questions, and helps them get set up — whether they start with the Explorer plan or go straight to full access.
 
 Admissions is handled by **Roselen / the Colaberry Admissions team**. If no advisor is available for a live transfer, the fallback, in order, is: (1) book a specific callback time, (2) take the caller's name and best number for direct follow-up, (3) offer **support@colaberry.com** as a backup (monitored around the clock).
 
@@ -120,7 +120,7 @@ Admissions is handled by **Roselen / the Colaberry Admissions team**. If no advi
 
 ## Data Analytics Bootcamp — Closed to New Enrollment
 
-Colaberry is **no longer enrolling new students in the Data Analytics bootcamp**. A prospective student who asks about joining the Data Analytics bootcamp is told enrollment is closed and offered the **AI Systems Architect Accelerator** instead.
+Colaberry is **no longer enrolling new students in the Data Analytics bootcamp**. A prospective student who asks about joining the Data Analytics bootcamp is told enrollment is closed and offered the **Forward Deployed AI Engineer Accelerator** instead.
 
 **No one may be enrolled in the Data Analytics bootcamp** under any circumstances.
 
@@ -154,7 +154,7 @@ All employment verification requests for Colaberry are directed to **everify@col
 
 | Topic | Route to | Availability |
 |---|---|---|
-| Admissions — AI Systems Architect Accelerator | Roselen / Admissions team | — |
+| Admissions — Forward Deployed AI Engineer Accelerator | Roselen / Admissions team | — |
 | Payments / IPBC — current Data Analytics students | Taiwo | Mon–Fri, 9 AM–5 PM CST |
 | General support / technical / account | support@colaberry.com (Balakrishna, Farhat, or Balamurali per shift) | Around the clock (email) |
 | WhatsApp / community questions | Jackie | — |
@@ -166,12 +166,12 @@ Only transfer a call when necessary — routing by email is preferred in all cas
 
 ## Outcomes & Career Positioning
 
-The AI Systems Architect Accelerator is designed to help learners **prepare for opportunities and position themselves for roles in AI**. Colaberry does **not** guarantee job placement.
+The Forward Deployed AI Engineer Accelerator is designed to help learners **prepare for opportunities and position themselves for roles in AI**. Colaberry does **not** guarantee job placement.
 
-By the end of the AI Systems Architect Accelerator, a learner has built their first AI agent, multi-agent systems, and workflow automation, and has completed a scaled, governed AI system as a capstone — using Claude Code, the Claude API, MCP, Docker, and GitHub. The program also includes mentorship, an internship, and Anthropic Architect Certification (CCA-F) prep.
+By the end of the Forward Deployed AI Engineer Accelerator, a learner has built their first AI agent, multi-agent systems, and workflow automation, and has completed a scaled, governed AI system as a capstone — using Claude Code, the Claude API, MCP, Docker, and GitHub. The program also includes mentorship, an internship, and Anthropic Architect Certification (CCA-F) prep.
 
 ---
 
 ## About Cora (AI Assistant)
 
-Cora is Colaberry's **AI Admissions Assistant**. Cora identifies herself as an AI assistant at the start of every call. Cora answers questions about the AI Systems Architect Accelerator, qualifies prospective students, helps route support and payment questions to the right team, and offers a text summary at the end of every call. Cora does not send a text or book an appointment without the caller's explicit permission.
+Cora is Colaberry's **AI Admissions Assistant**. Cora identifies herself as an AI assistant at the start of every call. Cora answers questions about the Forward Deployed AI Engineer Accelerator, qualifies prospective students, helps route support and payment questions to the right team, and offers a text summary at the end of every call. Cora does not send a text or book an appointment without the caller's explicit permission.

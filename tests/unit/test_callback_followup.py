@@ -988,7 +988,7 @@ def test_summary_lists_how_a_lead_was_reached(session):
 
 # ── 2026-11-17: a lead replied "Stop" to the Open House invite and Rose was told they wanted to attend ────────────────────────
 QUOTE = ("On Nov 17, 2026, at 12:25 PM, Colaberry Admissions Team <admissions@colaberry.com> wrote:\n"
-         "Hello Future AI Architect, Join us for the Colaberry AI Systems Architect Accelerator Open House on November 19, 2026.")
+         "Hello Future AI Architect, Join us for the Colaberry Forward Deployed AI Engineer Accelerator Open House on November 19, 2026.")
 
 
 class ReplyConv(FakeConv):

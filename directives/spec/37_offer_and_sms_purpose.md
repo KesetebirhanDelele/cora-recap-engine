@@ -1,10 +1,10 @@
-# 37 — One offer (AI Systems Architect Accelerator) and SMS = notification, email = program description
+# 37 — One offer (Forward Deployed AI Engineer Accelerator) and SMS = notification, email = program description
 
 **Status:** built and tested locally 2026-10-01; deploy pending Kes's go-ahead.
 
 ## Problem
 * The follow-up generator hard-coded "learning Data Analytics or AI" and supplied no product facts, so the model described a retired offer: of 3,528 SMS in 14 days 1,629 (46 %) said Data Analytics; 145 of 229 emails (63 %) did, 39 named Power BI / Tableau / SQL. The success-story library (228 transcripts, 5 injected per message) is all alumni of the retired program (92 explicit, 28 more about data/analytics).
-* SMS carried marketing (class start, Open House, links, stories). Kes (2026-10-01): **SMS is a notification for missed calls (and a reminder of an upcoming call), at one segment if possible, two at most; email is where the program is described.** The only course on offer is the AI Systems Architect Accelerator.
+* SMS carried marketing (class start, Open House, links, stories). Kes (2026-10-01): **SMS is a notification for missed calls (and a reminder of an upcoming call), at one segment if possible, two at most; email is where the program is described.** The only course on offer is the Forward Deployed AI Engineer Accelerator.
 * One LLM call produced both channels and `send_sms_job` / `send_email_job` each threw half away; 28 % of SMS used a curly apostrophe, switching the text to UCS-2 (a 180-character text billed 3 segments).
 
 ## Behaviour
@@ -17,12 +17,12 @@
 Generation: `generate_vm_followup(..., channel="sms"|"email")` - only the needed channel is generated (half the LLM calls). Tier by attempt: tier_1..tier_3, tier_final.
 
 ## Enforcement (deterministic - prompts alone are probabilistic)
-1. Generator: draft checked against the forbidden-term list (SMS also marketing wording and length); one corrective retry, then a safe fallback (SMS: "Hi {name}, it's Cora from Colaberry. I just tried to call you about the AI Systems Architect Accelerator. What time works for you to talk?"; email: generic note). SMS is normalised to plain GSM text (`normalize_sms`) and always ends with the opt-out line.
+1. Generator: draft checked against the forbidden-term list (SMS also marketing wording and length); one corrective retry, then a safe fallback (SMS: "Hi {name}, it's Cora from Colaberry. I just tried to call you about the Forward Deployed AI Engineer Accelerator. What time works for you to talk?"; email: generic note). SMS is normalised to plain GSM text (`normalize_sms`) and always ends with the opt-out line.
 2. Pre-send gate (spec/34): retired-course terms are blocked in **every** SMS; marketing wording is blocked in follow-up SMS (not in date corrections / test sends); `sms_max_segments_per_message` default 4 -> **2**.
 3. Routing normalises the text again before it is written to GHL.
 
 ## app_config
-`offer_name` (AI Systems Architect Accelerator) · `offer_facts` (see above, `{free_url}` placeholder) · `offer_forbidden_terms` (data analytics, data analyst, data science, bootcamp, power bi, tableau, sql, excel, full stack, cybersecurity, business intelligence) · `sms_max_segments_per_message` (2).
+`offer_name` (Forward Deployed AI Engineer Accelerator) · `offer_facts` (see above, `{free_url}` placeholder) · `offer_forbidden_terms` (data analytics, data analyst, data science, bootcamp, power bi, tableau, sql, excel, full stack, cybersecurity, business intelligence) · `sms_max_segments_per_message` (2).
 
 ## Not done / open
 * **Upcoming-call reminder SMS: not built, by decision (Kes 2026-10-01) - no reminder logic existed and none is to be added.**

@@ -1,4 +1,4 @@
-"""SMS = missed-call notification, email = program description; only the AI Systems Architect Accelerator is
+"""SMS = missed-call notification, email = program description; only the Forward Deployed AI Engineer Accelerator is
 ever offered (spec/37). Pure + mocked-LLM tests."""
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_forbidden_terms_match_whole_words_only():
     assert offer.forbidden_hits("Learn about Data Analytics or AI", TERMS) == ["data analytics"]
     assert offer.forbidden_hits("our bootcamp and Power BI classes", TERMS) == ["bootcamp", "power bi"]
     assert offer.forbidden_hits("an excellent sequel, thanks", TERMS) == []          # excel / sql inside words
-    assert offer.forbidden_hits("AI Systems Architect Accelerator", TERMS) == []
+    assert offer.forbidden_hits("Forward Deployed AI Engineer Accelerator", TERMS) == []
     assert offer.parse_terms("a, B ,") == ("a", "b")
 
 
@@ -66,7 +66,7 @@ def test_marketing_wording_is_detected(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Hi Sam, it's Cora from Colaberry. I tried to call about the AI Systems Architect Accelerator. "
+    "Hi Sam, it's Cora from Colaberry. I tried to call about the Forward Deployed AI Engineer Accelerator. "
     "What time works? Text STOP to stop alerts",
     "Sorry I missed you! Reply with a good time and I'll call you back. Text STOP to stop alerts"])
 def test_notification_wording_is_clean(text):
@@ -121,7 +121,7 @@ def test_no_prompt_names_a_retired_course_or_uses_stories(family, version):
     # ...and the word "free" only inside the sentences that FORBID it (offer_facts and the email hard rule)
     scrubbed = re.sub(r"Never use the word ['\"]free['\"].*?(?:instead\.|accreditation\.)", "", scrubbed, flags=re.S)
     assert not offer.forbidden_hits(scrubbed, TERMS), (family, version)
-    assert "AI Systems Architect Accelerator" in text
+    assert "Forward Deployed AI Engineer Accelerator" in text
     assert "video_transcripts" not in text and "story_link" not in text
 
 
@@ -134,7 +134,7 @@ def test_sms_prompt_forbids_links_dates_and_marketing_email_prompt_carries_the_f
 
 def test_brand_context_defaults_to_the_one_offer():
     b = _load_brand_context(None, NS())
-    assert b["offer_name"] == "AI Systems Architect Accelerator"
+    assert b["offer_name"] == "Forward Deployed AI Engineer Accelerator"
     assert "12-week" in b["offer_facts"] and "{free_url}" not in b["offer_facts"]
 
 
@@ -158,7 +158,7 @@ def test_sms_marketing_draft_twice_falls_back_to_a_safe_notice(llm):
     bad = {"sms_text": "Our class starts Nov 12! RSVP for the Open House at https://training.colaberry.com/start-free"}
     llm.scripts = [bad, bad]
     out = generate_vm_sms(_ctx(name="Sam"), NS())
-    assert out.startswith("Hi Sam, it's Cora from Colaberry. I tried calling about the AI Systems Architect Accelerator")
+    assert out.startswith("Hi Sam, it's Cora from Colaberry. I tried calling about the Forward Deployed AI Engineer Accelerator")
     assert g.decide(out, g.GateUsage(), _cfg(notification_only=True)).action == g.ALLOW
 
 
@@ -183,8 +183,8 @@ def test_the_sms_prompt_changes_with_the_attempt(llm):
 
 # ── generate_vm_email / routing ──
 def test_email_with_a_retired_course_is_redrafted_then_falls_back(llm):
-    good = {"email_subject": "Sorry I missed you", "preview_text": "p", "email_html": "<p>About the AI Systems Architect Accelerator.</p>",
-            "email_text": "About the AI Systems Architect Accelerator."}
+    good = {"email_subject": "Sorry I missed you", "preview_text": "p", "email_html": "<p>About the Forward Deployed AI Engineer Accelerator.</p>",
+            "email_text": "About the Forward Deployed AI Engineer Accelerator."}
     bad = {**good, "email_html": "<p>Our Data Analytics bootcamp is great.</p>"}
     llm.scripts = [bad, good]
     assert generate_vm_email(_ctx(), NS())["email_subject"] == "Sorry I missed you"
@@ -214,9 +214,9 @@ def test_employment_and_placement_claims_are_forbidden_in_every_message():
 
 
 def test_a_two_segment_draft_is_never_sent_when_a_one_segment_one_is_possible(llm):
-    long_ok = {"sms_text": "Hi Sam, it's Cora from Colaberry. I've called a couple of times about the AI Systems Architect Accelerator. "
+    long_ok = {"sms_text": "Hi Sam, it's Cora from Colaberry. I've called a couple of times about the Forward Deployed AI Engineer Accelerator. "
                            "What time is good for you to talk this week?"}
-    short_ok = {"sms_text": "Hi Sam, it's Cora from Colaberry. I tried calling about the AI Systems Architect Accelerator. When can we talk?"}
+    short_ok = {"sms_text": "Hi Sam, it's Cora from Colaberry. I tried calling about the Forward Deployed AI Engineer Accelerator. When can we talk?"}
     llm.scripts = [long_ok, long_ok, short_ok]            # two drafts over 160 characters, then a one-segment draft
     out = generate_vm_sms(_ctx(name="Sam"), NS())
     assert len(out) <= 160 and out.endswith("Text STOP to stop alerts") and "When can we talk?" in out

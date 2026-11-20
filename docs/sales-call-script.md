@@ -1,4 +1,4 @@
-Talk track for Admissions/sales staff taking or making live calls for the **AI Systems Architect
+Talk track for Admissions/sales staff taking or making live calls for the **Forward Deployed AI Engineer
 Accelerator**. Follow the flow below in order — the sections are labeled with the rubric
 dimension they satisfy so you can see exactly what a good call sounds like and why.
 
@@ -41,7 +41,7 @@ Use what they tell you to shape everything that follows. Don't recite the same p
 
 Frame the program against what they just told you, using these facts (keep them accurate — see Compliance below):
 
-- **Program:** AI Systems Architect Accelerator — 12-week online course for working professionals who want to design, build, and lead AI-powered systems (not just use AI tools).
+- **Program:** Forward Deployed AI Engineer Accelerator — 12-week online course for working professionals who want to design, build, and lead AI-powered systems (not just use AI tools).
 - **Curriculum arc:**
   - Weeks 1–3 — AI Foundation: Claude Code, Claude API, core agent skills
   - Weeks 4–6 — Build Your AI Team: prompt engineering, MCP, multi-tool agent design

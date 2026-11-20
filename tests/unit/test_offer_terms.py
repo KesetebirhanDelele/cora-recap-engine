@@ -66,7 +66,7 @@ def test_excel_as_the_course_or_software_is_still_flagged(text):
 
 def test_other_terms_are_unchanged():
     assert offer.forbidden_hits("our bootcamp and Power BI classes", TERMS) == ["bootcamp", "power bi"]
-    assert offer.forbidden_hits("AI Systems Architect Accelerator", TERMS) == []
+    assert offer.forbidden_hits("Forward Deployed AI Engineer Accelerator", TERMS) == []
 
 
 def test_free_is_a_hard_term_never_left_to_the_decline_judge():

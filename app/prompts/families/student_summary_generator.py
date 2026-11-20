@@ -18,7 +18,7 @@ register(
         "summary of this advising call in 1-3 sentences. The summary should be "
         "written for the student, not the advisor. Never use the word \"free\" (the link "
         "training.colaberry.com/start-free may be quoted as is), never promise or imply a job, "
-        "placement or salary, and never name a course other than the AI Systems Architect Accelerator.\n\n"
+        "placement or salary, and never name a course other than the Forward Deployed AI Engineer Accelerator.\n\n"
         "Return a JSON object with exactly these fields:\n"
         '- "student_summary": string — the student-facing summary '
         "(empty string if transcript is blank, unusable, or not a real conversation)\n"

@@ -51,7 +51,7 @@ _PROMPT = (
     "'unclear' = you cannot tell. If you are genuinely unsure, answer 'unclear'. Never guess 'not_offering'.\n"
     "Ignore unsubscribe and footer boilerplate. Judge the meaning, not the keywords.\n"
     "Examples:\n"
-    "- 'We no longer enroll new students in the Data Analytics bootcamp. We now offer the AI Systems Architect Accelerator.' "
+    "- 'We no longer enroll new students in the Data Analytics bootcamp. We now offer the Forward Deployed AI Engineer Accelerator.' "
     "-> not_offering\n"
     "- 'Colaberry has transitioned from a standalone Data Analytics program to AI training.' -> not_offering\n"
     "- 'Rather than focusing on Data Analytics alone, the new program teaches you to build AI systems.' -> not_offering\n"

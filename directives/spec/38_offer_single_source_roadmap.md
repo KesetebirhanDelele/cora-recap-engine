@@ -4,7 +4,7 @@
 **Document type:** remediation roadmap + source-of-truth register (section 3) + course-change runbook (phase 5). Builds on spec/37.
 
 ## 1. Problem
-Colaberry's only current course is the **AI Systems Architect Accelerator**. The offer (name, facts, price, links, dates) is
+Colaberry's only current course is the **Forward Deployed AI Engineer Accelerator**. The offer (name, facts, price, links, dates) is
 written by hand in many places that nothing keeps in sync. When the course changed, the voice prompts and knowledge base were
 updated and the follow-up generator was not, so in the 14 days to Oct 1, 44% of generated SMS drafts and 61% of generated email
 drafts still named the retired Data Analytics course (Power BI 14%, SQL 4% of emails). The code path was fixed on Oct 1 (spec/37).
