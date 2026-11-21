@@ -187,3 +187,31 @@ def test_route_returns_stats(session, settings, client):
     _scan(session, settings)
     body = client.get("/dashboard/wrong-dates").json()
     assert body["stats"]["open"] == 1 and body["stats"]["closed_24h"] == 0
+
+
+# ── Open House rolls forward instead of clearing (Kes 2026-11-20) ───────────────────────────────────────────────
+
+DEC4_NOON_CT = datetime(2026, 12, 4, 18, 0, tzinfo=timezone.utc)
+
+
+def test_open_house_rolls_to_the_next_date_and_clears_the_old_link(session, settings):
+    _set(session, "next_open_house_date", "December 3, 2026")
+    _set(session, "live_open_house_link", "https://www.eventbrite.com/e/old-event-123")
+    cleared, email = _expire(session, settings, DEC4_NOON_CT)
+    assert "next_open_house_date" in cleared
+    assert _cfg(session, "next_open_house_date") == "December 17, 2026"       # next on the 1st/3rd Thursday schedule
+    assert _cfg(session, "live_open_house_link") == ""                        # one Eventbrite page per event: the old page is dead
+    assert session.execute(text(
+        "SELECT COUNT(*) FROM audit_log WHERE action='config_rolled' AND entity_id='next_open_house_date'")).scalar() >= 1
+    roll_mail = [c for c in email.call_args_list if c.kwargs.get("alert_type") == "open_house_date_rolled"]
+    assert len(roll_mail) == 1
+    to = roll_mail[0].kwargs["to_override"]
+    assert "ali@colaberry.com" in to and "jackie@colaberry.com" in to
+    assert "free" not in roll_mail[0].kwargs["message"].lower()
+
+
+def test_open_house_is_cleared_when_the_schedule_has_run_out(session, settings):
+    _set(session, "next_open_house_date", "December 16, 2027")
+    cleared, email = _expire(session, settings, datetime(2027, 12, 17, 18, 0, tzinfo=timezone.utc))
+    assert "next_open_house_date" in cleared and _cfg(session, "next_open_house_date") == ""
+    assert any(c.kwargs.get("alert_type") == "date_setting_expired" for c in email.call_args_list)

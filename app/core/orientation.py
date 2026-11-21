@@ -22,7 +22,31 @@ ONE_OFF: tuple[date, ...] = (date(2026, 11, 12),)
 
 PLACEHOLDER = "{{NEXT_ORIENTATION}}"
 # Open Houses (for people still exploring - NOT orientation). Confirmed by Kes 2026-11-10 for the rest of 2026; add new dates here.
-OPEN_HOUSES: tuple[date, ...] = (date(2026, 11, 19), date(2026, 12, 3), date(2026, 12, 17))
+# 2026-11-19 is the last one-off. From December 2026 Open Houses follow Ali's standing rule (2026-11-12): 1st and 3rd Thursday of the
+# month, 6:30 PM Central. Kes (2026-11-20): generate them from the rule so the date never lapses. The rule is only trusted through
+# RULE_LAST_YEAR (the commitment Kes named); after that the list ends and prompts say "to be determined" until dates are added.
+RULE_FIRST = (2026, 12)
+RULE_LAST_YEAR = 2027
+OPEN_HOUSE_TIME = "6:30 PM Central"
+CANCELLED_OPEN_HOUSES: tuple[date, ...] = ()   # Jackie/Ali: add a date here to drop one (cancelled or moved), then redeploy
+
+
+def nth_thursday(year: int, month: int, n: int) -> date:
+    d = date(year, month, 1)
+    return d + timedelta(days=(3 - d.weekday()) % 7 + 7 * (n - 1))
+
+
+def rule_open_houses() -> tuple[date, ...]:
+    out: list[date] = []
+    y, m = RULE_FIRST
+    while y <= RULE_LAST_YEAR:
+        out += [nth_thursday(y, m, 1), nth_thursday(y, m, 3)]
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return tuple(out)
+
+
+OPEN_HOUSES: tuple[date, ...] = tuple(
+    d for d in (date(2026, 11, 19), *rule_open_houses()) if d not in CANCELLED_OPEN_HOUSES)
 OPEN_HOUSE_PLACEHOLDER = "{{NEXT_OPEN_HOUSE}}"
 OPEN_HOUSE_LIST_PLACEHOLDER = "{{OPEN_HOUSE_LIST}}"
 ORIENTATION_LIST_PLACEHOLDER = "{{ORIENTATION_LIST}}"

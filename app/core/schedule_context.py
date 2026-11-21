@@ -65,6 +65,10 @@ def build_schedule_block(
         lines.append(f"- Next Open House: {open_house.strip()}")  # type: ignore[union-attr]
         if rsvp_link:
             lines.append(f"- Open House RSVP: {rsvp_link}")
+        else:
+            # The date rolled forward but the new event's Eventbrite page is not set yet (Kes 2026-11-20): say the link is coming.
+            lines.append("- Open House RSVP link: not ready yet. Say the RSVP link will be sent to them. "
+                         "Do NOT write any link or address for the Open House.")
     if has_class or has_oh:
         lines.append(
             "- Use EXACTLY the date(s) listed above; never invent or alter a class or Open House date."

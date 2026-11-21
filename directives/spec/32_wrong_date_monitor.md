@@ -87,3 +87,19 @@ Source of truth is **dashboard Settings** (`app_config.next_class_start`, `next_
   "class/classes" (no start/begin/cohort/kick-off/launch word) sits between it and the date. The AI judge prompt gained
   no-class-scheduled examples, and every verdict plus the model's reasons is now logged (`date_judge: verdict=...`).
 - Regression tests: tests/unit/test_wrong_date_guard.py (REAL_NOV16_EMAIL and the three must-still-flag cases).
+
+## Addendum 2026-11-20: Open House rolls forward; the monitor judges by send day
+
+**What happened.** The Open House date (November 19) was cleared automatically at 12:00:52 AM Central on Nov 20 and re-set to December 3 by hand at 7:57 AM. At 7:58 the monitor flagged 32 emails that had been sent on Nov 19 naming Nov 19. They were correct when sent: the monitor judged every unchecked message of the last 24 hours against the CURRENT setting and only protected messages sent before a date was CLEARED, not before it was CHANGED. 13 leads then got an unneeded "correction" email.
+
+**Decisions (Kes, 2026-11-20).**
+1. Open House dates are generated from Ali's standing rule (1st and 3rd Thursday, 6:30 PM Central) from December 2026 through 2027 (`app/core/orientation.py`: `rule_open_houses`, `OPEN_HOUSES`; `CANCELLED_OPEN_HOUSES` drops one). After 2027 the list ends and the setting clears as before. Orientation already rolls by rule (first Monday) and is not a dashboard setting.
+2. `expire_past_dates` ROLLS `next_open_house_date` to the next scheduled date instead of clearing it, and CLEARS `live_open_house_link` (one Eventbrite page per event; the old page is dead). Audit action `config_rolled`. Class start is still cleared.
+3. An email (`open_house_date_rolled`) goes to Kes (alert_email_to), Ali and Jackie on every roll: set the new Eventbrite link in Settings; tell Kes if the event is cancelled or moved.
+4. Date set but link empty: prompts say the RSVP link will be sent and forbid writing any link (`build_schedule_block`).
+5. The monitor (`_open_house_expectation`): a message sent BEFORE the setting last changed is judged against the Open House that was next on its send day. Messages sent after the change are judged against the setting as before. Real mistakes (naming a past event, skipping ahead) are still flagged.
+6. The "date cleared" staff email says "$0 (no card needed)", never the word free.
+
+**Not done.** Not enforced: a message sent after 6:30 PM on the day of the event still counts that day's event as "next" (8 such emails on Nov 19). Eventbrite API lookup of the next event's link is a possible later step (needs an Eventbrite token, unverified for our account).
+
+**Tests.** `tests/unit/test_open_house_roll.py` (pure logic), `test_orientation.py`, `test_open_house_reminder.py`, and DB-backed roll cases in `test_date_expiry.py` (skipped unless WRONG_DATE_TEST_DATABASE_URL is set).

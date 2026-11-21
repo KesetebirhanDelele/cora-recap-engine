@@ -29,7 +29,8 @@ def test_reminder_due(today, hour, want):
 
 
 def test_next_after():
-    assert r.next_after(NOV19) == DEC3 and r.next_after(DEC3) == DEC17 and r.next_after(DEC17) is None
+    assert r.next_after(NOV19) == DEC3 and r.next_after(DEC3) == DEC17 and r.next_after(DEC17) == date(2027, 1, 7)
+    assert r.next_after(date(2027, 12, 16)) is None
 
 
 @pytest.mark.parametrize("value,today,clear", [

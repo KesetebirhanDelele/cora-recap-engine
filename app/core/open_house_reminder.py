@@ -20,6 +20,7 @@ from app.core.wrong_date_guard import parse_config_date
 SEND_FROM_HOUR = 9               # Central: nothing goes out before 9 AM
 REMINDER_WINDOW_DAYS = 7         # a reminder missed on day+1 (outage) is still sent until day+7, then dropped
 JACKIE = "jackie@colaberry.com"
+ALI = "ali@colaberry.com"
 
 
 def long_date(d: date) -> str:

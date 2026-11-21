@@ -80,6 +80,23 @@ def _expectation(value: str, changed_at: datetime | None, msg_at: datetime) -> s
     return None
 
 
+def _open_house_expectation(value: str, changed_at: datetime | None, msg_at: datetime) -> str | None:
+    """Open House expectation for a message (Kes 2026-11-20). A message sent BEFORE the setting last changed is judged against the
+    Open House that was next on the day it was sent (standing schedule), not against today's value - otherwise every roll-forward
+    flags the previous day's correct messages (32 false alerts on 2026-11-20: sent Nov 19 naming Nov 19, flagged against Dec 3)."""
+    from zoneinfo import ZoneInfo
+
+    from app.core.orientation import OPEN_HOUSES, TIMEZONE
+
+    exp = _expectation(value, changed_at, msg_at)
+    if exp and changed_at is not None and msg_at < changed_at:
+        sent_day = msg_at.astimezone(ZoneInfo(TIMEZONE)).date()
+        nxt = next((d for d in sorted(OPEN_HOUSES) if d >= sent_day), None)
+        if nxt is not None:
+            return f"{nxt.strftime('%B')} {nxt.day}, {nxt.year}"
+    return exp
+
+
 def _key_updated_at(session: Session, key: str) -> datetime | None:
     return session.execute(
         text("SELECT updated_at FROM app_config WHERE key = :k"), {"k": key}
@@ -132,7 +149,7 @@ def scan_wrong_dates(session: Session, settings: Any, now: datetime) -> int:
         if new_count >= MAX_NEW_INCIDENTS_PER_CYCLE:
             break
         exp_class = _expectation(class_start, class_changed, created_at)
-        exp_oh = _expectation(open_house, oh_changed, created_at)
+        exp_oh = _open_house_expectation(open_house, oh_changed, created_at)
         wrong = find_wrong_dates(body, subject, expected_class_start=exp_class, expected_open_house=exp_oh)
         if not wrong:
             continue

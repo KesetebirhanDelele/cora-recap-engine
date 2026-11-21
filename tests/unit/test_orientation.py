@@ -74,7 +74,8 @@ def test_the_date_in_the_prompt_changes_with_the_day_and_is_not_cached():
 def test_the_open_house_text_is_unchanged():
     from app.adapters.synthflow import _load_campaign_prompt
 
-    p = _load_campaign_prompt("New Lead")
+    with patch("app.core.orientation.central_today", return_value=date(2026, 11, 10)):
+        p = _load_campaign_prompt("New Lead")
     assert "next Open House is on November 19, 2026" in p and "{{NEXT_OPEN_HOUSE}}" not in p
 
 
@@ -90,7 +91,8 @@ def test_the_inbound_push_script_renders_the_date():
 @pytest.mark.parametrize("today,want", [
     (date(2026, 11, 10), "on November 19, 2026"), (date(2026, 11, 19), "on November 19, 2026"),
     (date(2026, 11, 20), "on December 3, 2026"), (date(2026, 12, 4), "on December 17, 2026"),
-    (date(2026, 12, 18), o.OPEN_HOUSE_TBD),                    # none left: to be determined, no RSVP
+    (date(2026, 12, 18), "on January 7, 2027"),                # standing rule: 1st and 3rd Thursday (Kes 2026-11-20)
+    (date(2027, 12, 17), o.OPEN_HOUSE_TBD),                    # rule trusted through 2027; none left: to be determined, no RSVP
 ])
 def test_next_open_house(today, want):
     assert o.next_open_house_text(today) == want
@@ -98,9 +100,16 @@ def test_next_open_house(today, want):
 
 def test_lists_for_later_dates():
     d = date(2026, 11, 10)
-    assert o.open_house_list_text(d) == "November 19, 2026; December 3, 2026; December 17, 2026"
-    assert o.open_house_list_text(date(2026, 12, 4)) == "December 17, 2026"
-    assert o.open_house_list_text(date(2026, 12, 18)) == o.OPEN_HOUSE_TBD
+    assert o.open_house_list_text(d).startswith("November 19, 2026; December 3, 2026; December 17, 2026; January 7, 2027")
+    assert o.open_house_list_text(date(2026, 12, 4)).startswith("December 17, 2026; January 7, 2027")
+    assert o.open_house_list_text(date(2027, 12, 17)) == o.OPEN_HOUSE_TBD
     out = o.render_placeholders("{{ORIENTATION_LIST}} | {{OPEN_HOUSE_LIST}}", datetime(2026, 11, 10, 18, 0, tzinfo=ZoneInfo("UTC")))
     assert out.startswith("Thursday, November 12; Monday, December 7, 6:30 to 8:00 PM Central; Monday, January 4, 6:30 to 8:00 PM Central; Monday, February 1")
     assert "{{" not in out
+
+
+def test_open_houses_follow_the_first_and_third_thursday_rule():
+    assert o.OPEN_HOUSES[:5] == (date(2026, 11, 19), date(2026, 12, 3), date(2026, 12, 17), date(2027, 1, 7), date(2027, 1, 21))
+    assert all(d.weekday() == 3 for d in o.OPEN_HOUSES)                       # every one is a Thursday
+    assert o.OPEN_HOUSES[-1] == date(2027, 12, 16) and len(o.OPEN_HOUSES) == 27
+    assert o.nth_thursday(2027, 3, 1) == date(2027, 3, 4) and o.nth_thursday(2027, 3, 3) == date(2027, 3, 18)
