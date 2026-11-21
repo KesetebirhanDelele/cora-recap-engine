@@ -78,10 +78,10 @@ def test_only_the_configured_staff_member_counts(session):
     assert len(eca.build_rows(session, NOW - timedelta(days=14), NOW)) == 3
 
 
-def test_real_settings_default_is_rose_only():
+def test_real_settings_default_is_rose_and_taiwo():
     from app.config.settings import Settings
 
-    assert eca.rep_ids(Settings()) == ("0swBv9tBNeXeYXPYFBSx",)
+    assert eca.rep_ids(Settings()) == ("0swBv9tBNeXeYXPYFBSx", "93bhNRgb5pzSoHmaSimH")   # Rose + Taiwo (Kes 2026-11-20)
 
 
 def test_voicemail_unjudged_and_inbound_calls_are_never_sent(session):

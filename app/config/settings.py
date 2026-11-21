@@ -273,8 +273,10 @@ class Settings(BaseSettings):
     # empty = not configured. Gated separately by app_config explorer_contact_activity_enabled (default off).
     explorer_contact_activity_url: str = ""
     # Whose connected calls are pushed (comma-separated GHL user ids). Kes 2026-11-18: Rose only
-    # (Roselen Flores). Empty = all staff.
-    explorer_contact_activity_rep_user_ids: str = "0swBv9tBNeXeYXPYFBSx"
+    # (Roselen Flores). Kes 2026-11-20 (Ali's request): plus Taiwo Oludimimu, Rose's manager, because a manager with the
+    # queue in front of them picks up the phone sometimes; if only Rose's calls reached Ali, people Taiwo spoke to would
+    # stay unsuppressed and be emailed as if nobody called. Empty = all staff.
+    explorer_contact_activity_rep_user_ids: str = "0swBv9tBNeXeYXPYFBSx,93bhNRgb5pzSoHmaSimH"
 
     # Prompt registry defaults
     prompt_family_call_analysis: str = "lead_stage_classifier"

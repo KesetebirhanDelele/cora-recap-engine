@@ -206,7 +206,7 @@ a tracker. Config holds the full https URL; the client refuses a non-https value
 
 **Musts**
 - Connected calls only (`staff_call_quality.call_connected`); a no-answer stays in his pool. Rose only (Kes, 2026-11-18): rows are limited to
-  GHL user ids in setting `explorer_contact_activity_rep_user_ids` (default Roselen `0swBv9tBNeXeYXPYFBSx`; empty = all staff).
+  GHL user ids in setting `explorer_contact_activity_rep_user_ids` (default Roselen `0swBv9tBNeXeYXPYFBSx` plus Taiwo Oludimimu `93bhNRgb5pzSoHmaSimH` since 2026-11-20 at Ali's request: Rose's manager, and a manager with the queue in front of them sometimes calls; leaving them out would leave those people unsuppressed and emailed as if nobody called; empty = all staff). The Smart List is shared with Taiwo when the build is complete.
 - One row per contact: the latest connected call time, UTC, trailing `Z`. Calls after now-30s are never sent.
 - First push = trailing 14 days (his window is 7); afterwards from one day before the last success (self-heals a missed day).
 - The push runs before tagging in `explorer_queue_sync`. If it fails, tagging is skipped for that cycle (a stale pool would
