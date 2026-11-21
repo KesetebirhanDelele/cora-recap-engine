@@ -269,3 +269,7 @@ also cannot change suppression. Trade-off noted by Kes: a fresh Explorer sign-up
 suppressed for the rest of the 7 days (a product rule that is Ali's to change). Operator tool: `--days N` overrides the
 window; `--send` now prints the unmatched GHL ids (ids only) because Ali cannot read them from his logs.
 Tests: window logic, 6-day-old call re-sent next day and dropped at 9 days, unmatched ids collected.
+
+## Addendum 2026-11-21: the feed is read in pages
+
+Ali: `limit` (max 200, above is a 400) is a PAGE SIZE, not a daily limit. The response carries `count`, `total` and `offset`; the list was 205 on 2026-11-19. `LiveFeed.fetch` now keeps reading pages (adding `offset`) until offset + count reaches `total`, de-duplicates people if the list moves between pages, and returns `complete=False` if it could not read everything (10-page safety cap, empty page early, rows short of total). `explorer_queue_runs.feed_capped` is now "the read was incomplete": when true the run still tags people it saw but never treats a missing person as having left the list. Tests: `test_explorer_queue_live_feed.py` (paging section).

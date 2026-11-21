@@ -215,3 +215,113 @@ def test_bucket_check_classifies_each_row_without_writing():
     got = classify(rows, _settings(), lookup)
     assert [(r, b) for r, _e, b in got] == [
         (1, "skip_no_contact"), (2, "tag"), (3, "skip_wrong_subacct"), (4, "skip_ai_campaign"), (5, "unreadable")]
+
+
+# ---- paging (Ali, 2026-11-21: limit is a page size; total/offset say how big the pool is) ----
+
+def _paged_handler(pool, seen=None, drop_after_first=0):
+    """Fake feed over `pool` rows that honours limit/offset and reports total, like the real one."""
+    def handler(req: httpx.Request):
+        q = dict(req.url.params)
+        limit, offset = int(q["limit"]), int(q.get("offset", 0))
+        if seen is not None:
+            seen.append(dict(q))
+        window = pool[offset:offset + limit]
+        p = payload(0)
+        p.update(rows=window, count=len(window), total=len(pool), offset=offset)
+        return httpx.Response(200, json=p)
+    return handler
+
+
+def _pool(n):
+    return [_row(i, GOOD + str(i)) for i in range(1, n + 1)]
+
+
+def test_a_pool_bigger_than_one_page_is_read_in_full_with_continuous_ranks():
+    seen = []
+    res = feed_with(_paged_handler(_pool(205), seen)).fetch("reach_out", 200)
+    assert len(res.rows) == 205 and res.total == 205 and res.complete is True
+    assert [r.rank for r in res.rows] == list(range(1, 206))      # page 2 continues the ranking, not restarting at 1
+    assert seen == [{"view": "reach_out", "limit": "200"}, {"view": "reach_out", "limit": "200", "offset": "200"}]
+
+
+def test_a_pool_that_fits_in_one_page_makes_one_request_and_is_complete():
+    seen = []
+    res = feed_with(_paged_handler(_pool(180), seen)).fetch("reach_out", 200)
+    assert len(res.rows) == 180 and res.complete is True and len(seen) == 1
+
+
+def test_a_pool_of_exactly_one_full_page_is_complete_without_a_pointless_second_request():
+    seen = []
+    res = feed_with(_paged_handler(_pool(200), seen)).fetch("reach_out", 200)
+    assert len(res.rows) == 200 and res.complete is True and len(seen) == 1
+
+
+def test_a_person_repeated_because_the_list_moved_is_counted_once_and_the_read_is_flagged_incomplete():
+    pool = _pool(205)
+
+    def handler(req):
+        q = dict(req.url.params)
+        offset = int(q.get("offset", 0))
+        window = pool[offset:offset + 200]
+        if offset:                                                # list shifted: page 2 starts one person early
+            window = pool[offset - 1:offset + 4]
+        p = payload(0)
+        p.update(rows=window, count=len(window), total=205, offset=offset)
+        return httpx.Response(200, json=p)
+
+    res = feed_with(handler).fetch("reach_out", 200)
+    assert len({r.enrollment_id for r in res.rows}) == len(res.rows) == 204 and res.complete is False
+
+
+def test_an_endless_or_never_ending_feed_stops_at_the_page_cap_and_is_incomplete():
+    from app.services.explorer_queue_feed import MAX_PAGES
+
+    seen = []
+    res = feed_with(_paged_handler(_pool(5000), seen)).fetch("reach_out", 200)
+    assert len(seen) == MAX_PAGES and len(res.rows) == MAX_PAGES * 200 and res.complete is False
+
+
+def test_an_empty_page_before_the_total_is_reached_is_incomplete():
+    def handler(req):
+        offset = int(dict(req.url.params).get("offset", 0))
+        rows = _pool(200) if offset == 0 else []
+        p = payload(0)
+        p.update(rows=rows, count=len(rows), total=250, offset=offset)
+        return httpx.Response(200, json=p)
+
+    res = feed_with(handler).fetch("reach_out", 200)
+    assert len(res.rows) == 200 and res.complete is False
+
+
+def test_a_paged_read_that_cannot_finish_marks_the_run_capped_so_nobody_is_wrongly_removed(session):
+    p = payload(0)
+    p.update(rows=_pool(200), count=200, total=250, offset=0)
+
+    def handler(req):
+        offset = int(dict(req.url.params).get("offset", 0))
+        q = dict(p)
+        if offset:
+            q.update(rows=[], count=0, offset=offset)
+        return httpx.Response(200, json=q)
+
+    flags = SimpleNamespace(explorer_queue_tagging_enabled=True, ghl_writes_enabled=True)
+    with patch("app.core.mode_flags.get_mode_flags", return_value=flags):
+        run = run_explorer_queue_cycle(
+            session, _settings(200), mode="dry", feed=feed_with(handler), client=MagicMock(),
+            contact_lookup=lambda cid: {"contact": {"tags": [], "customFields": []}},
+            now=datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc))
+    session.commit()
+    assert run.feed_capped is True and run.rows_fetched == 200
+
+
+def test_a_complete_paged_read_over_200_is_not_flagged_capped(session):
+    p = _pool(205)
+    flags = SimpleNamespace(explorer_queue_tagging_enabled=True, ghl_writes_enabled=True)
+    with patch("app.core.mode_flags.get_mode_flags", return_value=flags):
+        run = run_explorer_queue_cycle(
+            session, _settings(200), mode="dry", feed=feed_with(_paged_handler(p)), client=MagicMock(),
+            contact_lookup=lambda cid: {"contact": {"tags": [], "customFields": []}},
+            now=datetime(2026, 11, 21, 12, 0, tzinfo=timezone.utc))
+    session.commit()
+    assert run.feed_capped is False and run.rows_fetched == 205

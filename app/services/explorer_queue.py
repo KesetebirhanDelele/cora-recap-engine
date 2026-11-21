@@ -267,10 +267,11 @@ def run_explorer_queue_cycle(
                 primary_state=row.primary_state,
                 ghl_location_id=d.location_id if d.action == L.SKIP_NO_ACCESS else None,
             ))
-        run.feed_capped = len(result.rows) >= settings.explorer_queue_batch_cap
+        # Paged live feed: capped means "we could not read the whole list". Feeds that report no total (fixture) keep the old rule.
+        run.feed_capped = (not result.complete) or (result.total is None and len(result.rows) >= settings.explorer_queue_batch_cap)
         if run.feed_capped:
-            logger.warning("explorer_queue: feed returned %d rows (= the limit); more may exist, "
-                           "so 'left the feed' exits are off this run", len(result.rows))
+            logger.warning("explorer_queue: feed read incomplete (%d rows read, feed total %s); some people may be "
+                           "missing, so 'left the feed' exits are off this run", len(result.rows), result.total)
         counts = L.summarize(decisions)
         run.rows_fetched = len(result.rows)
         run.contacts_tagged = counts.tagged

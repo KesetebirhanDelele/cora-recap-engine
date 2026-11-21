@@ -3194,3 +3194,10 @@ Supersedes the "built locally / not deployed / ON HOLD" notes above (2026-11-18 
 - First real run: the nightly `explorer_queue_sync` at 2026-11-21 12:37 UTC (6:37 AM CT). Expected (from the full dry run): ~123 contacts tagged, ~4 test contacts untagged, 13 / 42 / 12 skipped. Kes waived the "Rose confirms the Smart List" and "day's notice to Ali" gates (Ali's reply draft was still unsent at switch time; Kes to send it). The Smart List Rose sees tomorrow will hold the newly tagged people.
 - **To verify after the run:** run ledger row (dry_run = false, tagged ~123), `explorer_queue_skips`, one or two contacts in GHL carry `ent-priority-call` + stage/score tags and a Score, and the nightly push line still completes.
 - **To switch OFF (rollback):** in `.env` restore the old FEED_PATH line from the backup and delete the FEED_URL line, then `docker compose up -d worker-quality`; or set `explorer_queue_tagging_enabled` false in app_config (stops writes at once). Tags already written stay until removed by hand or by a later run.
+
+## 2026-11-21 (later) - first real Explorer run checked; feed now read in pages
+
+- First real tagging run (6:38-6:41 AM CT): fetched 187, tagged 120, untagged 4 (old test contacts), skipped 13 no GHL link / 43 AI campaign / 11 other sub-account, 0 failed, push succeeded. Ali's side matched (13 no-link, 2 profiles advanced, 31 call timestamps).
+- Ali: `limit` 200 is a PAGE SIZE, not a daily limit; the pool was 205 on 2026-11-19. Old code read one page only (people past 200 never tagged; the exits-off guard already protected against wrongly removing people when exactly 200 came back).
+- Fix: `LiveFeed.fetch` reads pages with `offset` until offset + count reaches `total` (probed read-only on the live feed first: offset/total/snapshot supported), de-duplicates, continuous ranks, `complete=False` on page cap (10) / early empty page / rows short of total. `explorer_queue_runs.feed_capped` now means "read incomplete". 8 new tests; spec 49 addendum.
+- Verify on the 2026-11-22 6:37 AM CT run: rows_fetched equals Ali's total, feed_capped false.

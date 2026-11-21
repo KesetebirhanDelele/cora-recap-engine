@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 VALID_VIEWS = frozenset({"reach_out", "engaged"})
-MAX_LIMIT = 200  # accelerator caps at 200 (default 25), no offset
+MAX_LIMIT = 200  # accelerator page size caps at 200 (default 25); more rows are read with `offset`
+MAX_PAGES = 10   # safety bound on paging (2,000 rows); hitting it marks the result incomplete
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,10 @@ class FeedResult:
     rows: tuple[FeedRow, ...] = field(default_factory=tuple)
     tracked_since: str | None = None
     count: int | None = None  # the feed's own "rows returned" figure, when it sends one
+    # Size of the whole pool the feed reports (live feed only), and whether we read all of it.
+    # complete=False means some people may be missing from `rows` (Ali, 2026-11-21: 200 is a page size, not a daily limit).
+    total: int | None = None
+    complete: bool = True
 
 
 class FeedError(ValueError):
@@ -84,8 +89,12 @@ def _opt_score(value: Any) -> float | None:
         return None
 
 
-def parse_feed_payload(payload: Any) -> FeedResult:
-    """Parse Ali's envelope ``{view, tracked_since, rows[]}`` into typed rows."""
+def _opt_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def parse_feed_payload(payload: Any, start_rank: int = 1) -> FeedResult:
+    """Parse Ali's envelope ``{view, tracked_since, rows[]}`` into typed rows. `start_rank` is the rank of the first row (page offset + 1)."""
     if not isinstance(payload, dict):
         raise FeedError("feed payload must be an object")
     view = payload.get("view")
@@ -95,7 +104,7 @@ def parse_feed_payload(payload: Any) -> FeedResult:
     if not isinstance(raw_rows, list):
         raise FeedError("feed 'rows' must be a list")
     rows = []
-    for position, raw in enumerate(raw_rows, start=1):
+    for position, raw in enumerate(raw_rows, start=start_rank):
         if not isinstance(raw, dict):
             raise FeedError("each feed row must be an object")
         rows.append(
@@ -112,10 +121,9 @@ def parse_feed_payload(payload: Any) -> FeedResult:
                 lead_id=_opt_str(raw.get("lead_id")),
             )
         )
-    count = payload.get("count")
     return FeedResult(
         view=view, rows=tuple(rows), tracked_since=_opt_str(payload.get("tracked_since")),
-        count=count if isinstance(count, int) and not isinstance(count, bool) else None,
+        count=_opt_int(payload.get("count")), total=_opt_int(payload.get("total")),
     )
 
 
@@ -137,12 +145,14 @@ class FixtureFeed:
 
 
 class LiveFeed:
-    """Ali's token-protected read: GET <url>?view=..&limit=.. with a Bearer token.
+    """Ali's token-protected read: GET <url>?view=..&limit=..&offset=.. with a Bearer token.
 
-    Contract (Ali, 2026-11-06): send ONLY `view` and `limit` (any other parameter is a 400);
-    `limit` defaults to 25 server-side so it is always sent explicitly; the payload has no
-    name/email. `count` in the response is the number of rows returned; a result equal to the
-    limit means more rows exist (no paging yet). The token is never logged.
+    Contract (Ali, 2026-11-06, paging added 2026-11-21): `limit` is a PAGE SIZE (max 200, above that is a 400), always
+    sent explicitly (server default is 25). The response carries `count` (rows in this page), `total` (size of the
+    whole pool) and `offset`. `fetch` keeps reading pages until offset + count reaches total, then returns every row
+    together. If the list could not be read completely (page cap hit, empty page early, rows short of total because
+    the list moved while reading) the result has complete=False so the caller never treats a missing person as
+    "left the queue". The payload has no name/email. The token is never logged.
     """
 
     RETRIES = 2  # extra attempts on a 5xx / network error, then raise
@@ -165,40 +175,77 @@ class LiveFeed:
         own = self._client is None
         client = self._client or httpx.Client(timeout=30.0)
         try:
-            last_err = "unknown error"
-            for attempt in range(self.RETRIES + 1):
-                try:
-                    resp = client.get(
-                        self._url, params={"view": view, "limit": limit},
-                        headers={"Authorization": f"Bearer {self._token}"},
-                    )
-                except httpx.TransportError as exc:
-                    last_err = f"network error: {type(exc).__name__}"
-                else:
-                    if resp.status_code in (401, 403):
-                        raise FeedError(f"feed rejected the credential (HTTP {resp.status_code})")
-                    if resp.status_code == 400:
-                        raise FeedError("feed rejected the request parameters (HTTP 400)")
-                    if resp.status_code >= 500:
-                        last_err = f"feed server error (HTTP {resp.status_code})"
-                    elif resp.status_code != 200:
-                        raise FeedError(f"unexpected feed response (HTTP {resp.status_code})")
-                    else:
-                        return self._parse(resp, view)
-                if attempt < self.RETRIES:
-                    self._sleep(2 ** attempt)
-            raise FeedError(last_err)
+            rows: list[FeedRow] = []
+            seen: set[str] = set()
+            tracked_since = None
+            total: int | None = None
+            offset = 0
+            reached_end = False
+            for _ in range(MAX_PAGES):
+                page = self._get_page(client, httpx, view, limit, offset)
+                tracked_since = tracked_since or page.tracked_since
+                total = page.total
+                added = 0
+                for r in page.rows:
+                    key = r.enrollment_id or r.ghl_url or r.lead_id
+                    if key is not None and key in seen:
+                        continue  # the list moved between pages: never count a person twice
+                    if key is not None:
+                        seen.add(key)
+                    rows.append(r)
+                    added += 1
+                if not page.rows:
+                    reached_end = total is None or offset >= total
+                    break
+                offset += len(page.rows)
+                if total is None:
+                    # Old-style reply with no total: a full page means more may exist, so ask again; a short page is the end.
+                    if len(page.rows) < limit or not added:
+                        reached_end = True
+                        break
+                    continue
+                if offset >= total:
+                    reached_end = True
+                    break
+            complete = reached_end and (total is None or len(rows) >= total)
+            return FeedResult(view=view, rows=tuple(rows), tracked_since=tracked_since,
+                              count=len(rows), total=total, complete=complete)
         finally:
             if own:
                 client.close()
 
+    def _get_page(self, client: Any, httpx: Any, view: str, limit: int, offset: int) -> FeedResult:
+        params: dict[str, Any] = {"view": view, "limit": limit}
+        if offset:
+            params["offset"] = offset
+        last_err = "unknown error"
+        for attempt in range(self.RETRIES + 1):
+            try:
+                resp = client.get(self._url, params=params, headers={"Authorization": f"Bearer {self._token}"})
+            except httpx.TransportError as exc:
+                last_err = f"network error: {type(exc).__name__}"
+            else:
+                if resp.status_code in (401, 403):
+                    raise FeedError(f"feed rejected the credential (HTTP {resp.status_code})")
+                if resp.status_code == 400:
+                    raise FeedError("feed rejected the request parameters (HTTP 400)")
+                if resp.status_code >= 500:
+                    last_err = f"feed server error (HTTP {resp.status_code})"
+                elif resp.status_code != 200:
+                    raise FeedError(f"unexpected feed response (HTTP {resp.status_code})")
+                else:
+                    return self._parse(resp, view, offset)
+            if attempt < self.RETRIES:
+                self._sleep(2 ** attempt)
+        raise FeedError(last_err)
+
     @staticmethod
-    def _parse(resp: Any, view: str) -> FeedResult:
+    def _parse(resp: Any, view: str, offset: int = 0) -> FeedResult:
         try:
             payload = resp.json()
         except ValueError as exc:
             raise FeedError("feed response is not JSON") from exc
-        result = parse_feed_payload(payload)
+        result = parse_feed_payload(payload, start_rank=offset + 1)
         if result.view != view:
             raise FeedError(f"feed returned view {result.view!r}, asked for {view!r}")
         if result.count is not None and result.count != len(result.rows):
