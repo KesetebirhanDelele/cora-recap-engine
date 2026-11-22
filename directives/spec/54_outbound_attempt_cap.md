@@ -1,6 +1,6 @@
 # Spec 54 - Per-person cap on Cora's AI outbound attempts
 
-Status: built on branch feat/outbound-attempt-cap, tests pass, NOT deployed (2026-11-22). Decision: Kes, 2026-11-22.
+Status: merged and deployed 2026-11-22 (87bfbe3). Decision: Kes, 2026-11-22.
 
 ## Problem
 Measured 2026-11-21 for the new AI class (calls from 23 Aug 2026, bookings recorded): attempts 7 and later are 62% of calls and 63% of minutes but 23% of bookings. Booking rate falls from 1.38% (1st attempt) to 0.13% (7th or later); minutes per booking rise from 42 to 464. Ali independently reached the same totals and recommends a cap of 6 (keeps 59 of 77 bookings for 37% of the minutes). Attempt counts there are each person's lifetime attempts since July 2025.
