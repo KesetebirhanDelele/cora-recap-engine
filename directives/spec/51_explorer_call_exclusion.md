@@ -1,6 +1,6 @@
 # Spec 51 - Explorer sign-ups are never dialed by Cora's AI campaigns
 
-Status: built on branch feat/explorer-call-exclusion, not deployed (2026-11-21).
+Status: merged and deployed 2026-11-21 (2c71754).
 
 ## Problem
 Explorer sign-ups (Ali's accelerator list) are worked by Rose and Taiwo. GHL's "Contact Created" workflow still sends every new lead with a phone to Cora's New Lead campaign, and the Cold Lead tag workflows re-send people every 45 days. Measured 2026-11-21: all 100 checkable people on Rose's first list had been dialed by Cora's AI (219 calls, 3 reached), the first call usually within hours of sign-up.

@@ -3209,3 +3209,41 @@ Supersedes the "built locally / not deployed / ON HOLD" notes above (2026-11-18 
 - Open: Ali has not said whether `ai explorer` is on the contact at creation or added after enrollment (draft question to Ali); 29 scheduled New Lead calls (14 Ali-pool no-account, 15 outside) left to run; GHL workflow branch to skip `ai explorer` is Kes's to do.
 
 - 2026-11-21 (night): merged into feat/ghl-call-conversation-sync (2c71754), pushed, Hetzner redeployed. Live check (read-only): guard on, tag "ai explorer"; 9 of 10 sampled Rose-list contacts refused (the 1 allowed lacks the tag), 5 of 5 untagged controls allowed. Not yet seen on a real new sign-up.
+
+## 2026-11-21 (late) - Does Cora's calling lead to bookings / Explorer accounts? Analysis, and Explorer call exclusion status
+
+**Question (Ali):** do we need the current level of Synthflow calling? Outcome measures, per Kes: booking, and Explorer account creation (not enrollment: there is no enrollment date anywhere, see below). Staff (Rose/Taiwo) calls are a separate topic and are NOT part of the Cora question.
+
+**Data and method (all read-only):** Cora AI outbound calls (ColdLead/NewLead agents) matched to GHL contacts by last 10 digits of the phone (covers roughly 9,000 of the 11,000 people dialed); Ali's file (8,333 contacts: `ghl_contact_id`, `explorer_account_created_at`, `lead_created_at`); GHL tags read across all 16,853 contacts in the main sub-account.
+
+**Findings**
+- Volume since July 2025: about 62,948 AI outbound calls, 37,878 minutes (630 hours), 10,958 people; 1,452 ever had a real conversation (completed, 60s+); 86 bookings ever.
+- Bookings are only recorded from April 2026 (0 in every earlier month; 77 since 1 Sep). Dividing recent bookings by all-time calls hides the drop-off, so rates must use the period where bookings are recorded.
+- New AI class era (calls from 23 Aug 2026; date split is an ASSUMPTION, calls carry no course label): 22,953 calls, 13,261 min, 77 first bookings (0.34%). By attempt number: 1st 1.38% (42 min/booking), 2nd-3rd 0.60% (94), 4th-6th 0.34% (156), 7th+ 0.13% (464). Attempts 7+ are 62% of recent calls and 23% of bookings.
+- Data Analytics era (10 Apr-22 Aug 2026): 20,116 calls, 9 bookings; too thin to read. The DA class is closed.
+- Recommendation (sent to Kes, in draft to Ali): cap attempts at 6 per person; keep a random 20% on the current schedule for 4-6 weeks; judge on bookings first, account creation for Explorer people from Ali's weekly file; the Synthflow price per minute is not in our records, so no dollar figure yet.
+- Account creation since 19 Oct 2026 (the week Explorer sign-ups jumped to 204), excluding people who already had an account at Cora's first call (206 excluded): Cora-called 2,758 people, 7 made an account within 14 days (0.3%). Explorer-tagged and called: 4 of 58 (6.9%); Explorer-tagged and never called: 3 of 286 (1.0%) (Fisher p about 0.02, but 7 accounts in all and the never-called group is not random). Bookings among the 2,758: 15 (0.5%); New Lead 4 of 81, Cold Lead 11 of 2,677; none of the 15 made an account afterwards.
+- The 100 checkable people on Rose's first list were ALL dialed by Cora's AI (219 calls, median 1, max 5; 3 reached). For the 87 with a known account date, the first Cora call came AFTER the account in 86 (0-11 hours later): Cora's calls follow sign-up, they did not create the account.
+- Ali's file: 704 of 820 accounts were created the same day as the lead. `explorer_account_created_at` means "enrollment record first created", not a separate account; no payment data (29 paid learners, dropped on purpose).
+- Enrollment cannot be measured: GHL "Enrollment Date" is empty on all 16,853 contacts; `staff_call_quality.ghl_enrollment_date` empty on all 15,451 rows; tags carry no date. 1.7% of AI-dialed people carry an enrolled tag (3 of the 86 who booked). Called-vs-never-called enrollment rates (2.4% vs 19.3%) are selection effects (calls go to people who have not enrolled), not evidence either way.
+- Staff calls (for reference only): 448 people in Ali's pool; 371 of the 384 with an account had it before the first staff call.
+
+**GHL-side facts learned (workflows are not in this repo)**
+- "Contact Created" workflow: lead + phone -> sets AI Campaign = Yes, Name New_Lead, logs to a Google Sheet, POSTs to `/v1/webhooks/leads/new_lead`. This is how every new sign-up reached Cora's New Lead calls.
+- "ai cold leads" and "ai cold leads ii" tag workflows swap people every 45 days and re-send them to the cold_lead webhook each time (likely source of the very high attempt counts; unproven). The "ii" workflow is described as sending `phone_number`, but `call_intake.py` reads only `phone` (unverified in GHL).
+- The pasted description of one workflow contained the webhook secret in plain text (it is now in the session transcript). Not rotated; Kes to decide.
+- Cora pause switches: `outbound_campaigns_paused` (all campaigns, holds scheduled calls) and `cold_lead_campaign_paused`; there is no new-lead-only switch.
+- `ai explorer` tag: on 110 of Rose's 120 contacts; source "api v1" on 117. Whether Ali's system applies it at creation or later is asked in a draft to Ali (answer pending).
+
+**Explorer call exclusion (spec/51) - status:** merged and deployed (2c71754). Cora's AI campaigns refuse any contact tagged `ai explorer`, at campaign entry and again just before dialing (cancels the job). Fails open if GHL is down; switch `explorer_call_exclusion_enabled`; tags `explorer_call_exclusion_tags`. Live check: 9 of 10 sampled Rose-list contacts refused, 5 of 5 untagged controls allowed. Full suite 2545 passed, same 7 unrelated failures. Not yet seen on a real new sign-up. Limits: 10 of 120 on Rose's list lack the tag; two extra GHL reads per dial; the 29 already-scheduled New Lead calls (14 in Ali's pool with no account, 15 outside it, none on Rose's list) were left to run; GHL still marks new Explorer contacts AI Campaign = Yes, which keeps them off Rose's list until the GHL branch is added.
+
+**Open / next**
+1. Kes to send the drafts to Ali (tables and cap-at-6 recommendation; the `ai explorer` timing question was sent).
+2. Kes: in GHL's Contact Created workflow add a first branch "tag includes ai explorer -> no actions"; check the `phone_number` vs `phone` field on the "ai cold leads ii" webhook; decide on rotating the webhook secret.
+3. Verify the exclusion on the first real new sign-up (tagged contact skipped, untagged contact called); verify the 2026-11-22 6:37 AM CT run (rows read equals Ali's total, feed_capped false).
+4. Get the Synthflow price per minute to turn the cap-at-6 saving into dollars.
+5. Not built: a Cora outcomes table; a random call/no-call test on pre-account Explorer leads (Kes/Ali decision); recording enrollment dates going forward (tag-add timestamp capture).
+
+## 2026-11-21 (late) - GHL outbound lead workflows documented
+
+The three GHL workflows that feed Cora's AI calls (Contact Created -> New Lead; tag "ai cold leads" -> Cold Lead; tag "ai cold leads ii" -> Cold Lead) are now written up step by step in `directives/spec/52_ghl_outbound_lead_workflows.md` (triggers, branches, field updates, Google Sheet rows, waits and send windows, drip sizes, webhook URLs and body keys, the 45-day tag swap, settings). It is a copy of GHL's own description pasted by Kes, not checked in the GHL editor; update it when the workflows change. The webhook secret is deliberately not recorded (it was exposed in the pasted text; rotating it is advisable). Key points: workflow 1 sends every new lead with a phone to New Lead at creation; the two cold-lead workflows swap the tag every 45 days, re-sending people each time; workflow 3 reportedly sends `phone_number` while Cora reads only `phone` (unverified); no GHL-side Explorer guard yet.
