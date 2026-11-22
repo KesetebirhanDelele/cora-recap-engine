@@ -83,6 +83,13 @@ def _no_student_lookup():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_explorer_lookup():
+    """launch_outbound_call_job() also calls explorer_guard.check_is_explorer() (GHL live). Default: not an Explorer."""
+    with patch("app.core.explorer_guard.check_is_explorer", return_value=None):
+        yield
+
+
 def _aware(dt: datetime) -> datetime:
     """
     Normalize a datetime read back from SQLite (naive) to UTC-aware, so it
@@ -913,3 +920,39 @@ def test_call_gate_gives_up_with_a_warning_exception_after_repeated_failures():
     assert create_exc.call_args.kwargs["type"] == "call_gate_lookup_failed"
     release.assert_not_called()
     mark_running.assert_not_called()
+
+
+# ── Explorer guard (spec/51) ────────────────────────────────────────────────
+
+@patch("app.worker.claim.cancel_job")
+@patch("app.worker.jobs.outbound_jobs._is_do_not_call", return_value=False)
+@patch("app.core.escalation_guard.check_urgent_unresolved", return_value=None)
+@patch("app.core.explorer_guard.check_is_explorer")
+@patch("app.worker.jobs.outbound_jobs.create_exception")
+@patch("app.worker.jobs.outbound_jobs.get_worker_id", return_value="worker-test")
+@patch("app.worker.jobs.outbound_jobs.get_settings")
+@patch("app.worker.jobs.outbound_jobs.get_sync_session")
+@patch("app.worker.jobs.outbound_jobs.claim_job")
+@patch("app.worker.jobs.outbound_jobs.mark_running")
+def test_explorer_contact_cancels_job_without_calling_or_raising(
+    mock_mark_running, mock_claim, mock_session_cm, mock_get_settings,
+    mock_worker_id, mock_create_exc, mock_check_explorer, mock_check_urgent,
+    mock_is_dnc, mock_cancel,
+):
+    from app.worker.jobs.outbound_jobs import launch_outbound_call_job
+
+    mock_session = MagicMock()
+    mock_session_cm.return_value.__enter__ = MagicMock(return_value=mock_session)
+    mock_session_cm.return_value.__exit__ = MagicMock(return_value=False)
+    mock_job = _make_mock_job(phone="+19592022210")
+    mock_claim.return_value = mock_job
+    mock_get_settings.return_value = _make_settings()
+    mock_check_explorer.return_value = {"ghl_contact_id": "ghl-9", "matched_tags": ["ai explorer"]}
+
+    with patch("app.core.mode_flags.get_mode_flags", return_value=_make_flags()):
+        launch_outbound_call_job(mock_job.id)
+
+    mock_mark_running.assert_not_called()      # no call was placed
+    mock_cancel.assert_called_once()           # the job is cancelled, not retried
+    mock_create_exc.assert_not_called()        # expected suppression, no dashboard alert
+    mock_session.commit.assert_called_once()

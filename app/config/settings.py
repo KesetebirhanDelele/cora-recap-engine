@@ -253,6 +253,11 @@ class Settings(BaseSettings):
     explorer_queue_ai_summary_field_id: str = "3yYPrP3zgbG2J5T1jf83"
     # AI Campaign checkbox (contact.ai_campaign, CHECKBOX Yes/No) — "Yes" stays off the queue.
     explorer_queue_ai_campaign_field_id: str = "q4MlGTxSYqHoXfuMm8mW"
+    # Explorer sign-ups are worked by Rose/Taiwo, never dialed by Cora's AI campaigns (spec/51, Kes 2026-11-21).
+    # Any GHL contact carrying one of these tags (comma separated, case-insensitive) is refused at campaign entry
+    # and at dial time. Set explorer_call_exclusion_enabled false to switch the guard off.
+    explorer_call_exclusion_enabled: bool = True
+    explorer_call_exclusion_tags: str = "ai explorer"
     # Accelerator view feeding Rose's list: reach_out | engaged (open with Ali).
     explorer_queue_view: str = "reach_out"
     # JSON {primary_state: ent-stage-*}; Ali's buckets (2026-11-05). CONVERTED never reaches us.

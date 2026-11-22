@@ -50,6 +50,15 @@ def _no_student_lookup():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_explorer_lookup():
+    """enter_campaign() also calls explorer_guard.check_is_explorer() (GHL live). Default: not an Explorer."""
+    from unittest.mock import patch
+
+    with patch("app.core.explorer_guard.check_is_explorer", return_value=None):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -678,3 +687,30 @@ def test_a_normal_entry_records_no_skip(session):
     lead = _make_lead(session, campaign_name=None)
     enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
     assert _skips(session, lead) == []
+
+
+# ---------------------------------------------------------------------------
+# Explorer guard (spec/51) - Explorer sign-ups are worked by Rose and Taiwo, never by Cora's AI campaigns.
+# ---------------------------------------------------------------------------
+
+def test_enter_campaign_skips_explorer_signup(session):
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    explorer = {"ghl_contact_id": "ghl-xyz", "matched_tags": ["ai explorer"]}
+    with patch("app.core.explorer_guard.check_is_explorer", return_value=explorer):
+        enter_campaign(session, lead, "new_lead", settings=_mock_settings())
+    session.refresh(lead)
+    assert lead.campaign_name is None
+    assert session.scalars(select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)).all() == []
+
+
+def test_enter_campaign_explorer_check_is_skipped_when_settings_none(session):
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    with patch("app.core.explorer_guard.check_is_explorer") as mock_check:
+        enter_campaign(session, lead, "new_lead", settings=None)
+        mock_check.assert_not_called()
+    session.refresh(lead)
+    assert lead.campaign_name == "New Lead"

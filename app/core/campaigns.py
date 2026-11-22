@@ -205,6 +205,22 @@ def enter_campaign(
             _record_skip(session, lead, campaign_name, "enrolled_student", ",".join(student["matched_tags"] or []))
             return
 
+    # ── Explorer guard (spec/51) ─────────────────────────────────────────────
+    # Explorer sign-ups are worked by Rose and Taiwo, never by Cora's AI campaigns. Same shape and
+    # fail-open behaviour as the student guard above. The tag can land a moment after GHL sends the webhook,
+    # so launch_outbound_call_job() checks again at dial time.
+    if settings is not None:
+        from app.core.explorer_guard import check_is_explorer
+        explorer = check_is_explorer(lead.normalized_phone or lead.contact_id, settings)
+        if explorer is not None:
+            logger.info(
+                "enter_campaign: contact is an Explorer sign-up — skipping entry | "
+                "contact_id=%s campaign=%s matched_tags=%s",
+                lead.contact_id, campaign_name, explorer["matched_tags"],
+            )
+            _record_skip(session, lead, campaign_name, "explorer_excluded", ",".join(explorer["matched_tags"] or []))
+            return
+
     # 1. Cancel existing pending jobs (clean slate for the new campaign)
     cancelled = _cancel_pending_jobs(session, lead.contact_id)
     if cancelled:

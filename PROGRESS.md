@@ -3201,3 +3201,9 @@ Supersedes the "built locally / not deployed / ON HOLD" notes above (2026-11-18 
 - Ali: `limit` 200 is a PAGE SIZE, not a daily limit; the pool was 205 on 2026-11-19. Old code read one page only (people past 200 never tagged; the exits-off guard already protected against wrongly removing people when exactly 200 came back).
 - Fix: `LiveFeed.fetch` reads pages with `offset` until offset + count reaches `total` (probed read-only on the live feed first: offset/total/snapshot supported), de-duplicates, continuous ranks, `complete=False` on page cap (10) / early empty page / rows short of total. `explorer_queue_runs.feed_capped` now means "read incomplete". 8 new tests; spec 49 addendum.
 - Verify on the 2026-11-22 6:37 AM CT run: rows_fetched equals Ali's total, feed_capped false.
+
+## 2026-11-21 (night) - Explorer call exclusion built (branch feat/explorer-call-exclusion, NOT merged/deployed)
+
+- Finding: all 100 checkable people on Rose's list were dialed by Cora's AI (219 calls, 3 reached), first call usually within hours of sign-up, because GHL's Contact Created workflow sends every new lead with a phone to the New Lead campaign. Also: the two cold-lead tag workflows swap people every 45 days (re-calls), and the "ai cold leads ii" webhook sends `phone_number` while Cora reads only `phone` (unverified in GHL).
+- Built (spec/51): `check_is_explorer` guard at `enter_campaign` and at dial time; refuses contacts tagged `ai explorer` (settings `explorer_call_exclusion_tags`, switch `explorer_call_exclusion_enabled`). Full suite 2545 passed, same 7 unrelated failures as before.
+- Open: Ali has not said whether `ai explorer` is on the contact at creation or added after enrollment (draft question to Ali); 29 scheduled New Lead calls (14 Ali-pool no-account, 15 outside) left to run; GHL workflow branch to skip `ai explorer` is Kes's to do.

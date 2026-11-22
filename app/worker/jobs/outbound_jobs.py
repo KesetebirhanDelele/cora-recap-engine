@@ -581,6 +581,23 @@ def launch_outbound_call_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Explorer guard (spec/51) ───────────────────────────────────────────
+        # Explorer sign-ups are Rose's and Taiwo's, never Cora's AI campaigns. Checked again here (not only at
+        # enter_campaign) because the "ai explorer" tag can land after GHL sends the webhook, and because the
+        # 45-day cold-lead cycle re-sends people. Reads GHL live by phone; fails open.
+        from app.core.explorer_guard import check_is_explorer
+        explorer = check_is_explorer(phone or contact_id, settings)
+        if explorer is not None:
+            logger.warning(
+                "launch_outbound_call_job: contact is an Explorer sign-up — cancelling | "
+                "contact_id=%s job_id=%s matched_tags=%s",
+                contact_id, job_id, explorer["matched_tags"],
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            session.commit()
+            return
+
         # ── Campaign active-window check (live mode only) ─────────────────────
         # Shadow mode skips this — no real outbound action is taken so there
         # is nothing to defer.
