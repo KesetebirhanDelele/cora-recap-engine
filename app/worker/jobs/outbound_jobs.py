@@ -560,6 +560,25 @@ def launch_outbound_call_job(job_id: str) -> None:
             session.commit()
             return
 
+        # ── Attempt cap (spec/54) ──────────────────────────────────────────────
+        # At most 6 lifetime AI attempts per person (with an AI-class guarantee and a 10% uncapped holdout). Database
+        # only, so it runs before the guards that call GHL. Cancels the job; fails open.
+        # A call the LEAD asked for (callback, exact-time callback, transfer request) is exempt, as it is from the daily cap
+        # (app/core/call_policy.py): refusing a person who asked to be called would be wrong.
+        from app.core.attempt_cap import check_attempt_cap
+        from app.core.call_policy import is_lead_requested_callback
+        capped = None if is_lead_requested_callback(payload) else check_attempt_cap(session, phone or contact_id, settings)
+        if capped is not None:
+            logger.warning(
+                "launch_outbound_call_job: attempt cap reached — cancelling | "
+                "contact_id=%s job_id=%s lifetime=%s since_era=%s cap=%s",
+                contact_id, job_id, capped["lifetime"], capped["since_era"], capped["cap"],
+            )
+            from app.worker.claim import cancel_job
+            cancel_job(session, job.id)
+            session.commit()
+            return
+
         # ── Enrolled-student guard (belt-and-suspenders with enter_campaign) ──
         # spec/27. Catches jobs scheduled before this guard shipped, or from
         # paths other than enter_campaign() (nurture scheduler, voicemail-tier

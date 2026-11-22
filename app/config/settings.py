@@ -253,6 +253,14 @@ class Settings(BaseSettings):
     explorer_queue_ai_summary_field_id: str = "3yYPrP3zgbG2J5T1jf83"
     # AI Campaign checkbox (contact.ai_campaign, CHECKBOX Yes/No) — "Yes" stays off the queue.
     explorer_queue_ai_campaign_field_id: str = "q4MlGTxSYqHoXfuMm8mW"
+    # Per-person cap on Cora's AI outbound attempts (spec/54, Kes 2026-11-22). Lifetime attempts >= cap blocks the call,
+    # unless the person has had fewer than era_guarantee attempts since era_start (so everyone hears the AI-class pitch
+    # up to that many times), or their number is in the uncapped holdout (holdout_percent of numbers, by hash).
+    outbound_attempt_cap_enabled: bool = True
+    outbound_attempt_cap: int = 6
+    outbound_attempt_cap_era_start: str = "2026-08-23"
+    outbound_attempt_cap_era_guarantee: int = 3
+    outbound_attempt_cap_holdout_percent: int = 10
     # Explorer sign-ups are worked by Rose/Taiwo, never dialed by Cora's AI campaigns (spec/51, Kes 2026-11-21).
     # Any GHL contact carrying one of these tags (comma separated, case-insensitive) is refused at campaign entry
     # and at dial time. Set explorer_call_exclusion_enabled false to switch the guard off.

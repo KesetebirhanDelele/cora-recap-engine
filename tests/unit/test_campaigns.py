@@ -59,6 +59,15 @@ def _no_explorer_lookup():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_attempt_cap():
+    """enter_campaign() also calls attempt_cap.check_attempt_cap() (spec/54). Default: person is under the cap."""
+    from unittest.mock import patch
+
+    with patch("app.core.attempt_cap.check_attempt_cap", return_value=None):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -714,3 +723,30 @@ def test_enter_campaign_explorer_check_is_skipped_when_settings_none(session):
         mock_check.assert_not_called()
     session.refresh(lead)
     assert lead.campaign_name == "New Lead"
+
+
+# ---------------------------------------------------------------------------
+# Attempt cap (spec/54) - a person at the lifetime cap is not re-entered (stops the 45-day cold-lead re-sends).
+# ---------------------------------------------------------------------------
+
+def test_enter_campaign_skips_a_person_at_the_attempt_cap(session):
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    capped = {"lifetime": 9, "since_era": 4, "cap": 6}
+    with patch("app.core.attempt_cap.check_attempt_cap", return_value=capped):
+        enter_campaign(session, lead, "cold_lead", settings=_mock_settings())
+    session.refresh(lead)
+    assert lead.campaign_name is None
+    assert session.scalars(select(ScheduledJob).where(ScheduledJob.entity_id == lead.contact_id)).all() == []
+
+
+def test_enter_campaign_attempt_cap_check_is_skipped_when_settings_none(session):
+    from unittest.mock import patch
+
+    lead = _make_lead(session, campaign_name=None)
+    with patch("app.core.attempt_cap.check_attempt_cap") as mock_check:
+        enter_campaign(session, lead, "cold_lead", settings=None)
+        mock_check.assert_not_called()
+    session.refresh(lead)
+    assert lead.campaign_name == "Cold Lead"

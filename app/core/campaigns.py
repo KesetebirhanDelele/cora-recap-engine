@@ -205,6 +205,22 @@ def enter_campaign(
             _record_skip(session, lead, campaign_name, "enrolled_student", ",".join(student["matched_tags"] or []))
             return
 
+    # ── Attempt cap (spec/54) ────────────────────────────────────────────────
+    # A person who has reached the lifetime attempt cap is not re-entered (this is what stops the 45-day cold-lead
+    # re-sends). Database only; fails open. launch_outbound_call_job() checks again at dial time.
+    if settings is not None:
+        from app.core.attempt_cap import check_attempt_cap
+        capped = check_attempt_cap(session, lead.normalized_phone or lead.contact_id, settings)
+        if capped is not None:
+            logger.info(
+                "enter_campaign: attempt cap reached — skipping entry | contact_id=%s campaign=%s "
+                "lifetime=%s since_era=%s cap=%s",
+                lead.contact_id, campaign_name, capped["lifetime"], capped["since_era"], capped["cap"],
+            )
+            _record_skip(session, lead, campaign_name, "attempt_cap_reached",
+                         f"lifetime={capped['lifetime']},since_era={capped['since_era']}")
+            return
+
     # ── Explorer guard (spec/51) ─────────────────────────────────────────────
     # Explorer sign-ups are worked by Rose and Taiwo, never by Cora's AI campaigns. Same shape and
     # fail-open behaviour as the student guard above. The tag can land a moment after GHL sends the webhook,
