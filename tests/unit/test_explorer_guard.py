@@ -68,4 +68,22 @@ def test_real_settings_default_is_on_with_the_ai_explorer_tag():
 
     f = Settings.model_fields
     assert f["explorer_call_exclusion_enabled"].default is True
-    assert f["explorer_call_exclusion_tags"].default == "ai explorer"
+    assert f["explorer_call_exclusion_tags"].default == "ai explorer,ai-explorer"
+
+
+@pytest.mark.parametrize("tag", ["ai explorer", "ai-explorer", "AI-Explorer"])
+def test_both_spellings_of_the_explorer_tag_are_refused_with_the_real_defaults(tag):
+    from app.config.settings import Settings
+
+    d = Settings.model_fields["explorer_call_exclusion_tags"].default
+    with _ghl({"tags": ["left voicemail", tag]}):
+        r = check_is_explorer("+15551230000", _settings(tags=d))
+    assert r is not None and r["matched_tags"] == [tag]
+
+
+def test_a_similar_but_different_tag_is_not_refused_with_the_real_defaults():
+    from app.config.settings import Settings
+
+    d = Settings.model_fields["explorer_call_exclusion_tags"].default
+    with _ghl({"tags": ["ai-explorers", "explorer-ai", "src-free_signup"]}):
+        assert check_is_explorer("+15551230000", _settings(tags=d)) is None

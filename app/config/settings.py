@@ -257,7 +257,7 @@ class Settings(BaseSettings):
     # Any GHL contact carrying one of these tags (comma separated, case-insensitive) is refused at campaign entry
     # and at dial time. Set explorer_call_exclusion_enabled false to switch the guard off.
     explorer_call_exclusion_enabled: bool = True
-    explorer_call_exclusion_tags: str = "ai explorer"
+    explorer_call_exclusion_tags: str = "ai explorer,ai-explorer"
     # Accelerator view feeding Rose's list: reach_out | engaged (open with Ali).
     explorer_queue_view: str = "reach_out"
     # JSON {primary_state: ent-stage-*}; Ali's buckets (2026-11-05). CONVERTED never reaches us.
