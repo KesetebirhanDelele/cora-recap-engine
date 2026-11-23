@@ -3283,3 +3283,5 @@ cd /opt/cora-recap-engine
 docker compose exec -T worker-quality python -m execution.attempt_cap_weekly_report
 ```
 Check: (1) capped-group calls are near zero (callbacks exempt); anything larger is a leak; (2) "Switch-off check" - it says TOO EARLY until 2 complete weeks (Mon 2026-12-07); a REVIEW flag means look at bookings vs calls, then decide on `outbound_attempt_cap_enabled=false` and tell Ali; (3) reached calls per 1,000 people, capped vs holdout. First weekly note to Ali is promised after week 1 (about 2026-11-30). Holdout bookings read: about 2027-05-22 and 2027-11-22. The 30-point flag threshold is still PROPOSED: Kes to confirm. Append each week's numbers to this file.
+
+- 2026-11-23: weekly attempt-cap report MERGED into feat/ghl-call-conversation-sync (911eb42), pushed, Hetzner redeployed. Verified after deploy: all services up, dashboard API health 200, no errors in the quality worker log, and `python -m execution.attempt_cap_weekly_report` runs in the container (2,390 capped, 283 holdout, partial week 1: 30 calls, none from either group). Reply to Ali updated (still an unsent draft when written).
