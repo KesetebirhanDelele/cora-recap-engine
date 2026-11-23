@@ -41,3 +41,13 @@ An attempt = one outbound ColdLead/NewLead row in `call_events` (answered or not
 - The Synthflow price per minute is not in our records, so no dollar figure.
 
 - Exempt: a call the lead asked for (`callback_request`, `callback_with_time`, `transfer_requested`, same set as the daily-cap exemption in `app/core/call_policy.py`). The cap is not consulted for those.
+
+## Monitoring (commitments to Ali, 2026-11-23)
+Ali (2026-11-22) showed that a 10% holdout read at six weeks collects too few bookings to separate "no cost" from "halved". Kes agreed (draft reply, 2026-11-23). Corrections and commitments:
+- The holdout only keeps calls the cap would have stopped, so it costs roughly a tenth of THOSE calls (about 15 of 110 on 2026-11-22), not a tenth of all calling. For the same reason it collects about one booking in six weeks (attempts 7+ gave about 18 of 77 bookings in 91 days; a tenth is under 0.02 a day). The same figure bounds the worst-case cost of the cap at about 18 bookings in 91 days, before the AI-class guarantee. From the 2026-11-21 analysis; not re-run on live data since go-live.
+- **Keep the 10% holdout.** Read bookings at 6 and 12 months (about 2027-05-22 and 2027-11-22), not at six weeks.
+- **Weekly read (built):** `execution/attempt_cap_weekly_report.py` (read-only, counts only). Compares the people who were at the cap on go-live, capped vs holdout, per 1,000 people, on calls placed, calls reached (status `completed`) and bookings (`detected_intent = booked`), plus all-calls totals against the 4 weeks before go-live. Go-live is taken as 2026-11-22 17:10 UTC (worker container rebuilt 17:06 UTC). First report due after the first full week (about 2026-11-30). Run: `docker compose exec -T worker-quality python -m execution.attempt_cap_weekly_report` (after a deploy), or pipe the file to `python -` in the container.
+- **Switch-off check (built into the report):** needs 2 complete weeks after go-live; flags REVIEW when the weekly bookings fall 30 or more percentage points more than weekly calls versus the 4-week baseline. The 30 points is PROPOSED, not yet confirmed by Kes; bookings are few per week (about 11), so a flag means look, not automatic switch-off. If confirmed: `outbound_attempt_cap_enabled=false` and tell Ali.
+- Capped-group calls after go-live should be near zero (callbacks the lead asked for are exempt); anything larger is a leak to investigate.
+- "Reached" is a rule on the call record (status completed: a person picked up), not a judge of the transcript; voicemail, no-answer, busy and failed are excluded.
+- Tests: `tests/unit/test_attempt_cap_weekly_report.py` (10).

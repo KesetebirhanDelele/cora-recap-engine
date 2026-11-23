@@ -3267,3 +3267,19 @@ Decision (Kes, after Ali agreed the current level of calling is not needed): cap
 - Holdout kept at 10% (Kes did not ask for 0%). Decision to deploy: Kes, 2026-11-22.
 
 - 2026-11-22 (later): attempt cap MERGED and DEPLOYED (87bfbe3). Live check (read-only): settings cap 6, era 2026-08-23, guarantee 3, holdout 10%; of 183 pending calls, 95 would be cancelled at dial time and 21 are in the holdout; a sample person with 12+ attempts outside the holdout is blocked. Draft reply to Ali created (thanks, cap live, guarantee, callback exemption, 10% holdout and the 4-6 week read, file and cohort yes). Still to do: read capped vs holdout bookings after 4-6 weeks; confirm in the logs that "attempt cap reached" lines appear and bookings per week do not fall by more than calls; Synthflow price per minute still unknown.
+
+## 2026-11-23 - Attempt cap: weekly comparison built; commitments to Ali (code NOT deployed, NOT committed)
+Ali's holdout reply (2026-11-22): at six weeks the 10% holdout would hold about 3 to 4 bookings, too few to tell "no cost" from "halved". Kes agreed; draft reply created (unsent when written). Correction made in the reply: the holdout only keeps the calls the cap would stop (about 15 of 110), so it collects about one booking in six weeks, and the cap's worst-case cost is bounded by the attempt-7+ bookings (about 18 in 91 days, from the 2026-11-21 analysis).
+- Built `execution/attempt_cap_weekly_report.py` (read-only) + 10 unit tests (29 pass with the cap tests; ruff clean). Run read-only on the live data via stdin to the worker container (no deploy): go-live assumed 2026-11-22 17:10 UTC; 2,390 people capped and 283 in the holdout at go-live; first partial week (about 9 hours): 30 calls, 7 reached, 1 booking, none in either cohort group; baseline 2,156 calls, 263 reached, 10.8 bookings a week. Switch-off check: TOO EARLY (needs 2 complete weeks).
+- Spec 54 got a Monitoring section with the commitments.
+- Commitments: (1) keep the 10% holdout; read bookings at 6 and 12 months (about 2027-05-22 and 2027-11-22). (2) Weekly capped vs holdout read on calls, reached and bookings per 1,000 people; first report about 2026-11-30. (3) Switch-off check: PROPOSED flag at bookings 30+ points below calls vs the 4-week baseline, after 2 complete weeks; Kes to confirm the 30 points.
+- Not done: deploy of the report file (read-only run works without it); decision on the threshold; a recurring schedule (Kes runs it or asks).
+
+### REMINDER - run the attempt cap weekly report (Kes)
+Run every Monday morning (first full report: **Mon 2026-11-30**; the cap went live Sun 2026-11-22 17:10 UTC, so week 1 closes 2026-11-29):
+```
+ssh root@204.168.245.238
+cd /opt/cora-recap-engine
+docker compose exec -T worker-quality python -m execution.attempt_cap_weekly_report
+```
+Check: (1) capped-group calls are near zero (callbacks exempt); anything larger is a leak; (2) "Switch-off check" - it says TOO EARLY until 2 complete weeks (Mon 2026-12-07); a REVIEW flag means look at bookings vs calls, then decide on `outbound_attempt_cap_enabled=false` and tell Ali; (3) reached calls per 1,000 people, capped vs holdout. First weekly note to Ali is promised after week 1 (about 2026-11-30). Holdout bookings read: about 2027-05-22 and 2027-11-22. The 30-point flag threshold is still PROPOSED: Kes to confirm. Append each week's numbers to this file.
