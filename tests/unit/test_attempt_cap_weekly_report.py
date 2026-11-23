@@ -47,13 +47,14 @@ def test_cohort_is_people_at_the_cap_and_split_by_holdout():
 def test_calls_after_go_live_are_counted_per_group_and_week():
     h, c = pick(True), pick(False)
     calls = hist(h, 6) + hist(c, 6)
-    calls += [Call(h, CUT + timedelta(days=1), True, True, 3.0), Call(h, CUT + timedelta(days=2), False, False, 0.5),
-              Call(c, CUT + timedelta(days=3), True, False, 2.0),       # a callback in the capped group: counted, not a crash
-              Call(h, CUT + timedelta(days=9), True, False, 1.0)]       # week 2
+    calls += [Call(h, CUT + timedelta(days=1), True, True, 3.0, True), Call(h, CUT + timedelta(days=2), False, False, 0.5),
+              Call(c, CUT + timedelta(days=3), True, False, 2.0, True),       # a callback in the capped group: counted, not a crash
+              Call(h, CUT + timedelta(days=9), True, False, 1.0, True)]       # week 2
     rep = build(calls, cutoff=CUT, now=CUT + timedelta(days=15), **KW)
     w1, w2, w3 = rep["weeks"]
     assert rep["cohort_people"] == {"capped": 1, "holdout": 1}
     assert (w1["holdout"]["calls"], w1["holdout"]["reached"], w1["holdout"]["booked"]) == (2, 1, 1)
+    assert (w1["holdout"]["connected"], w1["capped"]["connected"]) == (1, 1)    # the unanswered call did not connect
     assert (w1["capped"]["calls"], w1["capped"]["reached"]) == (1, 1)
     assert w2["holdout"]["calls"] == 1 and w1["complete"] and w2["complete"] and not w3["complete"]
 
@@ -61,9 +62,34 @@ def test_calls_after_go_live_are_counted_per_group_and_week():
 def test_first_hours_show_one_partial_week_and_too_early():
     now = CUT + timedelta(hours=2)
     rep = build([], cutoff=CUT, now=now, **KW)
+    calls = [Call(pick(False), CUT + timedelta(hours=1), True, False, 1.0, True)]
+    rep = build(calls, cutoff=CUT, now=now, **KW)
     assert len(rep["weeks"]) == 1 and not rep["weeks"][0]["complete"] and rep["fallback"]["status"] == "TOO EARLY"
     assert "PARTIAL WEEK" in render(rep, cutoff=CUT, now=now)
     assert build([], cutoff=CUT, now=CUT, **KW)["weeks"] == []
+
+
+def test_zero_connected_calls_says_so_instead_of_comparing_zeros():
+    h, c = pick(True), pick(False)
+    # 3 attempts after go-live, none got past ringing (failed / no-answer / busy)
+    calls = hist(h, 6) + hist(c, 6) + [Call(h, CUT + timedelta(days=d), False, False, 0.1) for d in (1, 2, 8)]
+    now = CUT + timedelta(days=20)
+    rep = build(calls, cutoff=CUT, now=now, **KW)
+    text = render(rep, cutoff=CUT, now=now)
+    assert rep["weeks"] == [] and rep["attempted_since_go_live"] == 3
+    assert "NO CONNECTED CALLS" in text and "3 attempted" in text and "WAITING FOR CONNECTED CALLS" in text
+    assert "Week 1" not in text
+
+
+def test_week_one_is_the_first_week_with_a_connected_call():
+    h, c = pick(True), pick(False)
+    calls = hist(h, 6) + hist(c, 6) + [Call(h, CUT + timedelta(days=2), False, False, 0.1),                 # week 1 of the calendar: failed
+                                       Call(h, CUT + timedelta(days=9), True, False, 1.0, True)]            # first connect, calendar week 2
+    now = CUT + timedelta(days=25)
+    rep = build(calls, cutoff=CUT, now=now, **KW)
+    assert rep["first_connected_week"] == 1 and rep["weeks"][0]["start"] == CUT + timedelta(days=7)
+    assert rep["weeks"][0]["holdout"]["connected"] == 1
+    assert "Week 1: Nov 29" in render(rep, cutoff=CUT, now=now)
 
 
 def _week(calls, booked, reached=0):
@@ -99,7 +125,7 @@ def test_fallback_without_baseline():
 
 def test_render_has_no_phone_numbers_and_marks_partial_week():
     h, c = pick(True), pick(False)
-    calls = hist(h, 6) + hist(c, 6) + [Call(c, CUT + timedelta(days=8), True, True, 2.0)]
+    calls = hist(h, 6) + hist(c, 6) + [Call(c, CUT + timedelta(days=8), True, True, 2.0, True)]
     now = CUT + timedelta(days=10)
     text = render(build(calls, cutoff=CUT, now=now, **KW), cutoff=CUT, now=now)
     assert "PARTIAL WEEK" in text and "Week 1" in text and "Switch-off check" in text

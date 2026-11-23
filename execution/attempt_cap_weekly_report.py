@@ -11,6 +11,9 @@ Because the groups differ in size, results are shown per 1,000 people.
 
 Definitions (from call_events, outbound ColdLead/NewLead, report_excluded false):
   call      = one row.  reached = status 'completed' (a person picked up; voicemail, no-answer, busy and failed are not).
+  connected = the call got past ringing: 'completed' or 'hangup_on_voicemail' (failed, no-answer and busy are not).
+Week 1 is the first week (counted from go-live) in which any call connected. Until one does, the report says so and
+compares nothing (Ali, 2026-11-23: do not compare two zeros).
   booking   = a call with detected_intent 'booked' (bookings are only recorded from April 2026).
 Callbacks the lead asked for are exempt from the cap, so a few calls in the capped group are expected and are not a leak.
 """
@@ -27,6 +30,7 @@ from app.core.attempt_cap import AI_AGENTS, decide, in_holdout
 
 DEFAULT_CAP_LIVE_AT = "2026-11-22T17:10:00+00:00"   # worker container rebuilt 17:06 UTC; 87bfbe3 deployed
 # Proposed threshold, to be confirmed by Kes: flag when bookings fall this many points MORE than calls do.
+CONNECTED_STATUSES = ("completed", "hangup_on_voicemail")   # got past ringing; failed, no-answer, busy did not
 REVIEW_POINTS = 30.0
 MIN_POST_WEEKS = 2
 BASELINE_WEEKS = 4
@@ -39,6 +43,7 @@ class Call:
     reached: bool
     booked: bool
     minutes: float
+    connected: bool = False
 
 
 def to_phone10(contact_id: str | None) -> str | None:
@@ -64,11 +69,12 @@ def classify_cohort(calls: Iterable[Call], *, cutoff: datetime, era: datetime, c
 
 
 def _zero() -> dict[str, float]:
-    return {"calls": 0, "reached": 0, "booked": 0, "minutes": 0.0}
+    return {"calls": 0, "connected": 0, "reached": 0, "booked": 0, "minutes": 0.0}
 
 
 def _add(bucket: dict[str, float], c: Call) -> None:
     bucket["calls"] += 1
+    bucket["connected"] += 1 if c.connected else 0
     bucket["reached"] += 1 if c.reached else 0
     bucket["booked"] += 1 if c.booked else 0
     bucket["minutes"] += c.minutes
@@ -97,8 +103,12 @@ def build(calls: list[Call], *, cutoff: datetime, now: datetime, era: datetime, 
                 group = cohort.get(c.phone)
                 if group:
                     _add(weeks[k][group], c)
+    attempted = sum(w["all"]["calls"] for w in weeks)
+    first = next((i for i, w in enumerate(weeks) if w["all"]["connected"] > 0), None)
+    weeks = weeks[first:] if first is not None else []
     done = [w for w in weeks if w["complete"]]
-    return {"cohort_people": people, "weeks": weeks, "baseline_weekly": {k: v / BASELINE_WEEKS for k, v in baseline.items()},
+    return {"cohort_people": people, "weeks": weeks, "attempted_since_go_live": int(attempted),
+            "first_connected_week": first, "baseline_weekly": {k: v / BASELINE_WEEKS for k, v in baseline.items()},
             "fallback": fallback_check(baseline, done)}
 
 
@@ -129,18 +139,22 @@ def render(rep: dict, *, cutoff: datetime, now: datetime) -> str:
     out = [f"Attempt cap weekly read | go-live {cutoff:%Y-%m-%d %H:%M} UTC | as of {now:%Y-%m-%d %H:%M} UTC",
            f"People at the cap on go-live: capped {p['capped']:,}, holdout {p['holdout']:,}", ""]
     if not rep["weeks"]:
-        out.append("No weeks yet.")
+        out.append(f"NO CONNECTED CALLS since go-live ({rep['attempted_since_go_live']:,} attempted, none got past ringing). "
+                   "Nothing to compare yet; week 1 starts the first week a call connects.")
+        out.append("")
+        out.append("Switch-off check: WAITING FOR CONNECTED CALLS (clock has not started)")
+        return "\n".join(out)
     for i, w in enumerate(rep["weeks"], 1):
         tag = "" if w["complete"] else "  (PARTIAL WEEK, do not read)"
         out.append(f"Week {i}: {w['start']:%b %d} to {w['end']:%b %d}{tag}")
-        out.append(f"  {'group':<9}{'people':>8}{'calls':>8}{'reached':>9}{'booked':>8}{'calls/1k':>10}{'reached/1k':>12}{'booked/1k':>11}")
+        out.append(f"  {'group':<9}{'people':>8}{'calls':>8}{'connected':>11}{'reached':>9}{'booked':>8}{'calls/1k':>10}{'reached/1k':>12}{'booked/1k':>11}")
         for g in ("capped", "holdout"):
             b, n = w[g], p[g]
             r = per_1000(b, n)
-            out.append(f"  {g:<9}{n:>8,}{int(b['calls']):>8,}{int(b['reached']):>9,}{int(b['booked']):>8,}"
+            out.append(f"  {g:<9}{n:>8,}{int(b['calls']):>8,}{int(b['connected']):>11,}{int(b['reached']):>9,}{int(b['booked']):>8,}"
                        f"{r['calls']:>10.1f}{r['reached']:>12.1f}{r['booked']:>11.2f}")
         a = w["all"]
-        out.append(f"  all calls this week: {int(a['calls']):,} calls, {int(a['reached']):,} reached, "
+        out.append(f"  all calls this week: {int(a['calls']):,} calls, {int(a['connected']):,} connected, {int(a['reached']):,} reached, "
                    f"{int(a['booked']):,} booked, {a['minutes']:,.0f} minutes")
         out.append("")
     b = rep["baseline_weekly"]
@@ -179,8 +193,9 @@ def load_calls(session, since: datetime) -> list[Call]:
             continue
         if at.tzinfo is None:
             at = at.replace(tzinfo=timezone.utc)
-        calls.append(Call(phone, at, (status or "").lower() == "completed", (intent or "") == "booked",
-                          (dur or 0) / 60.0))
+        st = (status or "").lower()
+        calls.append(Call(phone, at, st == "completed", (intent or "") == "booked", (dur or 0) / 60.0,
+                          connected=st in CONNECTED_STATUSES))
     return calls
 
 
