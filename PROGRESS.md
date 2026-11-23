@@ -3288,3 +3288,9 @@ Check: (1) capped-group calls are near zero (callbacks exempt); anything larger 
 
 ### 2026-11-23 (later) - connected-calls count added to the weekly report (NOT yet committed or deployed)
 Ali asked for a count of calls that connected, both groups, week 1 = first week with any connected call, and a plain 'no connected calls' message instead of comparing zeros. Built in `execution/attempt_cap_weekly_report.py` (`connected` = completed or hangup_on_voicemail), 12 tests pass, ruff clean, spec 54 updated. Live read-only run (code piped into the container, nothing deployed): 48 calls since go-live, 44 connected, 12 reached; none from either cap group yet. Ali's 'nothing connects since 2 Oct' is about a different Synthflow agent, not Cora's. Waiting on Kes's go to commit and deploy; Ali reply draft to be updated.
+
+### 2026-11-23 (evening) - weekly attempt-cap report: booking counts behind the flag + Edu: Cory line (Ali's two additions)
+- Ali confirmed the 30-point switch-off threshold (spec 54 updated).
+- `execution/attempt_cap_weekly_report.py`: (1) the switch-off check always prints weekly bookings before go-live and week by week since; (2) a separate line for the Synthflow agent "Edu: Cory - Outbound" (number ending 2568), read-only from Synthflow: attempts, connected, answered, failed per week and the last connected call; prints FIRST CONNECTED CALL when it stops being zero; if Synthflow cannot be read the line says so and the report still prints.
+- Tests: 17 in `tests/unit/test_attempt_cap_weekly_report.py`, ruff clean. Deployed to Hetzner 2026-11-23 (verification below).
+- Note: the 2568 line's week 1 includes Kes's own test call of 2026-11-23 (failed after 5 s).

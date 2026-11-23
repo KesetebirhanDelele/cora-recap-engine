@@ -6,10 +6,14 @@ from datetime import datetime, timedelta, timezone
 from app.core.attempt_cap import in_holdout
 from execution.attempt_cap_weekly_report import (
     Call,
+    ExtCall,
     build,
     classify_cohort,
     fallback_check,
+    load_agent_calls,
     render,
+    render_agent,
+    summarize_agent,
     to_phone10,
 )
 
@@ -130,3 +134,62 @@ def test_render_has_no_phone_numbers_and_marks_partial_week():
     text = render(build(calls, cutoff=CUT, now=now, **KW), cutoff=CUT, now=now)
     assert "PARTIAL WEEK" in text and "Week 1" in text and "Switch-off check" in text
     assert h not in text and c not in text
+
+
+def test_flag_text_shows_the_booking_counts_behind_it():
+    h, c = pick(True), pick(False)
+    base = [Call(h, CUT - timedelta(days=d), True, d % 3 == 0, 1.0, True) for d in range(1, 28)]
+    post = [Call(c, CUT + timedelta(days=d), True, d in (2, 9), 1.0, True) for d in range(0, 15)]
+    now = CUT + timedelta(days=15)
+    rep = build(hist(h, 6) + hist(c, 6) + base + post, cutoff=CUT, now=now, **KW)
+    text = render(rep, cutoff=CUT, now=now)
+    assert rep["fallback"]["week_booked"] == [1, 1]
+    assert "bookings behind it:" in text and "since go-live, by week: 1, 1" in text
+
+
+# --- the separate Edu: Cory - Outbound agent (Ali, 2026-11-23) ---------------------------------------------------------
+
+def test_edu_cory_zero_connected_says_so_and_names_the_last_connected_call():
+    calls = [ExtCall(CUT - timedelta(days=50), "completed"), ExtCall(CUT + timedelta(days=1), "failed"),
+             ExtCall(CUT + timedelta(days=2), "failed")]
+    now = CUT + timedelta(days=5)
+    summ = summarize_agent(calls, cutoff=CUT, now=now)
+    text = render_agent(summ)
+    assert summ["first_connected_since_go_live"] is None and summ["attempts_since_go_live"] == 2
+    assert "NO CONNECTED CALLS since go-live (2 attempted)" in text and "Last connected call ever: 2026-10-03" in text
+
+
+def test_edu_cory_first_connected_call_is_announced_and_counted_by_week():
+    calls = [ExtCall(CUT + timedelta(days=1), "failed"), ExtCall(CUT + timedelta(days=9), "hangup_on_voicemail"),
+             ExtCall(CUT + timedelta(days=10), "completed"), ExtCall(CUT + timedelta(days=11), "no-answer")]
+    summ = summarize_agent(calls, cutoff=CUT, now=CUT + timedelta(days=12))
+    w1, w2 = summ["weeks"]
+    assert (w1["attempts"], w1["connected"], w1["failed"]) == (1, 0, 1)
+    assert (w2["attempts"], w2["connected"], w2["answered"]) == (3, 2, 1)
+    assert "FIRST CONNECTED CALL since go-live: 2026-12-01" in render_agent(summ)
+
+
+def test_edu_cory_unreadable_says_so_instead_of_failing():
+    assert "could not read Synthflow (HTTPStatusError)" in render_agent(None, error="HTTPStatusError")
+
+
+class _FakeHttp:
+    def __init__(self, pages):
+        self.pages, self.calls = pages, []
+
+    def get(self, url, headers=None, params=None):
+        self.calls.append(params["offset"])
+        rows = self.pages[params["offset"] // 100] if params["offset"] // 100 < len(self.pages) else []
+        resp = type("R", (), {})()
+        resp.raise_for_status = lambda: None
+        resp.json = lambda: {"response": {"calls": rows}}
+        return resp
+
+
+def test_load_agent_calls_pages_until_empty_and_reads_status_and_time():
+    ms = int(CUT.timestamp() * 1000)
+    http = _FakeHttp([[{"start_time": ms, "call_status": "completed"}, {"start_time": None, "call_status": "failed"}],
+                      [{"start_time": str(ms + 1000), "call_status": "failed"}]])
+    out = load_agent_calls("model", "key", http=http)
+    assert [c.status for c in out] == ["completed", "failed"] and out[0].at == CUT and http.calls == [0, 100, 200]
+

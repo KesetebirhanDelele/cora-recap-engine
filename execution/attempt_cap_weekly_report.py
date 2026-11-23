@@ -127,7 +127,8 @@ def fallback_check(baseline: dict[str, float], complete_weeks: list[dict]) -> di
     flag = round(booked_change - calls_change, 6) < -REVIEW_POINTS
     return {"status": "REVIEW: bookings fell clearly more than calls" if flag else "OK",
             "calls_change_pct": calls_change, "booked_change_pct": booked_change, "reached_change_pct": reached_change,
-            "post_weekly": post, "baseline_weekly": base, "threshold_points": REVIEW_POINTS}
+            "post_weekly": post, "baseline_weekly": base, "threshold_points": REVIEW_POINTS,
+            "week_booked": [int(w["all"]["booked"]) for w in complete_weeks]}
 
 
 def per_1000(bucket: dict[str, float], people: int) -> dict[str, float]:
@@ -168,11 +169,95 @@ def render(rep: dict, *, cutoff: datetime, now: datetime) -> str:
                    f"vs the 4-week baseline (flag if bookings are {fb['threshold_points']:.0f}+ points below calls)")
         out.append(f"  weekly averages now: {fb['post_weekly']['calls']:,.0f} calls, {fb['post_weekly']['booked']:,.1f} booked "
                    "(bookings are few per week, so one week is noisy)")
+        out.append(f"  bookings behind it: {fb['baseline_weekly']['booked']:.1f} a week before go-live; "
+                   f"since go-live, by week: {', '.join(str(n) for n in fb['week_booked'])}")
     elif "reason" in fb:
         out.append(f"  {fb['reason']}")
     out += ["", "Notes: capped-group calls should be near zero (callbacks the lead asked for are exempt). The holdout is the "
             "long-term comparison: read bookings at 6 and 12 months. Until then steer on reached calls per 1,000 people."]
     return "\n".join(out)
+
+
+# -- The Edu: Cory - Outbound Synthflow agent (Ali, 2026-11-23): its own line, NOT part of the cap comparison ----------
+EDU_CORY_MODEL_ID = "f013fd7e-94de-446b-a755-192fdb3ccc5e"
+EDU_CORY_LABEL = "Edu: Cory - Outbound (Synthflow agent, number ending 2568)"
+SYNTHFLOW_CALLS_URL = "https://api.synthflow.ai/v2/calls"
+CONNECTED_STATUSES_EXT = ("completed", "hangup_on_voicemail")
+
+
+@dataclass(frozen=True)
+class ExtCall:
+    at: datetime
+    status: str
+
+
+def summarize_agent(calls: Iterable[ExtCall], *, cutoff: datetime, now: datetime) -> dict:
+    """Weekly attempts/connected/answered for one outside agent from go-live, plus its last connected call overall.
+    Weeks are the same calendar weeks as the cap report, so the lines sit side by side."""
+    calls = list(calls)
+    n_weeks = max(0, (now - cutoff).days // 7 + (1 if (now - cutoff) % timedelta(days=7) else 0))
+    weeks = [{"start": cutoff + timedelta(days=7 * k), "end": cutoff + timedelta(days=7 * (k + 1)),
+              "attempts": 0, "connected": 0, "answered": 0, "failed": 0} for k in range(n_weeks)]
+    for c in calls:
+        if c.at < cutoff:
+            continue
+        k = (c.at - cutoff).days // 7
+        if k >= len(weeks):
+            continue
+        st = c.status.lower()
+        weeks[k]["attempts"] += 1
+        weeks[k]["connected"] += 1 if st in CONNECTED_STATUSES_EXT else 0
+        weeks[k]["answered"] += 1 if st == "completed" else 0
+        weeks[k]["failed"] += 1 if st == "failed" else 0
+    connected_at = sorted(c.at for c in calls if c.status.lower() in CONNECTED_STATUSES_EXT)
+    since = [t for t in connected_at if t >= cutoff]
+    return {"weeks": weeks, "last_connected_ever": connected_at[-1] if connected_at else None,
+            "first_connected_since_go_live": since[0] if since else None,
+            "attempts_since_go_live": sum(w["attempts"] for w in weeks)}
+
+
+def render_agent(summary: dict | None, *, error: str | None = None) -> str:
+    out = ["", f"Separate line, not in the cap comparison: {EDU_CORY_LABEL}"]
+    if error or summary is None:
+        return chr(10).join(out + [f"  could not read Synthflow ({error or 'no data'}); rerun later"])
+    for i, w in enumerate(summary["weeks"], 1):
+        out.append(f"  Week {i} ({w['start']:%b %d} to {w['end']:%b %d}): {w['attempts']} attempts, "
+                   f"{w['connected']} connected, {w['answered']} answered by a person, {w['failed']} failed")
+    if not summary["weeks"]:
+        out.append("  no weeks yet")
+    first, last = summary["first_connected_since_go_live"], summary["last_connected_ever"]
+    if first:
+        out.append(f"  FIRST CONNECTED CALL since go-live: {first:%Y-%m-%d %H:%M} UTC (its fix has landed)")
+    else:
+        lc = f"{last:%Y-%m-%d}" if last else "never"
+        out.append(f"  NO CONNECTED CALLS since go-live ({summary['attempts_since_go_live']} attempted). "
+                   f"Last connected call ever: {lc}. The day this stops being zero, its fix has landed.")
+    return chr(10).join(out)
+
+
+def load_agent_calls(model_id: str, api_key: str, *, http=None, max_pages: int = 30) -> list[ExtCall]:
+    """READ-ONLY: GET /v2/calls pages for one agent. Raises on HTTP errors (the caller reports it, the report goes on)."""
+    import httpx
+    client = http or httpx.Client(timeout=30)
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
+    out: list[ExtCall] = []
+    for page in range(max_pages):
+        resp = client.get(SYNTHFLOW_CALLS_URL, headers=headers,
+                          params={"model_id": model_id, "limit": 100, "offset": page * 100})
+        resp.raise_for_status()
+        rows = (resp.json().get("response") or {}).get("calls") or []
+        if not rows:
+            break
+        for r in rows:
+            t = r.get("start_time")
+            if t is None:
+                continue
+            try:
+                at = datetime.fromtimestamp(float(t) / 1000, timezone.utc)
+            except (TypeError, ValueError):
+                at = datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+            out.append(ExtCall(at, str(r.get("call_status") or r.get("status") or "")))
+    return out
 
 
 _SQL = """
@@ -202,6 +287,7 @@ def load_calls(session, since: datetime) -> list[Call]:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cap-live-at", default=DEFAULT_CAP_LIVE_AT, help="ISO time the cap went live (UTC)")
+    ap.add_argument("--edu-cory-model-id", default=EDU_CORY_MODEL_ID, help="Synthflow agent id for the separate Edu: Cory line")
     a = ap.parse_args(argv)
     from app.config import get_settings
     from app.db import get_sync_session
@@ -213,7 +299,14 @@ def main(argv: list[str]) -> int:
         calls = load_calls(session, datetime(2025, 1, 1, tzinfo=timezone.utc))   # lifetime count needs all history
     rep = build(calls, cutoff=cutoff, now=now, era=era, cap=s.outbound_attempt_cap,
                 guarantee=s.outbound_attempt_cap_era_guarantee, holdout_percent=s.outbound_attempt_cap_holdout_percent)
-    print(render(rep, cutoff=cutoff, now=now))
+    text = render(rep, cutoff=cutoff, now=now)
+    try:
+        key = s.synthflow_api_key
+        key = key.get_secret_value() if hasattr(key, "get_secret_value") else key
+        text += chr(10) + render_agent(summarize_agent(load_agent_calls(a.edu_cory_model_id, key), cutoff=cutoff, now=now))
+    except Exception as exc:   # the report must never fail because the outside agent could not be read
+        text += chr(10) + render_agent(None, error=type(exc).__name__)
+    print(text)
     return 0
 
 
